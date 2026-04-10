@@ -1,0 +1,412 @@
+//! Pure data types for the simulation layer.
+//!
+//! This module holds the structs and enums that describe what's in
+//! the world — nodes, links, infections, transient effects, stats —
+//! separated from the `World` state machine and its tick logic,
+//! which live in `mod.rs`. Keeping the type definitions here makes
+//! `world/mod.rs` readable as a pure state-machine file.
+
+use std::collections::VecDeque;
+
+pub type NodeId = usize;
+
+#[derive(Clone, Copy, Debug)]
+pub enum State {
+    Alive,
+    Pwned { ticks_left: u8 },
+    Dead,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    Relay,
+    Scanner,
+    Exfil,
+    Honeypot,
+    /// Patrols its neighborhood and applies a local cure pulse to nearby
+    /// infected nodes. Immune to infection itself; never mutates.
+    Defender,
+    /// Fortified core node with extra pwn-absorbing charges. Spawns only
+    /// close to its faction's C2, creating visible fortified zones.
+    Tower,
+    /// Rally-point node that boosts nearby nodes' parent-selection weight,
+    /// creating visible spawn clusters. Rendered with an always-on glow.
+    Beacon,
+    /// Scanner repeater — when any scanner within `proxy_radius` fires,
+    /// this node also pulses, propagating the scanner highlight through
+    /// a chain of proxies.
+    Proxy,
+    /// Looks like an exfil but never emits packets — a passive
+    /// camouflage node that draws attacker attention away from real
+    /// exfils. Rendered identically to an Exfil.
+    Decoy,
+}
+
+impl Role {
+    /// Lowercase display name used by log lines and the cursor
+    /// inspector. Single place to add new role strings.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Role::Relay => "relay",
+            Role::Scanner => "scanner",
+            Role::Exfil => "exfil",
+            Role::Honeypot => "honeypot",
+            Role::Defender => "defender",
+            Role::Tower => "tower",
+            Role::Beacon => "beacon",
+            Role::Proxy => "proxy",
+            Role::Decoy => "decoy",
+        }
+    }
+
+    /// Default render glyph with no state modifiers (no hardened
+    /// override, no infection overlay). Used by infected_glyph and
+    /// anywhere else that needs the plain shape for a role.
+    pub fn base_glyph(&self) -> &'static str {
+        match self {
+            Role::Relay => "●",
+            Role::Scanner => "◎",
+            Role::Exfil => "▣",
+            Role::Honeypot => "●",
+            Role::Defender => "◇",
+            Role::Tower => "⊞",
+            Role::Beacon => "⊚",
+            Role::Proxy => "⊛",
+            Role::Decoy => "▣",
+        }
+    }
+
+    /// Roles that never mutate — either because they hide (Honeypot),
+    /// because their behavior is their identity (Defender, Tower,
+    /// Beacon, Proxy), or because they're camouflage (Decoy).
+    pub fn is_mutation_locked(&self) -> bool {
+        matches!(
+            self,
+            Role::Honeypot
+                | Role::Defender
+                | Role::Tower
+                | Role::Beacon
+                | Role::Proxy
+                | Role::Decoy
+        )
+    }
+
+    /// Roles that can't be infected at all. Honeypots stay hidden;
+    /// defenders are the antibody team. Everything else is fair game.
+    pub fn is_virus_immune(&self) -> bool {
+        matches!(self, Role::Honeypot | Role::Defender)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InfectionStage {
+    /// No visible symptoms yet, but still spreads.
+    Incubating,
+    /// Flickering glyph, normal role behavior suppressed.
+    Active,
+    /// About to crash the host — counts down `terminal_ticks` then forces a pwn.
+    Terminal,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Infection {
+    pub strain: u8,
+    pub stage: InfectionStage,
+    pub age: u16,
+    /// Decremented by patch waves; at 0 the infection is cured.
+    #[allow(dead_code)]
+    pub cure_resist: u8,
+    pub terminal_ticks: u8,
+    /// Ransomware variant: freezes the host instead of killing it at
+    /// Terminal stage, and is immune to patch waves — only defender
+    /// pulses can clear it.
+    pub is_ransom: bool,
+}
+
+impl Infection {
+    pub fn seeded(strain: u8, cure_resist: u8) -> Self {
+        Self {
+            strain,
+            stage: InfectionStage::Incubating,
+            age: 0,
+            cure_resist,
+            terminal_ticks: 0,
+            is_ransom: false,
+        }
+    }
+
+    pub fn seeded_ransom(strain: u8, cure_resist: u8) -> Self {
+        Self {
+            strain,
+            stage: InfectionStage::Incubating,
+            age: 0,
+            cure_resist,
+            terminal_ticks: 0,
+            is_ransom: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Node {
+    pub pos: (i16, i16),
+    pub parent: Option<NodeId>,
+    pub state: State,
+    pub born: u64,
+    pub pulse: u8,
+    /// Nonzero means scheduled to die; render as red ✕ until it hits 0, then
+    /// flip to Dead. Set via schedule_subtree_death with a delay proportional
+    /// to distance from the pwned root, producing a visible red ripple through
+    /// the subtree.
+    pub dying_in: u8,
+    pub role: Role,
+    pub hardened: bool,
+    pub heartbeats: u8,
+    pub branch_id: u16,
+    pub role_cooldown: u16,
+    pub last_ping_dir: Option<(i8, i8)>,
+    pub last_ping_tick: u64,
+    pub honey_tripped: bool,
+    pub honey_reveal: u8,
+    /// Nonzero means a pwn attempt was just absorbed; renders as a bright
+    /// shield glyph for a few ticks so the viewer sees the save happen.
+    pub shield_flash: u8,
+    pub infection: Option<Infection>,
+    /// Nonzero means the node just mutated its role — flashes pink.
+    pub mutated_flash: u8,
+    /// Nonzero while a Scanner's ping pulse is active. The render pass
+    /// uses this to brighten the scanner node itself and every link
+    /// adjacent to it, creating a visible "surveying" pulse that rolls
+    /// through the local topology instead of phantom dots in empty space.
+    pub scan_pulse: u8,
+    /// Extra pwn-absorbing charges beyond the normal heartbeat-driven
+    /// shield. Towers spawn with a nonzero value; each pwn attempt
+    /// decrements this counter before touching the regular hardened
+    /// flag. Independent from `hardened` so towers can still gain and
+    /// spend a heartbeat shield on top of their fortification.
+    pub pwn_resist: u8,
+    /// Which C2 this node belongs to (index into `World.c2_nodes`).
+    /// Inherited from parent at spawn; first-hop C2 children take their
+    /// C2's index. Used to keep cascade reachability and cross-link
+    /// reconnects faction-isolated.
+    pub faction: u8,
+}
+
+impl Node {
+    /// Active or Terminal infection suppresses this node's role behaviors
+    /// (scanner pings, exfil packets). Incubating infections remain stealthy.
+    pub fn role_suppressed(&self) -> bool {
+        matches!(
+            &self.infection,
+            Some(i) if !matches!(i.stage, InfectionStage::Incubating)
+        )
+    }
+
+    pub fn fresh(
+        pos: (i16, i16),
+        parent: Option<NodeId>,
+        born: u64,
+        role: Role,
+        branch_id: u16,
+    ) -> Self {
+        Self {
+            pos,
+            parent,
+            state: State::Alive,
+            born,
+            pulse: 0,
+            dying_in: 0,
+            role,
+            hardened: false,
+            heartbeats: 0,
+            branch_id,
+            role_cooldown: 0,
+            last_ping_dir: None,
+            last_ping_tick: 0,
+            honey_tripped: false,
+            honey_reveal: 0,
+            shield_flash: 0,
+            infection: None,
+            mutated_flash: 0,
+            scan_pulse: 0,
+            pwn_resist: 0,
+            faction: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkKind {
+    /// Tree edge created when a node is spawned from its parent.
+    Parent,
+    /// Lateral bridge between two live nodes in different branches. Used
+    /// purely for cascade reachability — packets never relay through these.
+    Cross,
+}
+
+#[derive(Clone, Debug)]
+pub struct Link {
+    pub a: NodeId,
+    pub b: NodeId,
+    pub path: Vec<(i16, i16)>,
+    pub drawn: u16,
+    pub kind: LinkKind,
+    /// Accumulated traffic load. Each in-flight packet adds +2 per tick,
+    /// each worm +1. Decays by 1 per tick. The renderer blends into
+    /// hotter colors as load crosses WARM_LINK and HOT_LINK thresholds;
+    /// packets refuse to hop onto a link whose load is above HOT_LINK.
+    pub load: u8,
+    /// Nonzero while this link is part of a recent exploit chain. Set
+    /// when a pwn event walks up the parent chain from the victim
+    /// toward C2; decays each tick in decay_link_load.
+    pub breach_ttl: u8,
+}
+
+#[derive(Clone, Debug)]
+pub struct Packet {
+    pub link_id: usize,
+    /// Index into link.path. Packets travel from the child end (high index)
+    /// toward the parent end (index 0).
+    pub pos: u16,
+}
+
+#[derive(Clone, Debug)]
+pub struct Worm {
+    pub link_id: usize,
+    pub pos: u16,
+    /// True if the worm started at `link.a` and is traveling toward `link.b`;
+    /// false for the reverse. Cross-links are bidirectional so both are valid.
+    pub outbound_from_a: bool,
+    pub strain: u8,
+}
+
+/// Two factions temporarily at peace. During the alliance, border
+/// skirmishes between them are suppressed and cross-faction bridge
+/// rolls between them don't fire. Purely a period of non-aggression.
+#[derive(Clone, Copy, Debug)]
+pub struct Alliance {
+    pub a: u8,
+    pub b: u8,
+    pub expires_tick: u64,
+}
+
+/// Rare visual-only event: a dashed braille line flickering briefly
+/// between two random alive mesh cells. Pure flavor, no effect on
+/// routing or reachability.
+#[derive(Clone, Debug)]
+pub struct Wormhole {
+    pub a: (i16, i16),
+    pub b: (i16, i16),
+    pub age: u16,
+    pub life: u16,
+}
+
+/// Rare sweeping event — a line of "hostile traffic" that moves across
+/// the mesh from one edge to the opposite edge, spiking role cooldowns
+/// on any node it passes over.
+#[derive(Clone, Debug)]
+pub struct DdosWave {
+    /// Current position of the wave front (x or y, depending on orientation).
+    pub pos: i16,
+    /// If true, the wave is a horizontal line moving vertically; else
+    /// a vertical line moving horizontally.
+    pub horizontal: bool,
+    /// +1 or -1, determines which way the front advances.
+    pub direction: i16,
+    pub age: u16,
+}
+
+/// Transient particle ejected from a cascade root. Sub-cell f32
+/// position + velocity so multiple sparks in one terminal cell can
+/// render as distinct braille dots.
+#[derive(Clone, Debug)]
+pub struct CascadeSpark {
+    pub pos: (f32, f32),
+    pub vel: (f32, f32),
+    pub age: u8,
+    pub life: u8,
+}
+
+/// Expanding shockwave ring drawn at a cascade root. Age increments
+/// once per tick; radius tracks age directly. Cells on the ring get
+/// rendered as bold braille chars.
+#[derive(Clone, Debug)]
+pub struct CascadeShockwave {
+    pub origin: (i16, i16),
+    pub age: u8,
+    pub max_age: u8,
+}
+
+#[derive(Clone, Debug)]
+pub struct PatchWave {
+    pub origin: (i16, i16),
+    pub radius: i16,
+}
+
+#[derive(Clone, Debug)]
+pub struct RoleWeights {
+    pub relay: f32,
+    pub scanner: f32,
+    pub exfil: f32,
+    pub honeypot: f32,
+    pub defender: f32,
+    pub tower: f32,
+    pub beacon: f32,
+    pub proxy: f32,
+    pub decoy: f32,
+}
+
+impl Default for RoleWeights {
+    fn default() -> Self {
+        Self {
+            relay: 0.51,
+            scanner: 0.13,
+            exfil: 0.10,
+            honeypot: 0.04,
+            defender: 0.08,
+            tower: 0.05,
+            beacon: 0.04,
+            proxy: 0.03,
+            decoy: 0.02,
+        }
+    }
+}
+
+/// Running tally of notable events per faction. Used for the header
+/// prestige readout and the end-of-run summary.
+#[derive(Clone, Debug, Default)]
+pub struct FactionStats {
+    pub spawned: u32,
+    pub lost: u32,
+    pub honeys_tripped: u32,
+    pub infections_cured: u32,
+    /// Recent alive-node count samples, bounded to FACTION_HISTORY_LEN.
+    /// Sampled on a slow cadence so the header sparkline reads as a
+    /// smooth trend rather than a jittering count.
+    pub history: VecDeque<u32>,
+}
+
+impl FactionStats {
+    /// Composite "prestige" score. Positive for growth, negative for
+    /// churn. Honeypot traps and cures are rewarded so defense-
+    /// leaning factions can still score well without hoarding nodes.
+    pub fn score(&self) -> i32 {
+        self.spawned as i32 - 3 * (self.lost as i32)
+            + 5 * (self.honeys_tripped as i32)
+            + 2 * (self.infections_cured as i32)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WorldStats {
+    pub alive: usize,
+    pub pwned: usize,
+    pub dead: usize,
+    pub dying: usize,
+    pub branches: usize,
+    pub factions: usize,
+    pub links: usize,
+    pub cross_links: usize,
+    pub packets: usize,
+    pub infected: usize,
+}
