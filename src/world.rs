@@ -22,6 +22,39 @@ pub enum Role {
     Honeypot,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InfectionStage {
+    /// No visible symptoms yet, but still spreads.
+    Incubating,
+    /// Flickering glyph, normal role behavior suppressed.
+    Active,
+    /// About to crash the host — counts down `terminal_ticks` then forces a pwn.
+    Terminal,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Infection {
+    pub strain: u8,
+    pub stage: InfectionStage,
+    pub age: u16,
+    /// Decremented by patch waves (commit 2); at 0 the infection is cured.
+    #[allow(dead_code)]
+    pub cure_resist: u8,
+    pub terminal_ticks: u8,
+}
+
+impl Infection {
+    pub fn seeded(strain: u8, cure_resist: u8) -> Self {
+        Self {
+            strain,
+            stage: InfectionStage::Incubating,
+            age: 0,
+            cure_resist,
+            terminal_ticks: 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Node {
     pub pos: (i16, i16),
@@ -46,9 +79,19 @@ pub struct Node {
     /// Nonzero means a pwn attempt was just absorbed; renders as a bright
     /// shield glyph for a few ticks so the viewer sees the save happen.
     pub shield_flash: u8,
+    pub infection: Option<Infection>,
 }
 
 impl Node {
+    /// Active or Terminal infection suppresses this node's role behaviors
+    /// (scanner pings, exfil packets). Incubating infections remain stealthy.
+    pub fn role_suppressed(&self) -> bool {
+        matches!(
+            &self.infection,
+            Some(i) if !matches!(i.stage, InfectionStage::Incubating)
+        )
+    }
+
     pub fn fresh(pos: (i16, i16), parent: Option<NodeId>, born: u64, role: Role, branch_id: u16) -> Self {
         Self {
             pos,
@@ -67,6 +110,7 @@ impl Node {
             honey_tripped: false,
             honey_reveal: 0,
             shield_flash: 0,
+            infection: None,
         }
     }
 }
@@ -138,6 +182,12 @@ pub struct Config {
     pub honeypot_cascade_mult: f32,
     pub reconnect_rate: f32,
     pub reconnect_radius: i16,
+    pub virus_spread_rate: f32,
+    pub virus_incubation_ticks: u16,
+    pub virus_active_ticks: u16,
+    pub virus_terminal_ticks: u8,
+    pub virus_cure_resist: u8,
+    pub virus_seed_rate: f32,
 }
 
 impl Default for Config {
@@ -157,6 +207,12 @@ impl Default for Config {
             honeypot_cascade_mult: 3.0,
             reconnect_rate: 0.0,
             reconnect_radius: 10,
+            virus_spread_rate: 0.05,
+            virus_incubation_ticks: 30,
+            virus_active_ticks: 80,
+            virus_terminal_ticks: 20,
+            virus_cure_resist: 3,
+            virus_seed_rate: 0.004,
         }
     }
 }
@@ -197,6 +253,7 @@ pub struct WorldStats {
     pub links: usize,
     pub cross_links: usize,
     pub packets: usize,
+    pub infected: usize,
 }
 
 impl World {
@@ -214,6 +271,9 @@ impl World {
             }
             if !matches!(n.state, State::Dead) {
                 branches.insert(n.branch_id);
+            }
+            if n.infection.is_some() && !matches!(n.state, State::Dead) {
+                s.infected += 1;
             }
         }
         s.branches = branches.len();
@@ -262,6 +322,8 @@ impl World {
         self.advance_role_cooldowns();
         self.fire_scanner_pings();
         self.fire_exfil_packets();
+        self.advance_infections();
+        self.maybe_seed_infection();
         self.advance_pwned_and_loss();
         self.advance_dying();
         self.maybe_reconnect();
@@ -597,7 +659,11 @@ impl World {
             .iter()
             .enumerate()
             .filter_map(|(i, n)| {
-                if matches!(n.state, State::Alive) && n.role == Role::Scanner && n.role_cooldown == 0 {
+                if matches!(n.state, State::Alive)
+                    && n.role == Role::Scanner
+                    && n.role_cooldown == 0
+                    && !n.role_suppressed()
+                {
                     Some(i)
                 } else {
                     None
@@ -640,6 +706,7 @@ impl World {
                     && n.role == Role::Exfil
                     && n.role_cooldown == 0
                     && !n.honey_tripped
+                    && !n.role_suppressed()
                 {
                     Some(i)
                 } else {
@@ -704,6 +771,177 @@ impl World {
             keep.push(pkt);
         }
         self.packets = keep;
+    }
+
+    fn advance_infections(&mut self) {
+        // Cache config values so the mut-borrow loop below doesn't need &self.
+        let incubation = self.cfg.virus_incubation_ticks;
+        let active_len = self.cfg.virus_active_ticks;
+        let terminal_len = self.cfg.virus_terminal_ticks;
+
+        // Pass 1: stage advancement + terminal expiry collection.
+        let mut to_pwn: Vec<NodeId> = Vec::new();
+        let mut newly_active: Vec<(i16, i16)> = Vec::new();
+        for (id, n) in self.nodes.iter_mut().enumerate() {
+            if !matches!(n.state, State::Alive) {
+                continue;
+            }
+            let Some(inf) = n.infection.as_mut() else {
+                continue;
+            };
+            inf.age = inf.age.saturating_add(1);
+            match inf.stage {
+                InfectionStage::Incubating => {
+                    if inf.age >= incubation {
+                        inf.stage = InfectionStage::Active;
+                        newly_active.push(n.pos);
+                    }
+                }
+                InfectionStage::Active => {
+                    if inf.age >= incubation + active_len {
+                        inf.stage = InfectionStage::Terminal;
+                        inf.terminal_ticks = terminal_len;
+                    }
+                }
+                InfectionStage::Terminal => {
+                    if inf.terminal_ticks <= 1 {
+                        to_pwn.push(id);
+                    } else {
+                        inf.terminal_ticks -= 1;
+                    }
+                }
+            }
+        }
+
+        // Pass 2: spread. Walk the cascade adjacency; each uninfected alive
+        // node with infected neighbors rolls once per tick. We collect first
+        // and apply after so freshly infected nodes don't re-infect siblings
+        // in the same tick.
+        let spread_rate = self.cfg.virus_spread_rate;
+        let cure_resist = self.cfg.virus_cure_resist;
+        let c2 = self.c2;
+        let adj = self.live_adjacency();
+        let mut newly_infected: Vec<(NodeId, u8)> = Vec::new();
+        if spread_rate > 0.0 {
+            for (id, n) in self.nodes.iter().enumerate() {
+                if id == c2 {
+                    continue;
+                }
+                if !matches!(n.state, State::Alive) || n.infection.is_some() {
+                    continue;
+                }
+                let Some(neighbors) = adj.get(&id) else {
+                    continue;
+                };
+                let mut tally: [u32; 8] = [0; 8];
+                let mut infected_count: u32 = 0;
+                for &m in neighbors {
+                    if let Some(inf) = self.nodes[m].infection {
+                        if !matches!(inf.stage, InfectionStage::Incubating) {
+                            tally[(inf.strain as usize) & 7] += 1;
+                            infected_count += 1;
+                        }
+                    }
+                }
+                if infected_count == 0 {
+                    continue;
+                }
+                let p = 1.0 - (1.0 - spread_rate).powi(infected_count as i32);
+                if self.rng.gen::<f32>() < p {
+                    let strain = tally
+                        .iter()
+                        .enumerate()
+                        .max_by_key(|(_, c)| **c)
+                        .map(|(i, _)| i as u8)
+                        .unwrap_or(0);
+                    newly_infected.push((id, strain));
+                }
+            }
+        }
+        for (id, strain) in newly_infected {
+            self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
+        }
+
+        // Terminal nodes crash the host — route into the loss/cascade pipeline.
+        let pwned_flash = self.cfg.pwned_flash_ticks;
+        for id in to_pwn {
+            let node = &mut self.nodes[id];
+            node.infection = None;
+            node.state = State::Pwned {
+                ticks_left: pwned_flash,
+            };
+            let (a, b) = octet_pair(node.pos);
+            self.push_log(format!("node 10.0.{}.{} necrotic", a, b));
+        }
+
+        for pos in newly_active {
+            let (a, b) = octet_pair(pos);
+            self.push_log(format!("node 10.0.{}.{} symptomatic", a, b));
+        }
+    }
+
+    fn maybe_seed_infection(&mut self) {
+        if self.cfg.virus_seed_rate <= 0.0 {
+            return;
+        }
+        if self.nodes.iter().any(|n| n.infection.is_some()) {
+            return;
+        }
+        if !self.rng.gen_bool(self.cfg.virus_seed_rate as f64) {
+            return;
+        }
+        let candidates: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                if i != self.c2 && matches!(n.state, State::Alive) {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let id = candidates[self.rng.gen_range(0..candidates.len())];
+        let strain = self.rng.gen_range(0..8u8);
+        let cure_resist = self.cfg.virus_cure_resist;
+        self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
+        let (a, b) = octet_pair(self.nodes[id].pos);
+        self.push_log(format!("strain {} detected at 10.0.{}.{}", strain, a, b));
+    }
+
+    /// Infect a random Alive non-C2 node with a fresh strain. Used by the
+    /// `i` keybinding (added in commit 3) and by tests.
+    #[allow(dead_code)]
+    pub fn inject_infection(&mut self) -> Option<NodeId> {
+        let candidates: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                if i != self.c2
+                    && matches!(n.state, State::Alive)
+                    && n.infection.is_none()
+                {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let id = candidates[self.rng.gen_range(0..candidates.len())];
+        let strain = self.rng.gen_range(0..8u8);
+        let cure_resist = self.cfg.virus_cure_resist;
+        self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
+        let (a, b) = octet_pair(self.nodes[id].pos);
+        self.push_log(format!("INJECTED strain {} @ 10.0.{}.{}", strain, a, b));
+        Some(id)
     }
 
     fn advance_pwned_and_loss(&mut self) {
@@ -1150,6 +1388,85 @@ mod tests {
         }
         let cross = w.links.iter().filter(|l| l.kind == LinkKind::Cross).count();
         assert_eq!(cross, 0);
+    }
+
+    #[test]
+    fn infection_spreads_along_parent_edges() {
+        let mut w = World::new(21, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 0.0;
+        w.cfg.virus_seed_rate = 0.0;
+        w.cfg.virus_spread_rate = 1.0;
+        // Build c2 -> a -> b, infect a and drive it straight to Active so it
+        // can infect neighbors.
+        let a = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+        let b = w.nodes.len();
+        w.nodes.push(Node::fresh((12, 10), Some(a), 0, Role::Relay, 1));
+        w.nodes[a].infection = Some(Infection {
+            strain: 3,
+            stage: InfectionStage::Active,
+            age: w.cfg.virus_incubation_ticks,
+            cure_resist: 3,
+            terminal_ticks: 0,
+        });
+        // Run a few ticks: spread probability is 1.0 so b should catch it fast.
+        for _ in 0..5 {
+            w.tick((80, 30));
+        }
+        assert!(w.nodes[b].infection.is_some());
+        assert_eq!(w.nodes[b].infection.unwrap().strain, 3);
+    }
+
+    #[test]
+    fn infection_skips_c2() {
+        let mut w = World::new(22, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 0.0;
+        w.cfg.virus_seed_rate = 0.0;
+        w.cfg.virus_spread_rate = 1.0;
+        // Child directly attached to C2, infected and Active.
+        let a = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+        w.nodes[a].infection = Some(Infection {
+            strain: 0,
+            stage: InfectionStage::Active,
+            age: w.cfg.virus_incubation_ticks,
+            cure_resist: 3,
+            terminal_ticks: 0,
+        });
+        for _ in 0..20 {
+            w.tick((80, 30));
+        }
+        assert!(w.nodes[w.c2].infection.is_none(), "C2 must stay clean");
+    }
+
+    #[test]
+    fn terminal_infection_forces_loss() {
+        let mut w = World::new(23, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 0.0;
+        w.cfg.virus_seed_rate = 0.0;
+        w.cfg.virus_spread_rate = 0.0;
+        let a = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+        w.nodes[a].infection = Some(Infection {
+            strain: 0,
+            stage: InfectionStage::Terminal,
+            age: 200,
+            cure_resist: 3,
+            terminal_ticks: 1,
+        });
+        // One tick drains terminal_ticks and flips to Pwned.
+        w.tick((80, 30));
+        assert!(matches!(
+            w.nodes[a].state,
+            State::Pwned { .. } | State::Dead
+        ));
+        assert!(w.nodes[a].infection.is_none());
     }
 
     #[test]

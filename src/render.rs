@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
 use ratatui::Frame;
 
-use crate::world::{LinkKind, Node, Role, State, World, WorldStats};
+use crate::world::{InfectionStage, LinkKind, Node, Role, State, World, WorldStats};
 
 const RIGHT_COL_WIDTH: u16 = 34;
 const HEADER_HEIGHT: u16 = 1;
@@ -73,7 +73,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
 
     let right_rows = Layout::vertical([
         Constraint::Length(8),
-        Constraint::Length(10),
+        Constraint::Length(11),
         Constraint::Min(5),
     ])
     .split(right_col);
@@ -124,6 +124,15 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
         spans.push(Span::styled(
             format!("pkts {}", stats.packets),
             Style::default().fg(Color::Rgb(120, 240, 255)),
+        ));
+    }
+    if stats.infected > 0 {
+        spans.push(sep());
+        spans.push(Span::styled(
+            format!("inf {}", stats.infected),
+            Style::default()
+                .fg(Color::Rgb(220, 120, 240))
+                .add_modifier(Modifier::BOLD),
         ));
     }
     spans.push(sep());
@@ -234,6 +243,7 @@ fn legend_block() -> Paragraph<'static> {
         row("◎", Color::Rgb(120, 220, 255), "scanner"),
         row("▣", Color::Rgb(180, 180, 255), "exfil"),
         row("◈", Color::Yellow, "honeypot!"),
+        row("▓", Color::Rgb(220, 100, 220), "infected"),
         row("✕", Color::Red, "pwned"),
         row("·", Color::DarkGray, "ghost"),
     ];
@@ -271,6 +281,21 @@ fn color_log_line(s: &str) -> Line<'static> {
             .fg(Color::Black)
             .bg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
+    } else if s.contains("INJECTED") {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Rgb(220, 100, 240))
+            .add_modifier(Modifier::BOLD)
+    } else if s.contains("necrotic") {
+        Style::default()
+            .fg(Color::Rgb(220, 80, 120))
+            .add_modifier(Modifier::BOLD)
+    } else if s.contains("symptomatic") {
+        Style::default()
+            .fg(Color::Rgb(220, 120, 240))
+            .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("strain") {
+        Style::default().fg(Color::Rgb(200, 100, 200))
     } else if s.contains("LOST") {
         Style::default()
             .fg(Color::Red)
@@ -472,6 +497,72 @@ fn packet_glyph(link: &crate::world::Link, idx: usize) -> &'static str {
     }
 }
 
+fn infected_glyph(
+    node: &Node,
+    inf: &crate::world::Infection,
+    tick: u64,
+) -> (&'static str, Style) {
+    let hue = strain_hue(inf.strain);
+    match inf.stage {
+        InfectionStage::Incubating => {
+            // Subtle — same glyph family, but the fg tilts toward strain hue
+            // and we drop intensity. Hides the infection until symptoms hit.
+            let base = match node.role {
+                Role::Relay if node.hardened => "◉",
+                Role::Relay => "●",
+                Role::Scanner => "◎",
+                Role::Exfil => "▣",
+                Role::Honeypot => "●",
+            };
+            (base, Style::default().fg(hue).add_modifier(Modifier::DIM))
+        }
+        InfectionStage::Active => {
+            // Flickers between a block and its normal glyph, strain-colored.
+            let base = match node.role {
+                Role::Relay if node.hardened => "◉",
+                Role::Relay => "●",
+                Role::Scanner => "◎",
+                Role::Exfil => "▣",
+                Role::Honeypot => "●",
+            };
+            let g = if (tick + inf.age as u64).is_multiple_of(3) {
+                "▓"
+            } else {
+                base
+            };
+            (
+                g,
+                Style::default().fg(hue).add_modifier(Modifier::BOLD),
+            )
+        }
+        InfectionStage::Terminal => {
+            // Always a heavy block, alternating between strain hue and red.
+            let st = if tick.is_multiple_of(2) {
+                Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+            } else {
+                Style::default().fg(hue).add_modifier(Modifier::BOLD)
+            };
+            ("▓", st)
+        }
+    }
+}
+
+fn strain_hue(strain: u8) -> Color {
+    const PALETTE: [Color; 8] = [
+        Color::Rgb(220, 80, 220),
+        Color::Rgb(180, 100, 240),
+        Color::Rgb(230, 120, 200),
+        Color::Rgb(160, 60, 200),
+        Color::Rgb(240, 140, 230),
+        Color::Rgb(200, 100, 170),
+        Color::Rgb(190, 80, 220),
+        Color::Rgb(240, 100, 240),
+    ];
+    PALETTE[(strain as usize) & 7]
+}
+
 fn branch_hue(branch_id: u16) -> Color {
     const PALETTE: [Color; 8] = [
         Color::Rgb(60, 200, 100),
@@ -530,6 +621,9 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                         .add_modifier(Modifier::BOLD)
                 };
                 return ("⊕", st);
+            }
+            if let Some(inf) = node.infection {
+                return infected_glyph(node, &inf, tick);
             }
             let hue = branch_hue(node.branch_id);
             let pulse_boost = node.pulse > 0;
