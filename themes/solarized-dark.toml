@@ -1,0 +1,82 @@
+# Solarized Dark — classic palette by Ethan Schoonover.
+# https://ethanschoonover.com/solarized/
+
+frame          = "#268bd2"  # blue
+frame_accent   = "#2aa198"  # cyan
+bar_bg         = "#002b36"  # base03
+label          = "#93a1a1"  # base1
+value          = "#eee8d5"  # base2
+ghost          = "#586e75"  # base01
+accent         = "#b58900"  # yellow
+
+header_brand_bg = "#268bd2"
+header_brand_fg = "#002b36"
+stat_label      = "#657b83"  # base00
+stat_value      = "#93a1a1"
+stat_packets    = "#2aa198"
+stat_infected   = "#d33682"  # magenta
+
+pwned          = "#dc322f"  # red
+pwned_alt      = "#cb4b16"  # orange
+dying_alt      = "#cb4b16"
+honey_reveal   = "#b58900"
+shield_flash_a = "#2aa198"
+shield_flash_b = "#93a1a1"
+mutated_flash_a = "#d33682"
+mutated_flash_b = "#6c71c4"  # violet
+
+scanner  = "#2aa198"  # cyan
+exfil    = "#6c71c4"  # violet
+defender = "#859900"  # green
+
+patch_wave = "#859900"
+packet     = "#2aa198"
+cross_link = "#268bd2"
+ping       = "#586e75"
+cursor     = "#b58900"
+
+branch_palette = [
+  "#859900",  # green
+  "#2aa198",  # cyan
+  "#268bd2",  # blue
+  "#6c71c4",  # violet
+  "#d33682",  # magenta
+  "#cb4b16",  # orange
+  "#b58900",  # yellow
+  "#dc322f",  # red
+]
+
+faction_palette = [
+  "#268bd2",  # blue
+  "#cb4b16",  # orange
+  "#859900",  # green
+  "#6c71c4",  # violet
+]
+
+strain_palette = [
+  "#d33682",  # magenta
+  "#6c71c4",  # violet
+  "#dc322f",  # red
+  "#d33682",
+  "#6c71c4",
+  "#cb4b16",
+  "#d33682",
+  "#6c71c4",
+]
+
+log_handshake = "#859900"
+log_beacon    = "#586e75"
+log_lost      = "#dc322f"
+log_hardened  = "#2aa198"
+log_shielded  = "#93a1a1"
+log_cured     = "#859900"
+log_cascade   = "#cb4b16"
+log_strain    = "#d33682"
+log_worm      = "#d33682"
+log_mutated   = "#6c71c4"
+log_bridge    = "#268bd2"
+log_c2_online = "#2aa198"
+log_default   = "#93a1a1"
+log_zero_day_bg = "#b58900"
+log_honeypot_bg = "#b58900"
+log_injected_bg = "#d33682"

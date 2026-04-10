@@ -1,6 +1,7 @@
 mod config;
 mod render;
 mod routing;
+mod theme;
 mod world;
 
 use std::io::{self, stdout, Stdout};
@@ -160,6 +161,30 @@ fn main() -> io::Result<()> {
     if let Some(p) = file_path.as_ref() {
         if p.exists() {
             eprintln!("netgrow loaded config from {}", p.display());
+        }
+    }
+
+    // Theme: load from the file config's `theme = "..."` setting if present.
+    // Path is taken as-is if absolute, otherwise resolved relative to the
+    // config file (so theme = "themes/matrix.toml" works alongside the config).
+    if let Some(theme_path) = file.theme.as_ref() {
+        let mut p = std::path::PathBuf::from(theme_path);
+        if p.is_relative() {
+            if let Some(cfg_path) = file_path.as_ref() {
+                if let Some(parent) = cfg_path.parent() {
+                    p = parent.join(&p);
+                }
+            }
+        }
+        match theme::Theme::load(&p) {
+            Ok(t) => {
+                eprintln!("netgrow loaded theme from {}", p.display());
+                theme::install(t);
+            }
+            Err(e) => {
+                eprintln!("netgrow theme load failed: {}", e);
+                return Err(e);
+            }
         }
     }
 

@@ -5,18 +5,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
 use ratatui::Frame;
 
-use crate::world::{InfectionStage, LinkKind, Node, Role, State, World, WorldStats, STRAIN_COUNT};
+use crate::theme::theme;
+use crate::world::{InfectionStage, LinkKind, Node, Role, State, World, WorldStats};
 
 const RIGHT_COL_WIDTH: u16 = 42;
 const HEADER_HEIGHT: u16 = 1;
 const FOOTER_HEIGHT: u16 = 1;
-
-const FRAME_COLOR: Color = Color::Rgb(60, 180, 200);
-const FRAME_ACCENT: Color = Color::Rgb(120, 220, 240);
-/// Muted blue-gray used for ghosts, dead links, separators, and other
-/// low-priority text. Explicit RGB instead of Color::DarkGray because the
-/// ANSI bright-black slot is invisible on common pure-black terminals.
-const GHOST_COLOR: Color = Color::Rgb(95, 105, 130);
 
 #[derive(Clone, Copy)]
 pub struct UiState {
@@ -67,11 +61,11 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
 
     let mesh_block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(FRAME_COLOR))
+        .border_style(Style::default().fg(theme().frame))
         .title(Span::styled(
             " netgrow ",
             Style::default()
-                .fg(FRAME_ACCENT)
+                .fg(theme().frame_accent)
                 .add_modifier(Modifier::BOLD),
         ));
     let mesh_inner = mesh_block.inner(mesh_frame);
@@ -102,18 +96,19 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
 }
 
 fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'static> {
+    let th = theme();
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::styled(
         " netgrow ",
         Style::default()
-            .fg(Color::Black)
-            .bg(FRAME_ACCENT)
+            .fg(th.header_brand_fg)
+            .bg(th.header_brand_bg)
             .add_modifier(Modifier::BOLD),
     ));
     spans.push(Span::raw(" "));
     spans.push(Span::styled(
         format!("t={}", world.tick),
-        Style::default().fg(Color::Rgb(180, 200, 220)),
+        Style::default().fg(th.label),
     ));
     spans.push(sep());
     spans.push(stat_span("nodes", format!("{}", stats.alive + stats.pwned)));
@@ -129,23 +124,21 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
         spans.push(Span::raw("/"));
         spans.push(Span::styled(
             format!("{}x", stats.cross_links),
-            Style::default().fg(Color::Rgb(140, 220, 240)),
+            Style::default().fg(th.cross_link),
         ));
     }
     if stats.dying > 0 {
         spans.push(sep());
         spans.push(Span::styled(
             format!("dying {}", stats.dying),
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(th.pwned).add_modifier(Modifier::BOLD),
         ));
     }
     if stats.packets > 0 {
         spans.push(sep());
         spans.push(Span::styled(
             format!("pkts {}", stats.packets),
-            Style::default().fg(Color::Rgb(120, 240, 255)),
+            Style::default().fg(th.stat_packets),
         ));
     }
     if stats.infected > 0 {
@@ -153,40 +146,41 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
         spans.push(Span::styled(
             format!("inf {}", stats.infected),
             Style::default()
-                .fg(Color::Rgb(220, 120, 240))
+                .fg(th.stat_infected)
                 .add_modifier(Modifier::BOLD),
         ));
     }
     spans.push(sep());
     spans.push(Span::styled(
         format!("seed {}", ui.seed),
-        Style::default().fg(GHOST_COLOR),
+        Style::default().fg(th.ghost),
     ));
     if ui.paused {
         spans.push(sep());
         spans.push(Span::styled(
             " PAUSED ",
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
+                .fg(th.header_brand_fg)
+                .bg(th.honey_reveal)
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(Color::Rgb(10, 20, 30)))
+    Paragraph::new(Line::from(spans)).style(Style::default().bg(th.bar_bg))
 }
 
 fn footer_bar(ui: UiState) -> Paragraph<'static> {
-    let key = |k: &'static str| {
+    let th = theme();
+    let key_bg = th.frame; // softer than the brand bg, reads as a key cap
+    let key = move |k: &'static str| {
         Span::styled(
             format!(" {} ", k),
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Rgb(140, 200, 220))
+                .fg(th.header_brand_fg)
+                .bg(key_bg)
                 .add_modifier(Modifier::BOLD),
         )
     };
-    let lab = |t: &'static str| Span::styled(t, Style::default().fg(Color::Rgb(180, 200, 220)));
+    let lab = move |t: &'static str| Span::styled(t, Style::default().fg(th.label));
     let spans: Vec<Span<'static>> = vec![
         Span::raw(" "),
         key("q"),
@@ -203,53 +197,52 @@ fn footer_bar(ui: UiState) -> Paragraph<'static> {
         Span::raw(" "),
         Span::styled(
             format!("{}ms/tick", ui.tick_ms),
-            Style::default().fg(GHOST_COLOR),
+            Style::default().fg(th.ghost),
         ),
     ];
     Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(Color::Rgb(10, 20, 30)))
+        .style(Style::default().bg(th.bar_bg))
         .alignment(Alignment::Left)
 }
 
 fn stat_span(label: &'static str, value: String) -> Span<'static> {
     Span::styled(
         format!("{} {}", label, value),
-        Style::default().fg(Color::Rgb(200, 220, 240)),
+        Style::default().fg(theme().stat_value),
     )
 }
 
 fn sep() -> Span<'static> {
-    Span::styled(" · ", Style::default().fg(GHOST_COLOR))
+    Span::styled(" · ", Style::default().fg(theme().ghost))
 }
 
 fn stats_block(s: &WorldStats) -> Paragraph<'static> {
+    let th = theme();
     let block = bordered_block(" stats ");
     let line = |label: &'static str, value: String, color: Color| {
         Line::from(vec![
-            Span::styled(format!(" {:<8}", label), Style::default().fg(Color::Rgb(160, 180, 200))),
+            Span::styled(
+                format!(" {:<8}", label),
+                Style::default().fg(th.stat_label),
+            ),
             Span::styled(value, Style::default().fg(color).add_modifier(Modifier::BOLD)),
         ])
     };
+    let alive_color = th.branch_palette.first().copied().unwrap_or(th.value);
+    let branch_color = th.branch_palette.get(1).copied().unwrap_or(th.value);
     let lines = vec![
-        line("alive", format!("{}", s.alive), Color::Rgb(120, 220, 140)),
-        line("pwned", format!("{}", s.pwned), Color::Red),
-        line("dying", format!("{}", s.dying), Color::Rgb(255, 140, 80)),
-        line("dead", format!("{}", s.dead), GHOST_COLOR),
-        line(
-            "branches",
-            format!("{}", s.branches),
-            Color::Rgb(180, 220, 60),
-        ),
-        line(
-            "bridges",
-            format!("{}", s.cross_links),
-            Color::Rgb(140, 220, 240),
-        ),
+        line("alive", format!("{}", s.alive), alive_color),
+        line("pwned", format!("{}", s.pwned), th.pwned),
+        line("dying", format!("{}", s.dying), th.log_cascade),
+        line("dead", format!("{}", s.dead), th.ghost),
+        line("branches", format!("{}", s.branches), branch_color),
+        line("bridges", format!("{}", s.cross_links), th.cross_link),
     ];
     Paragraph::new(lines).block(block)
 }
 
 fn legend_block() -> Paragraph<'static> {
+    let th = theme();
     let block = bordered_block(" roles ");
     let row = |glyph: &'static str, glyph_color: Color, name: &'static str| {
         Line::from(vec![
@@ -259,32 +252,32 @@ fn legend_block() -> Paragraph<'static> {
                 Style::default().fg(glyph_color).add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
-            Span::styled(name, Style::default().fg(Color::Rgb(180, 200, 220))),
+            Span::styled(name, Style::default().fg(th.label)),
         ])
     };
+    let relay_color = th.branch_palette.first().copied().unwrap_or(th.value);
     // Note: honeypots are intentionally absent — they masquerade as relays
     // (●) until tripped, at which point ◈ flashes for 2 ticks only. Same
     // reason worms and patch waves aren't here: transient-only glyphs.
     let lines = vec![
-        row("◆", Color::Cyan, "c2"),
-        row("●", Color::Rgb(120, 220, 140), "relay"),
-        row("◉", Color::Rgb(120, 220, 140), "hardened"),
-        row("◎", Color::Rgb(120, 220, 255), "scanner"),
-        row("▣", Color::Rgb(180, 180, 255), "exfil"),
-        row("◇", Color::Rgb(180, 240, 220), "defender"),
-        row("▓", Color::Rgb(220, 100, 220), "infected"),
-        row("✕", Color::Red, "pwned"),
-        row("·", GHOST_COLOR, "ghost"),
+        row("◆", faction_hue(0), "c2"),
+        row("●", relay_color, "relay"),
+        row("◉", relay_color, "hardened"),
+        row("◎", th.scanner, "scanner"),
+        row("▣", th.exfil, "exfil"),
+        row("◇", th.defender, "defender"),
+        row("▓", strain_hue(0), "infected"),
+        row("✕", th.pwned, "pwned"),
+        row("·", th.ghost, "ghost"),
     ];
     Paragraph::new(lines).block(block)
 }
 
 fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
+    let th = theme();
     let block = bordered_block(" inspect ");
-    let label_style = Style::default().fg(Color::Rgb(150, 170, 200));
-    let value_style = Style::default()
-        .fg(Color::Rgb(220, 240, 255))
-        .add_modifier(Modifier::BOLD);
+    let label_style = Style::default().fg(th.stat_label);
+    let value_style = Style::default().fg(th.value).add_modifier(Modifier::BOLD);
     let row = |label: &'static str, value: String| {
         Line::from(vec![
             Span::styled(format!(" {:<8}", label), label_style),
@@ -295,9 +288,7 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
         Span::styled(" cell ", label_style),
         Span::styled(
             format!("{},{}", pos.0, pos.1),
-            Style::default()
-                .fg(Color::Rgb(255, 220, 80))
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(th.cursor).add_modifier(Modifier::BOLD),
         ),
     ]);
     let mut lines: Vec<Line<'static>> = vec![header];
@@ -306,7 +297,7 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
         None => {
             lines.push(Line::from(Span::styled(
                 " (empty cell)".to_string(),
-                Style::default().fg(GHOST_COLOR),
+                Style::default().fg(theme().ghost),
             )));
         }
         Some(n) => {
@@ -373,80 +364,72 @@ fn log_block(world: &World) -> Paragraph<'static> {
 fn bordered_block(title: &'static str) -> Block<'static> {
     Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(FRAME_COLOR))
+        .border_style(Style::default().fg(theme().frame))
         .title(Span::styled(
             title,
             Style::default()
-                .fg(FRAME_ACCENT)
+                .fg(theme().frame_accent)
                 .add_modifier(Modifier::BOLD),
         ))
 }
 
 fn color_log_line(s: &str) -> Line<'static> {
-    // Classify by distinctive tokens and apply a color + weight.
+    let th = theme();
     let style = if s.contains("HONEYPOT") {
         Style::default()
-            .fg(Color::Black)
-            .bg(Color::Yellow)
+            .fg(th.header_brand_fg)
+            .bg(th.log_honeypot_bg)
             .add_modifier(Modifier::BOLD)
     } else if s.contains("INJECTED") {
         Style::default()
-            .fg(Color::Black)
-            .bg(Color::Rgb(220, 100, 240))
+            .fg(th.header_brand_fg)
+            .bg(th.log_injected_bg)
             .add_modifier(Modifier::BOLD)
     } else if s.contains("necrotic") {
-        Style::default()
-            .fg(Color::Rgb(220, 80, 120))
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(th.log_strain).add_modifier(Modifier::BOLD)
     } else if s.contains("symptomatic") {
-        Style::default()
-            .fg(Color::Rgb(220, 120, 240))
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(th.log_worm).add_modifier(Modifier::BOLD)
     } else if s.starts_with("strain") {
-        Style::default().fg(Color::Rgb(200, 100, 200))
+        Style::default().fg(th.log_strain)
     } else if s.contains("cured") || s.contains("patched") {
-        Style::default()
-            .fg(Color::Rgb(120, 240, 200))
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(th.log_cured).add_modifier(Modifier::BOLD)
     } else if s.starts_with("worm delivered") || s.starts_with("worm launched") {
-        Style::default().fg(Color::Rgb(220, 120, 240))
+        Style::default().fg(th.log_worm)
     } else if s.contains("ZERO-DAY") {
         Style::default()
-            .fg(Color::Black)
-            .bg(Color::Rgb(255, 220, 80))
+            .fg(th.header_brand_fg)
+            .bg(th.log_zero_day_bg)
             .add_modifier(Modifier::BOLD)
     } else if s.contains("mutated") {
         Style::default()
-            .fg(Color::Rgb(255, 140, 230))
+            .fg(th.log_mutated)
             .add_modifier(Modifier::BOLD)
     } else if s.contains("LOST") {
-        Style::default()
-            .fg(Color::Red)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(th.log_lost).add_modifier(Modifier::BOLD)
     } else if s.starts_with("cascade") || s.contains("subtree") {
         Style::default()
-            .fg(Color::Rgb(255, 140, 80))
+            .fg(th.log_cascade)
             .add_modifier(Modifier::BOLD)
     } else if s.contains("hardened") {
         Style::default()
-            .fg(Color::Rgb(140, 220, 255))
+            .fg(th.log_hardened)
             .add_modifier(Modifier::BOLD)
     } else if s.contains("shielded") {
         Style::default()
-            .fg(Color::Rgb(180, 220, 255))
+            .fg(th.log_shielded)
             .add_modifier(Modifier::BOLD)
     } else if s.starts_with("bridge") {
-        Style::default().fg(Color::Rgb(140, 220, 240))
+        Style::default().fg(th.log_bridge)
     } else if s.starts_with("handshake") {
-        Style::default().fg(Color::Rgb(120, 200, 140))
+        Style::default().fg(th.log_handshake)
     } else if s.starts_with("beacon") {
-        Style::default().fg(Color::Rgb(90, 130, 150))
-    } else if s.starts_with("c2 online") {
+        Style::default().fg(th.log_beacon)
+    } else if s.starts_with("c2") {
         Style::default()
-            .fg(Color::Cyan)
+            .fg(th.log_c2_online)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Rgb(180, 200, 220))
+        Style::default().fg(th.log_default)
     };
     Line::from(Span::styled(s.to_string(), style))
 }
@@ -466,19 +449,20 @@ impl<'a> Widget for MeshWidget<'a> {
             let b = &w.nodes[link.b];
             let dying = a.dying_in > 0 || b.dying_in > 0;
             let dead = matches!(a.state, State::Dead) || matches!(b.state, State::Dead);
+            let th = theme();
             let style = if dying {
                 Style::default()
-                    .fg(Color::Red)
+                    .fg(th.pwned)
                     .add_modifier(Modifier::BOLD)
             } else if dead {
-                Style::default().fg(GHOST_COLOR)
+                Style::default().fg(th.ghost)
             } else if matches!(a.state, State::Pwned { .. })
                 || matches!(b.state, State::Pwned { .. })
             {
-                Style::default().fg(Color::Red)
+                Style::default().fg(th.pwned)
             } else if link.kind == LinkKind::Cross {
                 Style::default()
-                    .fg(Color::Rgb(140, 220, 240))
+                    .fg(th.cross_link)
                     .add_modifier(Modifier::DIM)
             } else {
                 Style::default().fg(branch_hue(b.branch_id))
@@ -514,7 +498,7 @@ impl<'a> Widget for MeshWidget<'a> {
                 continue;
             }
             let style = Style::default()
-                .fg(Color::Rgb(120, 240, 200))
+                .fg(theme().patch_wave)
                 .add_modifier(Modifier::BOLD);
             for dy in -r..=r {
                 for dx in -r..=r {
@@ -534,8 +518,7 @@ impl<'a> Widget for MeshWidget<'a> {
                 continue;
             }
             let radius = age.max(1);
-            let dim = 80u8.saturating_sub((age as u8) * 20);
-            let style = Style::default().fg(Color::Rgb(dim, 220, 220));
+            let style = Style::default().fg(theme().ping);
             for dy in -radius..=radius {
                 for dx in -radius..=radius {
                     if dx.abs().max(dy.abs()) != radius {
@@ -560,7 +543,7 @@ impl<'a> Widget for MeshWidget<'a> {
             }
             let glyph = packet_glyph(link, idx);
             let style = Style::default()
-                .fg(Color::Rgb(120, 240, 255))
+                .fg(theme().packet)
                 .add_modifier(Modifier::BOLD);
             put(buf, area, cell, glyph, style);
         }
@@ -611,8 +594,8 @@ impl<'a> Widget for MeshWidget<'a> {
                         };
                         cell.set_symbol(&glyph).set_style(
                             Style::default()
-                                .fg(Color::Black)
-                                .bg(Color::Rgb(255, 220, 80))
+                                .fg(theme().header_brand_fg)
+                                .bg(theme().cursor)
                                 .add_modifier(Modifier::BOLD),
                         );
                     }
@@ -620,7 +603,7 @@ impl<'a> Widget for MeshWidget<'a> {
             }
             // Bracket corners.
             let bracket_style = Style::default()
-                .fg(Color::Rgb(255, 220, 80))
+                .fg(theme().cursor)
                 .add_modifier(Modifier::BOLD);
             put(buf, area, (pos.0 - 1, pos.1 - 1), "┌", bracket_style);
             put(buf, area, (pos.0 + 1, pos.1 - 1), "┐", bracket_style);
@@ -743,10 +726,9 @@ fn infected_glyph(
             )
         }
         InfectionStage::Terminal => {
-            // Always a heavy block, alternating between strain hue and red.
             let st = if tick.is_multiple_of(2) {
                 Style::default()
-                    .fg(Color::Red)
+                    .fg(theme().pwned)
                     .add_modifier(Modifier::BOLD | Modifier::REVERSED)
             } else {
                 Style::default().fg(hue).add_modifier(Modifier::BOLD)
@@ -757,58 +739,39 @@ fn infected_glyph(
 }
 
 fn strain_hue(strain: u8) -> Color {
-    const PALETTE: [Color; 8] = [
-        Color::Rgb(220, 80, 220),
-        Color::Rgb(180, 100, 240),
-        Color::Rgb(230, 120, 200),
-        Color::Rgb(160, 60, 200),
-        Color::Rgb(240, 140, 230),
-        Color::Rgb(200, 100, 170),
-        Color::Rgb(190, 80, 220),
-        Color::Rgb(240, 100, 240),
-    ];
-    PALETTE[(strain as usize) % STRAIN_COUNT]
+    let palette = &theme().strain_palette;
+    if palette.is_empty() {
+        return Color::Magenta;
+    }
+    palette[(strain as usize) % palette.len()]
 }
 
-/// Color of a C2's faction marker. Distinct enough from the branch palette
-/// and the virus magenta range that competing factions read as factions
-/// rather than blending with their own subtree colors.
 fn faction_hue(faction: u8) -> Color {
-    const FACTION_COLORS: [Color; 4] = [
-        Color::Rgb(80, 220, 240),  // cyan — classic single-C2 color
-        Color::Rgb(255, 160, 60),  // orange
-        Color::Rgb(140, 240, 100), // lime
-        Color::Rgb(180, 140, 240), // lavender
-    ];
-    FACTION_COLORS[(faction as usize) % FACTION_COLORS.len()]
+    let palette = &theme().faction_palette;
+    if palette.is_empty() {
+        return Color::Cyan;
+    }
+    palette[(faction as usize) % palette.len()]
 }
 
 fn branch_hue(branch_id: u16) -> Color {
-    // Eight visually distinct hues spread across the wheel. We deliberately
-    // avoid pure red (used for cascades), pure cyan (C2), and the magenta /
-    // pink range (infections) so branches stay readable as their own thing.
-    const PALETTE: [Color; 8] = [
-        Color::Rgb(80, 230, 100),  // green
-        Color::Rgb(180, 240, 60),  // lime
-        Color::Rgb(240, 200, 60),  // gold
-        Color::Rgb(240, 130, 60),  // orange
-        Color::Rgb(80, 240, 200),  // mint
-        Color::Rgb(60, 190, 220),  // teal
-        Color::Rgb(120, 160, 240), // periwinkle
-        Color::Rgb(220, 240, 140), // pale chartreuse
-    ];
-    PALETTE[branch_id as usize % PALETTE.len()]
+    let palette = &theme().branch_palette;
+    if palette.is_empty() {
+        return Color::Green;
+    }
+    palette[(branch_id as usize) % palette.len()]
 }
 
 fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
+    let th = theme();
     if node.dying_in > 0 && !matches!(node.state, State::Dead) {
         let st = if (tick + node.dying_in as u64).is_multiple_of(2) {
             Style::default()
-                .fg(Color::Red)
+                .fg(th.pwned)
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED)
         } else {
             Style::default()
-                .fg(Color::LightRed)
+                .fg(th.dying_alt)
                 .add_modifier(Modifier::BOLD)
         };
         return ("✕", st);
@@ -827,32 +790,30 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                 return (
                     "◈",
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(th.honey_reveal)
                         .add_modifier(Modifier::BOLD | Modifier::REVERSED),
                 );
             }
             if node.mutated_flash > 0 {
                 let st = if (tick + node.mutated_flash as u64).is_multiple_of(2) {
                     Style::default()
-                        .fg(Color::Rgb(255, 120, 220))
+                        .fg(th.mutated_flash_a)
                         .add_modifier(Modifier::BOLD | Modifier::REVERSED)
                 } else {
                     Style::default()
-                        .fg(Color::Rgb(255, 180, 240))
+                        .fg(th.mutated_flash_b)
                         .add_modifier(Modifier::BOLD)
                 };
                 return ("✦", st);
             }
             if node.shield_flash > 0 {
-                // Alternate between a bright shield ring and a reversed flash
-                // so the save is obvious even to a casual glance at the mesh.
                 let st = if (tick + node.shield_flash as u64).is_multiple_of(2) {
                     Style::default()
-                        .fg(Color::Rgb(140, 220, 255))
+                        .fg(th.shield_flash_a)
                         .add_modifier(Modifier::BOLD | Modifier::REVERSED)
                 } else {
                     Style::default()
-                        .fg(Color::Rgb(200, 240, 255))
+                        .fg(th.shield_flash_b)
                         .add_modifier(Modifier::BOLD)
                 };
                 return ("⊕", st);
@@ -873,30 +834,25 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                 Role::Scanner => (
                     "◎",
                     Style::default()
-                        .fg(Color::Rgb(120, 220, 255))
+                        .fg(th.scanner)
                         .add_modifier(if node.hardened { Modifier::BOLD } else { Modifier::empty() }),
                 ),
                 Role::Exfil => (
                     "▣",
                     Style::default()
-                        .fg(Color::Rgb(180, 180, 255))
+                        .fg(th.exfil)
                         .add_modifier(if node.hardened { Modifier::BOLD } else { Modifier::empty() }),
                 ),
                 Role::Honeypot => ("●", Style::default().fg(hue)),
                 Role::Defender => (
                     "◇",
                     Style::default()
-                        .fg(Color::Rgb(180, 240, 220))
+                        .fg(th.defender)
                         .add_modifier(Modifier::BOLD),
                 ),
             };
             if pulse_boost {
-                (
-                    glyph,
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )
+                (glyph, Style::default().fg(th.value).add_modifier(Modifier::BOLD))
             } else {
                 (glyph, base_style)
             }
@@ -904,14 +860,14 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
         State::Pwned { .. } => {
             let st = if tick.is_multiple_of(2) {
                 Style::default()
-                    .fg(Color::Red)
+                    .fg(th.pwned)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::LightRed)
+                Style::default().fg(th.pwned_alt)
             };
             ("✕", st)
         }
-        State::Dead => ("·", Style::default().fg(GHOST_COLOR)),
+        State::Dead => ("·", Style::default().fg(th.ghost)),
     }
 }
 

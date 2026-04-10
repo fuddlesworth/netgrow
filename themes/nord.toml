@@ -1,0 +1,82 @@
+# Nord — cool arctic palette by Sven Greb.
+# https://www.nordtheme.com/
+
+frame          = "#88c0d0"  # nord8 frost
+frame_accent   = "#8fbcbb"  # nord7 frost
+bar_bg         = "#2e3440"  # nord0
+label          = "#d8dee9"  # nord4
+value          = "#eceff4"  # nord6
+ghost          = "#4c566a"  # nord3
+accent         = "#ebcb8b"  # nord13 yellow
+
+header_brand_bg = "#88c0d0"
+header_brand_fg = "#2e3440"
+stat_label      = "#81a1c1"  # nord9
+stat_value      = "#e5e9f0"  # nord5
+stat_packets    = "#88c0d0"
+stat_infected   = "#b48ead"  # nord15 purple
+
+pwned          = "#bf616a"  # nord11 red
+pwned_alt      = "#d08770"  # nord12 orange
+dying_alt      = "#d08770"
+honey_reveal   = "#ebcb8b"  # nord13
+shield_flash_a = "#88c0d0"
+shield_flash_b = "#eceff4"
+mutated_flash_a = "#b48ead"
+mutated_flash_b = "#d8dee9"
+
+scanner  = "#8fbcbb"  # nord7
+exfil    = "#81a1c1"  # nord9
+defender = "#a3be8c"  # nord14 green
+
+patch_wave = "#a3be8c"
+packet     = "#88c0d0"
+cross_link = "#5e81ac"  # nord10
+ping       = "#4c566a"
+cursor     = "#ebcb8b"
+
+branch_palette = [
+  "#a3be8c",  # nord14 green
+  "#8fbcbb",  # nord7 frost
+  "#88c0d0",  # nord8 frost
+  "#81a1c1",  # nord9 frost
+  "#5e81ac",  # nord10 frost
+  "#ebcb8b",  # nord13 yellow
+  "#d08770",  # nord12 orange
+  "#b48ead",  # nord15 purple
+]
+
+faction_palette = [
+  "#88c0d0",  # nord8 frost
+  "#d08770",  # nord12 orange
+  "#a3be8c",  # nord14 green
+  "#b48ead",  # nord15 purple
+]
+
+strain_palette = [
+  "#b48ead",  # nord15 purple
+  "#bf616a",  # nord11 red
+  "#d08770",  # nord12 orange
+  "#b48ead",
+  "#bf616a",
+  "#b48ead",
+  "#d08770",
+  "#b48ead",
+]
+
+log_handshake = "#a3be8c"
+log_beacon    = "#4c566a"
+log_lost      = "#bf616a"
+log_hardened  = "#88c0d0"
+log_shielded  = "#8fbcbb"
+log_cured     = "#a3be8c"
+log_cascade   = "#d08770"
+log_strain    = "#b48ead"
+log_worm      = "#b48ead"
+log_mutated   = "#b48ead"
+log_bridge    = "#5e81ac"
+log_c2_online = "#88c0d0"
+log_default   = "#d8dee9"
+log_zero_day_bg = "#ebcb8b"
+log_honeypot_bg = "#ebcb8b"
+log_injected_bg = "#b48ead"

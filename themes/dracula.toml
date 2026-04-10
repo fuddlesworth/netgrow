@@ -1,0 +1,82 @@
+# Dracula — high-contrast purple/pink/cyan palette by Zeno Rocha.
+# https://draculatheme.com/
+
+frame          = "#bd93f9"  # purple
+frame_accent   = "#8be9fd"  # cyan
+bar_bg         = "#282a36"  # background
+label          = "#f8f8f2"  # foreground
+value          = "#f8f8f2"
+ghost          = "#6272a4"  # comment
+accent         = "#f1fa8c"  # yellow
+
+header_brand_bg = "#bd93f9"
+header_brand_fg = "#282a36"
+stat_label      = "#6272a4"
+stat_value      = "#f8f8f2"
+stat_packets    = "#8be9fd"
+stat_infected   = "#ff79c6"  # pink
+
+pwned          = "#ff5555"  # red
+pwned_alt      = "#ff79c6"  # pink
+dying_alt      = "#ffb86c"  # orange
+honey_reveal   = "#f1fa8c"
+shield_flash_a = "#8be9fd"
+shield_flash_b = "#bd93f9"
+mutated_flash_a = "#ff79c6"
+mutated_flash_b = "#bd93f9"
+
+scanner  = "#8be9fd"  # cyan
+exfil    = "#bd93f9"  # purple
+defender = "#50fa7b"  # green
+
+patch_wave = "#50fa7b"
+packet     = "#8be9fd"
+cross_link = "#6272a4"
+ping       = "#6272a4"
+cursor     = "#f1fa8c"
+
+branch_palette = [
+  "#50fa7b",  # green
+  "#8be9fd",  # cyan
+  "#ff79c6",  # pink
+  "#bd93f9",  # purple
+  "#f1fa8c",  # yellow
+  "#ffb86c",  # orange
+  "#ff5555",  # red
+  "#f8f8f2",  # fg
+]
+
+faction_palette = [
+  "#8be9fd",  # cyan
+  "#ffb86c",  # orange
+  "#50fa7b",  # green
+  "#bd93f9",  # purple
+]
+
+strain_palette = [
+  "#ff79c6",  # pink
+  "#bd93f9",  # purple
+  "#ff5555",  # red
+  "#ff79c6",
+  "#bd93f9",
+  "#ffb86c",
+  "#ff79c6",
+  "#bd93f9",
+]
+
+log_handshake = "#50fa7b"
+log_beacon    = "#6272a4"
+log_lost      = "#ff5555"
+log_hardened  = "#8be9fd"
+log_shielded  = "#bd93f9"
+log_cured     = "#50fa7b"
+log_cascade   = "#ffb86c"
+log_strain    = "#ff79c6"
+log_worm      = "#ff79c6"
+log_mutated   = "#ff79c6"
+log_bridge    = "#6272a4"
+log_c2_online = "#8be9fd"
+log_default   = "#f8f8f2"
+log_zero_day_bg = "#f1fa8c"
+log_honeypot_bg = "#f1fa8c"
+log_injected_bg = "#ff79c6"

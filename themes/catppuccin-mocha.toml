@@ -1,0 +1,82 @@
+# Catppuccin Mocha — pastel dark palette by the Catppuccin org.
+# https://catppuccin.com/
+
+frame          = "#89b4fa"  # blue
+frame_accent   = "#94e2d5"  # teal
+bar_bg         = "#1e1e2e"  # base
+label          = "#cdd6f4"  # text
+value          = "#cdd6f4"
+ghost          = "#6c7086"  # overlay0
+accent         = "#f9e2af"  # yellow
+
+header_brand_bg = "#89b4fa"
+header_brand_fg = "#1e1e2e"
+stat_label      = "#a6adc8"  # subtext0
+stat_value      = "#cdd6f4"
+stat_packets    = "#89dceb"  # sky
+stat_infected   = "#f5c2e7"  # pink
+
+pwned          = "#f38ba8"  # red
+pwned_alt      = "#eba0ac"  # maroon
+dying_alt      = "#fab387"  # peach
+honey_reveal   = "#f9e2af"
+shield_flash_a = "#94e2d5"
+shield_flash_b = "#89dceb"
+mutated_flash_a = "#f5c2e7"
+mutated_flash_b = "#cba6f7"
+
+scanner  = "#89dceb"  # sky
+exfil    = "#cba6f7"  # mauve
+defender = "#a6e3a1"  # green
+
+patch_wave = "#a6e3a1"
+packet     = "#89dceb"
+cross_link = "#74c7ec"  # sapphire
+ping       = "#6c7086"
+cursor     = "#f9e2af"
+
+branch_palette = [
+  "#a6e3a1",  # green
+  "#94e2d5",  # teal
+  "#89dceb",  # sky
+  "#74c7ec",  # sapphire
+  "#89b4fa",  # blue
+  "#b4befe",  # lavender
+  "#fab387",  # peach
+  "#f9e2af",  # yellow
+]
+
+faction_palette = [
+  "#89b4fa",  # blue
+  "#fab387",  # peach
+  "#a6e3a1",  # green
+  "#cba6f7",  # mauve
+]
+
+strain_palette = [
+  "#f5c2e7",  # pink
+  "#cba6f7",  # mauve
+  "#f38ba8",  # red
+  "#eba0ac",  # maroon
+  "#f5c2e7",
+  "#cba6f7",
+  "#f5c2e7",
+  "#cba6f7",
+]
+
+log_handshake = "#a6e3a1"
+log_beacon    = "#6c7086"
+log_lost      = "#f38ba8"
+log_hardened  = "#89dceb"
+log_shielded  = "#94e2d5"
+log_cured     = "#a6e3a1"
+log_cascade   = "#fab387"
+log_strain    = "#f5c2e7"
+log_worm      = "#f5c2e7"
+log_mutated   = "#cba6f7"
+log_bridge    = "#74c7ec"
+log_c2_online = "#89b4fa"
+log_default   = "#cdd6f4"
+log_zero_day_bg = "#f9e2af"
+log_honeypot_bg = "#f9e2af"
+log_injected_bg = "#f5c2e7"

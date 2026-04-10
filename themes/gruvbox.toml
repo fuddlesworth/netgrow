@@ -1,0 +1,82 @@
+# Gruvbox Dark — warm retro palette by Pavel Pertsev.
+# Hex values from the canonical gruvbox spec.
+
+frame          = "#458588"  # blue
+frame_accent   = "#8ec07c"  # aqua
+bar_bg         = "#1d2021"  # bg0_h
+label          = "#ebdbb2"  # fg1
+value          = "#fbf1c7"  # fg0
+ghost          = "#7c6f64"  # bg4
+accent         = "#fabd2f"  # yellow
+
+header_brand_bg = "#fabd2f"
+header_brand_fg = "#1d2021"
+stat_label      = "#a89984"  # gray
+stat_value      = "#ebdbb2"
+stat_packets    = "#83a598"  # blue
+stat_infected   = "#d3869b"  # purple
+
+pwned          = "#fb4934"  # red
+pwned_alt      = "#cc241d"  # red dim
+dying_alt      = "#fe8019"  # orange
+honey_reveal   = "#fabd2f"  # yellow
+shield_flash_a = "#83a598"  # blue
+shield_flash_b = "#bdae93"  # bg5
+mutated_flash_a = "#d3869b"  # purple
+mutated_flash_b = "#b16286"  # purple dim
+
+scanner  = "#83a598"  # blue
+exfil    = "#d3869b"  # purple
+defender = "#8ec07c"  # aqua
+
+patch_wave = "#b8bb26"  # green
+packet     = "#8ec07c"  # aqua
+cross_link = "#458588"  # blue dim
+ping       = "#83a598"
+cursor     = "#fabd2f"
+
+branch_palette = [
+  "#b8bb26",  # green
+  "#fabd2f",  # yellow
+  "#fe8019",  # orange
+  "#8ec07c",  # aqua
+  "#83a598",  # blue
+  "#d3869b",  # purple
+  "#689d6a",  # green dim
+  "#d79921",  # yellow dim
+]
+
+faction_palette = [
+  "#8ec07c",  # aqua
+  "#fe8019",  # orange
+  "#b8bb26",  # green
+  "#d3869b",  # purple
+]
+
+strain_palette = [
+  "#d3869b",  # purple
+  "#b16286",  # purple dim
+  "#cc241d",  # red dim
+  "#fb4934",  # red
+  "#d65d0e",  # orange dim
+  "#fe8019",  # orange
+  "#d79921",  # yellow dim
+  "#d3869b",
+]
+
+log_handshake = "#b8bb26"
+log_beacon    = "#7c6f64"
+log_lost      = "#fb4934"
+log_hardened  = "#83a598"
+log_shielded  = "#bdae93"
+log_cured     = "#b8bb26"
+log_cascade   = "#fe8019"
+log_strain    = "#d3869b"
+log_worm      = "#b16286"
+log_mutated   = "#d3869b"
+log_bridge    = "#458588"
+log_c2_online = "#8ec07c"
+log_default   = "#ebdbb2"
+log_zero_day_bg = "#fabd2f"
+log_honeypot_bg = "#fabd2f"
+log_injected_bg = "#d3869b"
