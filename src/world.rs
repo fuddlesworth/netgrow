@@ -468,6 +468,9 @@ pub struct World {
     /// STRAIN_NAME_POOL using the seeded RNG, so a fixed seed always
     /// produces the same strain identities.
     pub strain_names: [&'static str; STRAIN_COUNT],
+    /// Per-faction running stats. Indexed by faction id and sized to
+    /// c2_count at World::new.
+    pub faction_stats: Vec<FactionStats>,
 }
 
 impl World {
@@ -523,6 +526,27 @@ const DIRS: [(i16, i16); 8] = [
     (-1, 1),
     (-1, -1),
 ];
+
+/// Running tally of notable events per faction. Used for the header
+/// prestige readout and the end-of-run summary.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FactionStats {
+    pub spawned: u32,
+    pub lost: u32,
+    pub honeys_tripped: u32,
+    pub infections_cured: u32,
+}
+
+impl FactionStats {
+    /// Composite "prestige" score. Positive for growth, negative for
+    /// churn. Honeypot traps and cures are rewarded so defense-
+    /// leaning factions can still score well without hoarding nodes.
+    pub fn score(&self) -> i32 {
+        self.spawned as i32 - 3 * (self.lost as i32)
+            + 5 * (self.honeys_tripped as i32)
+            + 2 * (self.infections_cured as i32)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorldStats {
@@ -628,6 +652,7 @@ impl World {
             next_branch_id: 1,
             storm_until: 0,
             strain_names,
+            faction_stats: vec![FactionStats::default(); count],
         }
     }
 
@@ -988,6 +1013,9 @@ impl World {
             node.pwn_resist = self.cfg.tower_pwn_resist;
         }
         self.nodes.push(node);
+        if let Some(s) = self.faction_stats.get_mut(faction as usize) {
+            s.spawned += 1;
+        }
         self.occupied.insert(cand);
         self.links.push(Link {
             a: parent_id,
@@ -1192,7 +1220,7 @@ impl World {
         if defenders.is_empty() {
             return;
         }
-        let mut cured_positions: Vec<(i16, i16)> = Vec::new();
+        let mut cured_positions: Vec<((i16, i16), u8)> = Vec::new();
         for (id, dpos) in defenders {
             self.nodes[id].role_cooldown = period;
             self.nodes[id].pulse = 2;
@@ -1208,15 +1236,18 @@ impl World {
                     continue;
                 }
                 if inf.cure_resist <= 1 {
-                    cured_positions.push(n.pos);
+                    cured_positions.push((n.pos, n.faction));
                     n.infection = None;
                 } else {
                     inf.cure_resist -= 1;
                 }
             }
         }
-        for pos in cured_positions {
+        for (pos, faction) in cured_positions {
             self.log_node(pos, "patched");
+            if let Some(s) = self.faction_stats.get_mut(faction as usize) {
+                s.infections_cured += 1;
+            }
         }
     }
 
@@ -1509,7 +1540,7 @@ impl World {
             .iter()
             .map(|w| (w.origin.0, w.origin.1, w.radius))
             .collect();
-        let mut cured: Vec<(i16, i16)> = Vec::new();
+        let mut cured: Vec<((i16, i16), u8)> = Vec::new();
         for n in self.nodes.iter_mut() {
             if n.infection.is_none() {
                 continue;
@@ -1524,7 +1555,7 @@ impl World {
                         break;
                     };
                     if inf.cure_resist <= 1 {
-                        cured.push(n.pos);
+                        cured.push((n.pos, n.faction));
                         n.infection = None;
                         break;
                     } else {
@@ -1534,8 +1565,11 @@ impl World {
             }
         }
         self.patch_waves.retain(|w| w.radius <= max_r);
-        for pos in cured {
+        for (pos, faction) in cured {
             self.log_node(pos, "cured");
+            if let Some(s) = self.faction_stats.get_mut(faction as usize) {
+                s.infections_cured += 1;
+            }
         }
     }
 
@@ -1960,13 +1994,21 @@ impl World {
                     node.state = State::Pwned {
                         ticks_left: self.cfg.pwned_flash_ticks,
                     };
+                    let faction = node.faction;
                     let (a, b) = octet_pair(pos);
                     self.push_log(format!("HONEYPOT 10.0.{}.{} TRIPPED", a, b));
+                    if let Some(s) = self.faction_stats.get_mut(faction as usize) {
+                        s.honeys_tripped += 1;
+                    }
                 } else {
                     node.state = State::Pwned {
                         ticks_left: self.cfg.pwned_flash_ticks,
                     };
+                    let faction = node.faction;
                     self.log_node(pos, "LOST");
+                    if let Some(s) = self.faction_stats.get_mut(faction as usize) {
+                        s.lost += 1;
+                    }
                     // Trace the exploit chain back toward C2 so the
                     // path the attacker 'came from' glows red for a
                     // few ticks before the cascade catches up.
@@ -2209,7 +2251,11 @@ impl World {
             return;
         }
         for id in &newly_dead {
+            let faction = self.nodes[*id].faction;
             self.nodes[*id].state = State::Dead;
+            if let Some(s) = self.faction_stats.get_mut(faction as usize) {
+                s.lost += 1;
+            }
         }
         // Free cells of links that now touch a Dead endpoint so territory reopens.
         let dead: HashSet<NodeId> = self

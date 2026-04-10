@@ -149,7 +149,19 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
     spans.push(stat_span("nodes", format!("{}", stats.alive + stats.pwned)));
     if stats.factions > 1 {
         spans.push(sep());
-        spans.push(stat_span("factions", format!("{}", stats.factions)));
+        // Prestige readout: compact per-faction score, colored by faction
+        // hue. Skips factions with no stats so idle hue slots stay quiet.
+        for (i, fs) in world.faction_stats.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw(" "));
+            }
+            spans.push(Span::styled(
+                format!("F{}:{:+}", i, fs.score()),
+                Style::default()
+                    .fg(faction_hue(i as u8))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
     }
     spans.push(sep());
     spans.push(stat_span("branches", format!("{}", stats.branches)));

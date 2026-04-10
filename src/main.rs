@@ -401,5 +401,19 @@ fn main() -> io::Result<()> {
         mesh_bounds = render::mesh_bounds(terminal.size()?);
     }
 
+    // Drop the terminal guard before printing the session summary so
+    // the alternate screen exits and the text lands in the user's
+    // normal scrollback. `_guard` going out of scope here handles that.
+    drop(_guard);
+    eprintln!("\nnetgrow session summary  seed={}", seed);
+    eprintln!("ticks  {}", world.tick);
+    eprintln!("era    {}", world.epoch_name());
+    for (i, fs) in world.faction_stats.iter().enumerate() {
+        eprintln!(
+            "F{}  score {:+}  spawned {}  lost {}  traps {}  cured {}",
+            i, fs.score(), fs.spawned, fs.lost, fs.honeys_tripped, fs.infections_cured
+        );
+    }
+
     Ok(())
 }
