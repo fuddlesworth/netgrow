@@ -110,6 +110,22 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
         format!("t={}", world.tick),
         Style::default().fg(th.label),
     ));
+    if world.cfg.day_night_period > 0 {
+        spans.push(sep());
+        if world.is_night() {
+            spans.push(Span::styled(
+                "☾ night",
+                Style::default()
+                    .fg(th.stat_packets)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled(
+                "☀ day",
+                Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
     spans.push(sep());
     spans.push(stat_span("nodes", format!("{}", stats.alive + stats.pwned)));
     if stats.factions > 1 {
@@ -462,6 +478,12 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default()
             .fg(th.log_c2_online)
             .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("night falls") {
+        Style::default()
+            .fg(th.stat_packets)
+            .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("day breaks") {
+        Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(th.log_default)
     };

@@ -109,6 +109,11 @@ struct Cli {
     /// independent reachability cascade.
     #[arg(long, default_value_t = 2)]
     c2_count: u8,
+    /// Ticks per full day/night cycle. Spawn and loss rates oscillate
+    /// across this period, creating visible waves of activity. Set to 0
+    /// to disable the effect entirely.
+    #[arg(long, default_value_t = 600)]
+    day_night_period: u64,
 }
 
 struct TerminalGuard;
@@ -256,6 +261,11 @@ fn main() -> io::Result<()> {
     let c2_spawn_bias = pick_f32("c2_spawn_bias", cli.c2_spawn_bias, file.c2_spawn_bias);
     let fork_rate = pick_f32("fork_rate", cli.fork_rate, file.fork_rate);
     let c2_count = pick_u8("c2_count", cli.c2_count, file.c2_count);
+    let day_night_period = pick_u64(
+        "day_night_period",
+        cli.day_night_period,
+        file.day_night_period,
+    );
 
     let seed = cli.seed.or(file.seed).unwrap_or_else(rand::random);
     eprintln!("netgrow seed = {}", seed);
@@ -289,6 +299,7 @@ fn main() -> io::Result<()> {
         c2_spawn_bias,
         fork_rate,
         c2_count,
+        day_night_period,
         ..Config::default()
     };
     if disable_virus {

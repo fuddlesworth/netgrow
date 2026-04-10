@@ -256,6 +256,14 @@ pub struct Config {
     /// Number of C2 nodes / factions to spawn at the start of the run.
     /// 1 = classic single botnet; 2+ = competing factions.
     pub c2_count: u8,
+    /// Length of a full day/night cycle in ticks. Spawn and loss rates
+    /// oscillate across this period, creating visible waves of activity.
+    /// 0 disables the effect entirely.
+    pub day_night_period: u64,
+    /// Multiplier applied to p_spawn during the night half of the cycle.
+    pub night_spawn_mult: f32,
+    /// Multiplier applied to p_loss during the night half of the cycle.
+    pub night_loss_mult: f32,
 }
 
 impl Default for Config {
@@ -298,6 +306,9 @@ impl Default for Config {
             // simple. The CLI defaults to 2 so the released binary feels
             // like factions are "on".
             c2_count: 1,
+            day_night_period: 600,
+            night_spawn_mult: 1.6,
+            night_loss_mult: 1.5,
         }
     }
 }
@@ -332,6 +343,16 @@ impl World {
 
     pub fn is_c2(&self, id: NodeId) -> bool {
         self.c2_nodes.contains(&id)
+    }
+
+    /// True during the night half of the day/night cycle. When the period
+    /// is zero the cycle is disabled and this always returns false.
+    pub fn is_night(&self) -> bool {
+        let period = self.cfg.day_night_period;
+        if period == 0 {
+            return false;
+        }
+        (self.tick % period) >= period / 2
     }
 }
 
@@ -443,6 +464,22 @@ impl World {
 
     pub fn tick(&mut self, bounds: (i16, i16)) {
         self.bounds = bounds;
+
+        // Day/night transition detection. Log the change before the tick
+        // so operators can see the phase swap lined up with the new events.
+        let period = self.cfg.day_night_period;
+        if period > 0 && self.tick > 0 {
+            let prev = self.tick.saturating_sub(1) % period >= period / 2;
+            let curr = self.tick % period >= period / 2;
+            if prev != curr {
+                let msg = if curr {
+                    "night falls — activity spikes"
+                } else {
+                    "day breaks — mesh settles"
+                };
+                self.push_log(msg.to_string());
+            }
+        }
 
         // Phase 1: growth — add new nodes and extend link animations.
         self.try_spawn();
@@ -621,7 +658,13 @@ impl World {
         if self.nodes.len() >= self.cfg.max_nodes {
             return;
         }
-        if !self.rng.gen_bool(self.cfg.p_spawn as f64) {
+        let spawn_mult = if self.is_night() {
+            self.cfg.night_spawn_mult
+        } else {
+            1.0
+        };
+        let effective_spawn = (self.cfg.p_spawn * spawn_mult).clamp(0.0, 1.0);
+        if !self.rng.gen_bool(effective_spawn as f64) {
             return;
         }
 
@@ -1566,7 +1609,13 @@ impl World {
         }
 
         // Pick a new victim?
-        if self.rng.gen_bool(self.cfg.p_loss as f64) {
+        let loss_mult = if self.is_night() {
+            self.cfg.night_loss_mult
+        } else {
+            1.0
+        };
+        let effective_loss = (self.cfg.p_loss * loss_mult).clamp(0.0, 1.0);
+        if self.rng.gen_bool(effective_loss as f64) {
             let alive_ids: Vec<NodeId> = self
                 .nodes
                 .iter()
@@ -2359,6 +2408,24 @@ mod tests {
         assert!(matches!(w.nodes[child0].state, State::Dead));
         assert!(matches!(w.nodes[child1].state, State::Alive));
         assert!(matches!(w.nodes[f1].state, State::Alive));
+    }
+
+    #[test]
+    fn day_night_cycle_flips_at_half_period() {
+        let cfg = Config {
+            day_night_period: 100,
+            ..Config::default()
+        };
+        let mut w = World::new(50, (80, 30), cfg);
+        assert!(!w.is_night(), "starts in day phase");
+        w.tick = 49;
+        assert!(!w.is_night(), "still day just before midpoint");
+        w.tick = 50;
+        assert!(w.is_night(), "night at midpoint");
+        w.tick = 99;
+        assert!(w.is_night(), "still night at period end");
+        w.tick = 100;
+        assert!(!w.is_night(), "day at next period start");
     }
 
     #[test]

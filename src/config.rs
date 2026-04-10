@@ -37,6 +37,7 @@ pub struct FileConfig {
     pub c2_spawn_bias: Option<f32>,
     pub fork_rate: Option<f32>,
     pub c2_count: Option<u8>,
+    pub day_night_period: Option<u64>,
 
     /// Optional path to a theme file. Reserved for the next commit;
     /// currently parsed but unused.
