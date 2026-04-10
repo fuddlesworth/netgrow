@@ -241,6 +241,17 @@ pub struct Worm {
     pub strain: u8,
 }
 
+/// Rare visual-only event: a dashed braille line flickering briefly
+/// between two random alive mesh cells. Pure flavor, no effect on
+/// routing or reachability.
+#[derive(Clone, Debug)]
+pub struct Wormhole {
+    pub a: (i16, i16),
+    pub b: (i16, i16),
+    pub age: u16,
+    pub life: u16,
+}
+
 /// Rare sweeping event — a line of "hostile traffic" that moves across
 /// the mesh from one edge to the opposite edge, spiking role cooldowns
 /// on any node it passes over.
@@ -392,6 +403,10 @@ pub struct Config {
     /// Number of ticks added to role_cooldown on any node the wave
     /// sweeps across.
     pub ddos_stun_ticks: u16,
+    /// Ticks between wormhole spawn rolls.
+    pub wormhole_period: u64,
+    pub wormhole_chance: f32,
+    pub wormhole_life_ticks: u16,
     /// Maximum Chebyshev distance from any C2 at which a Tower may
     /// spawn. Spawns rolling a Tower role beyond this distance fall
     /// back to Relay, so fortified cores stay near their faction hub.
@@ -482,6 +497,9 @@ impl Default for Config {
             ddos_period: 1200,
             ddos_chance: 0.4,
             ddos_stun_ticks: 60,
+            wormhole_period: 800,
+            wormhole_chance: 0.5,
+            wormhole_life_ticks: 20,
             tower_spawn_radius: 10,
             tower_pwn_resist: 2,
             proxy_radius: 8,
@@ -564,6 +582,7 @@ pub struct World {
     pub sparks: Vec<CascadeSpark>,
     pub shockwaves: Vec<CascadeShockwave>,
     pub ddos_waves: Vec<DdosWave>,
+    pub wormholes: Vec<Wormhole>,
     pub next_branch_id: u16,
     /// Tick at which the current network storm ends. 0 if no storm is
     /// active. Storms spike both spawn and loss rates for a short burst.
@@ -833,6 +852,7 @@ impl World {
             sparks: Vec::new(),
             shockwaves: Vec::new(),
             ddos_waves: Vec::new(),
+            wormholes: Vec::new(),
             next_branch_id: 1,
             storm_until: 0,
             strain_names,
@@ -882,6 +902,8 @@ impl World {
         self.maybe_storm();
         self.maybe_ddos();
         self.advance_ddos_waves();
+        self.maybe_wormhole();
+        self.advance_wormholes();
 
         // Sample faction alive counts for the header sparkline.
         if self.tick.is_multiple_of(FACTION_SAMPLE_PERIOD) {
@@ -1568,6 +1590,62 @@ impl World {
             link.load = link.load.saturating_sub(1);
             link.breach_ttl = link.breach_ttl.saturating_sub(1);
         }
+    }
+
+    fn maybe_wormhole(&mut self) {
+        let period = self.cfg.wormhole_period;
+        if period == 0 || self.cfg.wormhole_chance <= 0.0 || self.tick == 0 {
+            return;
+        }
+        if !self.tick.is_multiple_of(period) {
+            return;
+        }
+        if !self.rng.gen_bool(self.cfg.wormhole_chance as f64) {
+            return;
+        }
+        // Pick two distinct alive nodes to link.
+        let alive: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                if matches!(n.state, State::Alive) && !self.is_c2(i) {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if alive.len() < 2 {
+            return;
+        }
+        let a = alive[self.rng.gen_range(0..alive.len())];
+        let mut b = alive[self.rng.gen_range(0..alive.len())];
+        while b == a {
+            b = alive[self.rng.gen_range(0..alive.len())];
+        }
+        let a_pos = self.nodes[a].pos;
+        let b_pos = self.nodes[b].pos;
+        let life = self.cfg.wormhole_life_ticks;
+        self.wormholes.push(Wormhole {
+            a: a_pos,
+            b: b_pos,
+            age: 0,
+            life,
+        });
+        let (oa1, oa2) = octet_pair(a_pos);
+        let (ob1, ob2) = octet_pair(b_pos);
+        self.push_log(format!(
+            "wormhole 10.0.{}.{} ↔ 10.0.{}.{}",
+            oa1, oa2, ob1, ob2
+        ));
+    }
+
+    fn advance_wormholes(&mut self) {
+        for wh in self.wormholes.iter_mut() {
+            wh.age = wh.age.saturating_add(1);
+        }
+        self.wormholes.retain(|w| w.age < w.life);
     }
 
     fn maybe_ddos(&mut self) {

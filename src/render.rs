@@ -675,6 +675,10 @@ fn color_log_line(s: &str) -> Line<'static> {
             .add_modifier(Modifier::BOLD)
     } else if s.starts_with("bridge") {
         Style::default().fg(th.log_bridge)
+    } else if s.starts_with("wormhole") {
+        Style::default()
+            .fg(th.frame_accent)
+            .add_modifier(Modifier::BOLD)
     } else if s.starts_with("handshake") {
         Style::default().fg(th.log_handshake)
     } else if s.starts_with("beacon") {
@@ -947,6 +951,57 @@ impl<'a> Widget for MeshWidget<'a> {
         for node in &w.nodes {
             let (glyph, style) = node_glyph(node, w.tick);
             put(buf, area, node.pos, glyph, style);
+        }
+
+        // 4. Wormhole dashed lines — purely visual flash connecting two
+        // random alive cells. Rendered as dim braille dots along a
+        // Bresenham line so it looks like a rift opening briefly.
+        for wh in &w.wormholes {
+            // Fade in then fade out: bold at mid-life, dim at edges.
+            let life = wh.life.max(1);
+            let mid = life / 2;
+            let dist_from_mid = (wh.age as i32 - mid as i32).unsigned_abs();
+            let intense = dist_from_mid < (mid / 2) as u32;
+            let style = if intense {
+                Style::default()
+                    .fg(theme().frame_accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(theme().frame_accent)
+                    .add_modifier(Modifier::DIM)
+            };
+            // Bresenham line between the two endpoints.
+            let (mut x0, mut y0) = (wh.a.0 as i32, wh.a.1 as i32);
+            let (x1, y1) = (wh.b.0 as i32, wh.b.1 as i32);
+            let dx = (x1 - x0).abs();
+            let dy = -(y1 - y0).abs();
+            let sx = if x0 < x1 { 1 } else { -1 };
+            let sy = if y0 < y1 { 1 } else { -1 };
+            let mut err = dx + dy;
+            let mut step = 0u32;
+            loop {
+                // Draw every 3rd cell so the line reads as dashed.
+                if step.is_multiple_of(3)
+                    && (x0, y0) != (wh.a.0 as i32, wh.a.1 as i32)
+                    && (x0, y0) != (x1, y1)
+                {
+                    put(buf, area, (x0 as i16, y0 as i16), "⠒", style);
+                }
+                if x0 == x1 && y0 == y1 {
+                    break;
+                }
+                let e2 = 2 * err;
+                if e2 >= dy {
+                    err += dy;
+                    x0 += sx;
+                }
+                if e2 <= dx {
+                    err += dx;
+                    y0 += sy;
+                }
+                step += 1;
+            }
         }
 
         // 4a. DDoS wave front — a line of bold braille blocks across
