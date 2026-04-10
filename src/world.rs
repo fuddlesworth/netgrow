@@ -1,11 +1,28 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 use crate::routing;
 
 pub type NodeId = usize;
+
+/// Number of distinct virus strains. Used by strain-indexed palettes in
+/// render and by the modular wraparound in spread-tally logic.
+pub const STRAIN_COUNT: usize = 8;
+
+/// Worms advance one cell every N sim ticks so each cell stays on-screen
+/// long enough to see.
+const WORM_STEP_INTERVAL: u64 = 2;
+
+/// Zero-day event weights. Rolls `0.0..1.0`: outbreak below the first
+/// threshold, emergency patch below the second, immune breakthrough above.
+const ZERO_DAY_OUTBREAK_WEIGHT: f32 = 0.6;
+const ZERO_DAY_PATCH_WEIGHT: f32 = 0.9;
+const ZERO_DAY_OUTBREAK_MIN: u32 = 3;
+const ZERO_DAY_OUTBREAK_MAX: u32 = 5;
+const ZERO_DAY_MIN_ALIVE: usize = 10;
 
 #[derive(Clone, Copy, Debug)]
 pub enum State {
@@ -236,7 +253,10 @@ impl Default for Config {
             virus_incubation_ticks: 30,
             virus_active_ticks: 80,
             virus_terminal_ticks: 20,
-            virus_cure_resist: 4,
+            // With the width-1 patch wave (post-bugfix) each wave decrements
+            // cure_resist exactly once per pass. Set to 2 so infections clear
+            // after two heartbeat sweeps, matching the pre-fix feel.
+            virus_cure_resist: 2,
             virus_seed_rate: 0.004,
             worm_spawn_rate: 0.15,
             patch_wave_radius: 10,
@@ -349,21 +369,34 @@ impl World {
     pub fn tick(&mut self, bounds: (i16, i16)) {
         self.bounds = bounds;
 
+        // Phase 1: growth — add new nodes and extend link animations.
         self.try_spawn();
         self.advance_links();
+
+        // Phase 2: traveler motion — anything moving along existing links.
         self.advance_pings();
         self.advance_packets();
         self.advance_worms();
         self.advance_patch_waves();
+
+        // Phase 3: periodic sweeps + per-node upkeep.
         self.heartbeat();
         self.advance_role_cooldowns();
         self.maybe_mutate();
         self.maybe_zero_day();
+
+        // Phase 4: role-driven emissions. Must run after cooldowns so the
+        // period timers have already been decremented for this tick.
         self.fire_scanner_pings();
         self.fire_exfil_packets();
+
+        // Phase 5: infection dynamics — stage progression, spread, seeding,
+        // and worm launches from active carriers.
         self.advance_infections();
         self.maybe_spawn_worms();
         self.maybe_seed_infection();
+
+        // Phase 6: loss, cascade, and mesh repair.
         self.advance_pwned_and_loss();
         self.advance_dying();
         self.maybe_reconnect();
@@ -669,8 +702,7 @@ impl World {
             }
             self.push_log(format!("beacon sweep @ t={}", self.tick));
             for pos in newly_hardened {
-                let (a, b) = octet_pair(pos);
-                self.push_log(format!("node 10.0.{}.{} hardened", a, b));
+                self.log_node(pos, "hardened");
             }
         } else {
             for n in self.nodes.iter_mut() {
@@ -829,7 +861,7 @@ impl World {
         // Worms crawl at half the sim rate so each cell is visible long enough
         // to register. On off-ticks we still run the compromised-link drop
         // check so dead links clean up promptly.
-        let move_tick = self.tick.is_multiple_of(2);
+        let move_tick = self.tick.is_multiple_of(WORM_STEP_INTERVAL);
         let cure_resist = self.cfg.virus_cure_resist;
         let c2 = self.c2;
         let mut keep: Vec<Worm> = Vec::with_capacity(self.worms.len());
@@ -986,9 +1018,10 @@ impl World {
             }
             for &(ox, oy, r) in &geo {
                 let dist = (n.pos.0 - ox).abs().max((n.pos.1 - oy).abs());
-                // Hit by the wave front or the trailing cell (annulus of
-                // width 2) so fast-growing rings don't skip over nodes.
-                if dist == r || dist == r - 1 {
+                // The wave front is a single ring at Chebyshev distance == r.
+                // Each node sees the wave exactly once per pass, so a single
+                // wave decrements cure_resist by exactly 1.
+                if dist == r {
                     let Some(inf) = n.infection.as_mut() else {
                         break;
                     };
@@ -1004,8 +1037,7 @@ impl World {
         }
         self.patch_waves.retain(|w| w.radius <= max_r);
         for pos in cured {
-            let (a, b) = octet_pair(pos);
-            self.push_log(format!("node 10.0.{}.{} cured", a, b));
+            self.log_node(pos, "cured");
         }
     }
 
@@ -1066,15 +1098,21 @@ impl World {
                 if !matches!(n.state, State::Alive) || n.infection.is_some() {
                     continue;
                 }
+                // Honeypots are immune so the infection glyph never reveals
+                // their role. They remain ambush traps until something
+                // external trips them.
+                if n.role == Role::Honeypot {
+                    continue;
+                }
                 let Some(neighbors) = adj.get(&id) else {
                     continue;
                 };
-                let mut tally: [u32; 8] = [0; 8];
+                let mut tally: [u32; STRAIN_COUNT] = [0; STRAIN_COUNT];
                 let mut infected_count: u32 = 0;
                 for &m in neighbors {
                     if let Some(inf) = self.nodes[m].infection {
                         if !matches!(inf.stage, InfectionStage::Incubating) {
-                            tally[(inf.strain as usize) & 7] += 1;
+                            tally[(inf.strain as usize) % STRAIN_COUNT] += 1;
                             infected_count += 1;
                         }
                     }
@@ -1101,18 +1139,17 @@ impl World {
         // Terminal nodes crash the host — route into the loss/cascade pipeline.
         let pwned_flash = self.cfg.pwned_flash_ticks;
         for id in to_pwn {
+            let pos = self.nodes[id].pos;
             let node = &mut self.nodes[id];
             node.infection = None;
             node.state = State::Pwned {
                 ticks_left: pwned_flash,
             };
-            let (a, b) = octet_pair(node.pos);
-            self.push_log(format!("node 10.0.{}.{} necrotic", a, b));
+            self.log_node(pos, "necrotic");
         }
 
         for pos in newly_active {
-            let (a, b) = octet_pair(pos);
-            self.push_log(format!("node 10.0.{}.{} symptomatic", a, b));
+            self.log_node(pos, "symptomatic");
         }
     }
 
@@ -1131,7 +1168,10 @@ impl World {
             .iter()
             .enumerate()
             .filter_map(|(i, n)| {
-                if i != self.c2 && matches!(n.state, State::Alive) {
+                if i != self.c2
+                    && matches!(n.state, State::Alive)
+                    && n.role != Role::Honeypot
+                {
                     Some(i)
                 } else {
                     None
@@ -1142,7 +1182,7 @@ impl World {
             return;
         }
         let id = candidates[self.rng.gen_range(0..candidates.len())];
-        let strain = self.rng.gen_range(0..8u8);
+        let strain = self.rng.gen_range(0..STRAIN_COUNT as u8);
         let cure_resist = self.cfg.virus_cure_resist;
         self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
         let (a, b) = octet_pair(self.nodes[id].pos);
@@ -1193,16 +1233,16 @@ impl World {
             };
             // Pick uniformly from the first two (the third is the sentinel).
             let new_role = choices[self.rng.gen_range(0..2)];
+            let pos = self.nodes[id].pos;
             self.nodes[id].role = new_role;
             self.nodes[id].mutated_flash = 6;
-            let (a, b) = octet_pair(self.nodes[id].pos);
             let name = match new_role {
                 Role::Relay => "relay",
                 Role::Scanner => "scanner",
                 Role::Exfil => "exfil",
                 Role::Honeypot => "honeypot",
             };
-            self.push_log(format!("node 10.0.{}.{} mutated → {}", a, b, name));
+            self.log_node(pos, &format!("mutated → {}", name));
         }
     }
 
@@ -1219,17 +1259,16 @@ impl World {
             .iter()
             .filter(|n| matches!(n.state, State::Alive))
             .count();
-        if alive_count < 10 {
+        if alive_count < ZERO_DAY_MIN_ALIVE {
             return;
         }
         if !self.rng.gen_bool(self.cfg.zero_day_chance as f64) {
             return;
         }
-        // Pick event type.
         let roll = self.rng.gen::<f32>();
-        if roll < 0.6 {
+        if roll < ZERO_DAY_OUTBREAK_WEIGHT {
             self.zero_day_outbreak();
-        } else if roll < 0.9 {
+        } else if roll < ZERO_DAY_PATCH_WEIGHT {
             self.zero_day_emergency_patch();
         } else {
             self.zero_day_immune_breakthrough();
@@ -1237,11 +1276,10 @@ impl World {
     }
 
     fn zero_day_outbreak(&mut self) {
-        let strain = self.rng.gen_range(0..8u8);
-        // Infect 3-5 random alive nodes with a high cure_resist strain.
-        let count = self.rng.gen_range(3..=5);
+        let strain = self.rng.gen_range(0..STRAIN_COUNT as u8);
+        let count = self.rng.gen_range(ZERO_DAY_OUTBREAK_MIN..=ZERO_DAY_OUTBREAK_MAX);
         let cure_resist = self.cfg.virus_cure_resist.saturating_mul(2);
-        let candidates: Vec<NodeId> = self
+        let mut candidates: Vec<NodeId> = self
             .nodes
             .iter()
             .enumerate()
@@ -1249,6 +1287,7 @@ impl World {
                 if i != self.c2
                     && matches!(n.state, State::Alive)
                     && n.infection.is_none()
+                    && n.role != Role::Honeypot
                 {
                     Some(i)
                 } else {
@@ -1259,17 +1298,16 @@ impl World {
         if candidates.is_empty() {
             return;
         }
-        let mut hit = 0u32;
-        for _ in 0..count {
-            let id = candidates[self.rng.gen_range(0..candidates.len())];
-            if self.nodes[id].infection.is_none() {
-                self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
-                hit += 1;
-            }
+        // Shuffle and take so we hit `count` distinct nodes (or all of them
+        // if fewer candidates exist) without picking the same id twice.
+        candidates.shuffle(&mut self.rng);
+        let take = (count as usize).min(candidates.len());
+        for &id in candidates.iter().take(take) {
+            self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
         }
         self.push_log(format!(
             "ZERO-DAY: strain {} outbreak — {} hosts infected",
-            strain, hit
+            strain, take
         ));
     }
 
@@ -1305,9 +1343,14 @@ impl World {
         ));
     }
 
-    /// Infect a random Alive non-C2 node with a fresh strain. Used by the
-    /// `i` keybinding and by tests.
+    /// Infect a random Alive non-C2 non-Honeypot node with a fresh strain.
+    /// Used by the `i` keybinding and by tests. Refuses to fire when the
+    /// virus layer is disabled so --disable-virus really means "off".
     pub fn inject_infection(&mut self) -> Option<NodeId> {
+        if self.cfg.virus_spread_rate <= 0.0 && self.cfg.virus_seed_rate <= 0.0 {
+            self.push_log("inject refused: virus layer disabled".to_string());
+            return None;
+        }
         let candidates: Vec<NodeId> = self
             .nodes
             .iter()
@@ -1316,6 +1359,7 @@ impl World {
                 if i != self.c2
                     && matches!(n.state, State::Alive)
                     && n.infection.is_none()
+                    && n.role != Role::Honeypot
                 {
                     Some(i)
                 } else {
@@ -1327,7 +1371,7 @@ impl World {
             return None;
         }
         let id = candidates[self.rng.gen_range(0..candidates.len())];
-        let strain = self.rng.gen_range(0..8u8);
+        let strain = self.rng.gen_range(0..STRAIN_COUNT as u8);
         let cure_resist = self.cfg.virus_cure_resist;
         self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
         let (a, b) = octet_pair(self.nodes[id].pos);
@@ -1378,27 +1422,28 @@ impl World {
                 .collect();
             if !alive_ids.is_empty() {
                 let victim = alive_ids[self.rng.gen_range(0..alive_ids.len())];
+                let pos = self.nodes[victim].pos;
                 let node = &mut self.nodes[victim];
-                let (a, b) = octet_pair(node.pos);
 
                 if node.hardened {
                     // Reinforcement: consume the shield instead of pwning.
                     node.hardened = false;
                     node.heartbeats = 0;
                     node.shield_flash = 6;
-                    self.push_log(format!("node 10.0.{}.{} shielded", a, b));
+                    self.log_node(pos, "shielded");
                 } else if node.role == Role::Honeypot {
                     node.honey_tripped = true;
                     node.honey_reveal = 2;
                     node.state = State::Pwned {
                         ticks_left: self.cfg.pwned_flash_ticks,
                     };
+                    let (a, b) = octet_pair(pos);
                     self.push_log(format!("HONEYPOT 10.0.{}.{} TRIPPED", a, b));
                 } else {
                     node.state = State::Pwned {
                         ticks_left: self.cfg.pwned_flash_ticks,
                     };
-                    self.push_log(format!("node 10.0.{}.{} LOST", a, b));
+                    self.log_node(pos, "LOST");
                 }
             }
         }
@@ -1575,6 +1620,13 @@ impl World {
         while self.logs.len() > self.cfg.log_cap {
             self.logs.pop_front();
         }
+    }
+
+    /// Convenience: log `"node 10.0.X.Y {suffix}"` for events anchored on a
+    /// specific mesh position. Used by all simple per-node event log lines.
+    fn log_node(&mut self, pos: (i16, i16), suffix: &str) {
+        let (a, b) = octet_pair(pos);
+        self.push_log(format!("node 10.0.{}.{} {}", a, b, suffix));
     }
 }
 
@@ -1981,6 +2033,62 @@ mod tests {
         w.tick = 1;
         w.maybe_zero_day();
         assert!(w.nodes.iter().all(|n| n.infection.is_none()));
+    }
+
+    #[test]
+    fn zero_day_outbreak_picks_distinct_targets() {
+        let mut w = World::new(31, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 0.0;
+        w.cfg.virus_seed_rate = 0.0;
+        // Push exactly 4 alive candidates so picking 3-5 distinct should
+        // saturate the candidate set without ever double-picking.
+        for i in 0..4 {
+            w.nodes
+                .push(Node::fresh((10 + i, 10), Some(w.c2), 0, Role::Relay, 1));
+        }
+        w.zero_day_outbreak();
+        let infected = w
+            .nodes
+            .iter()
+            .filter(|n| n.infection.is_some())
+            .count();
+        // Must hit at least 3 (the configured min) and never exceed 4 (the
+        // candidate ceiling). Pre-fix this could come back as 1-2 if the
+        // RNG happened to pick duplicates.
+        assert!(
+            infected >= 3 && infected <= 4,
+            "expected 3-4 distinct infections, got {}",
+            infected
+        );
+    }
+
+    #[test]
+    fn infection_spread_skips_honeypots() {
+        let mut w = World::new(32, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 0.0;
+        w.cfg.virus_seed_rate = 0.0;
+        w.cfg.virus_spread_rate = 1.0;
+        // Active-infected relay next to a honeypot. Spread fires every tick
+        // but the honeypot must remain clean to keep its disguise.
+        let infected = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+        let honey = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((12, 10), Some(infected), 0, Role::Honeypot, 1));
+        w.nodes[infected].infection = Some(Infection {
+            strain: 0,
+            stage: InfectionStage::Active,
+            age: w.cfg.virus_incubation_ticks,
+            cure_resist: 4,
+            terminal_ticks: 0,
+        });
+        for _ in 0..20 {
+            w.tick((80, 30));
+        }
+        assert!(w.nodes[honey].infection.is_none(), "honeypot must stay clean");
     }
 
     #[test]

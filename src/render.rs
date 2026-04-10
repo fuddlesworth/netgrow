@@ -1,11 +1,11 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect, Size};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
 use ratatui::Frame;
 
-use crate::world::{InfectionStage, LinkKind, Node, Role, State, World, WorldStats};
+use crate::world::{InfectionStage, LinkKind, Node, Role, State, World, WorldStats, STRAIN_COUNT};
 
 const RIGHT_COL_WIDTH: u16 = 42;
 const HEADER_HEIGHT: u16 = 1;
@@ -614,7 +614,7 @@ fn strain_hue(strain: u8) -> Color {
         Color::Rgb(190, 80, 220),
         Color::Rgb(240, 100, 240),
     ];
-    PALETTE[(strain as usize) & 7]
+    PALETTE[(strain as usize) % STRAIN_COUNT]
 }
 
 fn branch_hue(branch_id: u16) -> Color {
@@ -740,8 +740,3 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
     }
 }
 
-// Silence unused-warning stub in case Stylize is not currently referenced.
-#[allow(dead_code)]
-fn _touch_stylize() {
-    let _ = Style::default().bold();
-}

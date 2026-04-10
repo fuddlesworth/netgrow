@@ -107,7 +107,8 @@ fn main() -> io::Result<()> {
 
     let size = terminal.size()?;
     let initial_bounds = render::mesh_bounds(size);
-    let cfg = Config {
+    // Start from defaults so we only have to name the fields the CLI touches.
+    let mut cfg = Config {
         p_spawn: cli.spawn_rate,
         p_loss: cli.loss_rate,
         max_nodes: cli.max_nodes,
@@ -123,13 +124,17 @@ fn main() -> io::Result<()> {
         honeypot_cascade_mult: cli.honeypot_cascade_mult,
         reconnect_rate: cli.reconnect_rate,
         reconnect_radius: cli.reconnect_radius,
-        virus_spread_rate: if cli.disable_virus { 0.0 } else { cli.virus_spread_rate },
-        virus_seed_rate: if cli.disable_virus { 0.0 } else { 0.004 },
-        worm_spawn_rate: if cli.disable_virus { 0.0 } else { 0.04 },
+        virus_spread_rate: cli.virus_spread_rate,
         mutate_rate: cli.mutate_rate,
-        zero_day_chance: if cli.disable_virus { 0.0 } else { cli.zero_day_chance },
+        zero_day_chance: cli.zero_day_chance,
         ..Config::default()
     };
+    if cli.disable_virus {
+        cfg.virus_spread_rate = 0.0;
+        cfg.virus_seed_rate = 0.0;
+        cfg.worm_spawn_rate = 0.0;
+        cfg.zero_day_chance = 0.0;
+    }
     let mut world = World::new(seed, initial_bounds, cfg);
 
     let mut tick_ms: u64 = cli.tick_ms;
