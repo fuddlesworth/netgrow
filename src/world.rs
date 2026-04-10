@@ -2057,7 +2057,7 @@ mod tests {
         // candidate ceiling). Pre-fix this could come back as 1-2 if the
         // RNG happened to pick duplicates.
         assert!(
-            infected >= 3 && infected <= 4,
+            (3..=4).contains(&infected),
             "expected 3-4 distinct infections, got {}",
             infected
         );
