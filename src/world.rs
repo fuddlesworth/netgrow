@@ -181,6 +181,11 @@ pub struct Link {
 #[derive(Clone, Debug)]
 pub struct Ping {
     pub origin: (i16, i16),
+    /// Unit direction vector (one of the 8 cardinals/diagonals). The
+    /// renderer expands the ping into a beam of cells along this vector
+    /// each tick, so each ping is a short directional sweep rather than
+    /// an omnidirectional halo.
+    pub dir: (i16, i16),
     pub born: u64,
 }
 
@@ -938,6 +943,7 @@ impl World {
             n.last_ping_tick = now;
             new_pings.push(Ping {
                 origin: n.pos,
+                dir: (dx, dy),
                 born: now,
             });
         }

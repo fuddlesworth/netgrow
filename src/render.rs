@@ -583,21 +583,35 @@ impl<'a> Widget for MeshWidget<'a> {
             }
         }
 
-        // 2. Scanner ping halos
+        // 2. Scanner ping beams — a directional sweep that expands one
+        // cell per tick along the scanner's chosen vector, with a fading
+        // trail behind the head. The head uses the scanner color bold,
+        // trail cells use a dimmed variant with a distinct glyph so the
+        // beam doesn't blur into the rest of the mesh.
         for ping in &w.pings {
             let age = w.tick.saturating_sub(ping.born) as i16;
             if age > 3 {
                 continue;
             }
-            let radius = age.max(1);
-            let style = Style::default().fg(theme().ping);
-            for dy in -radius..=radius {
-                for dx in -radius..=radius {
-                    if dx.abs().max(dy.abs()) != radius {
-                        continue;
-                    }
-                    let cell = (ping.origin.0 + dx, ping.origin.1 + dy);
-                    put(buf, area, cell, "·", style);
+            let (dx, dy) = ping.dir;
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            let th = theme();
+            let head_style = Style::default()
+                .fg(th.scanner)
+                .add_modifier(Modifier::BOLD);
+            let trail_style = Style::default()
+                .fg(th.scanner)
+                .add_modifier(Modifier::DIM);
+            let head_radius = age + 1;
+            for r in 1..=head_radius {
+                let cell = (ping.origin.0 + dx * r, ping.origin.1 + dy * r);
+                let is_head = r == head_radius;
+                if is_head {
+                    put(buf, area, cell, "○", head_style);
+                } else {
+                    put(buf, area, cell, "∙", trail_style);
                 }
             }
         }
