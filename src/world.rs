@@ -75,6 +75,10 @@ pub enum Role {
     /// this node also pulses, propagating the scanner highlight through
     /// a chain of proxies.
     Proxy,
+    /// Looks like an exfil but never emits packets — a passive
+    /// camouflage node that draws attacker attention away from real
+    /// exfils. Rendered identically to an Exfil.
+    Decoy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -274,12 +278,13 @@ pub struct RoleWeights {
     pub tower: f32,
     pub beacon: f32,
     pub proxy: f32,
+    pub decoy: f32,
 }
 
 impl Default for RoleWeights {
     fn default() -> Self {
         Self {
-            relay: 0.53,
+            relay: 0.51,
             scanner: 0.13,
             exfil: 0.10,
             honeypot: 0.04,
@@ -287,6 +292,7 @@ impl Default for RoleWeights {
             tower: 0.05,
             beacon: 0.04,
             proxy: 0.03,
+            decoy: 0.02,
         }
     }
 }
@@ -981,7 +987,15 @@ impl World {
 
     fn roll_role(&mut self) -> Role {
         let w = &self.cfg.role_weights;
-        let total = w.relay + w.scanner + w.exfil + w.honeypot + w.defender + w.tower + w.beacon + w.proxy;
+        let total = w.relay
+            + w.scanner
+            + w.exfil
+            + w.honeypot
+            + w.defender
+            + w.tower
+            + w.beacon
+            + w.proxy
+            + w.decoy;
         let mut r = self.rng.gen::<f32>() * total.max(f32::EPSILON);
         if r < w.relay {
             return Role::Relay;
@@ -1010,7 +1024,11 @@ impl World {
         if r < w.beacon {
             return Role::Beacon;
         }
-        Role::Proxy
+        r -= w.beacon;
+        if r < w.proxy {
+            return Role::Proxy;
+        }
+        Role::Decoy
     }
 
     fn alloc_branch_id(&mut self) -> u16 {
@@ -2027,6 +2045,7 @@ impl World {
                         | Role::Tower
                         | Role::Beacon
                         | Role::Proxy
+                        | Role::Decoy
                 ) {
                     return None; // specialized roles stay in their lane
                 }
@@ -2049,7 +2068,8 @@ impl World {
                 | Role::Defender
                 | Role::Tower
                 | Role::Beacon
-                | Role::Proxy => continue,
+                | Role::Proxy
+                | Role::Decoy => continue,
             };
             // Pick uniformly from the first two (the third is the sentinel).
             let new_role = choices[self.rng.gen_range(0..2)];
@@ -2065,6 +2085,7 @@ impl World {
                 Role::Tower => "tower",
                 Role::Beacon => "beacon",
                 Role::Proxy => "proxy",
+                Role::Decoy => "decoy",
             };
             self.log_node(pos, &format!("mutated → {}", name));
         }

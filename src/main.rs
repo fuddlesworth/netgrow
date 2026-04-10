@@ -74,6 +74,10 @@ struct Cli {
     /// pulses to their neighbors, extending the scan reach.
     #[arg(long, default_value_t = 0.03)]
     proxy_weight: f32,
+    /// Relative weight of Decoy nodes at spawn. Decoys look like
+    /// exfils but never emit packets — passive camouflage.
+    #[arg(long, default_value_t = 0.02)]
+    decoy_weight: f32,
 
     /// Ticks between Scanner pings.
     #[arg(long, default_value_t = 30)]
@@ -263,6 +267,7 @@ fn main() -> io::Result<()> {
     let tower_weight = pick_f32("tower_weight", cli.tower_weight, file.tower_weight);
     let beacon_weight = pick_f32("beacon_weight", cli.beacon_weight, file.beacon_weight);
     let proxy_weight = pick_f32("proxy_weight", cli.proxy_weight, file.proxy_weight);
+    let decoy_weight = pick_f32("decoy_weight", cli.decoy_weight, file.decoy_weight);
     let scanner_ping_period = pick_u16(
         "scanner_ping_period",
         cli.scanner_ping_period,
@@ -330,6 +335,7 @@ fn main() -> io::Result<()> {
             tower: tower_weight,
             beacon: beacon_weight,
             proxy: proxy_weight,
+            decoy: decoy_weight,
         },
         scanner_ping_period,
         exfil_packet_period,

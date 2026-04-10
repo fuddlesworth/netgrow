@@ -558,6 +558,7 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
                     Role::Tower => "tower",
                     Role::Beacon => "beacon",
                     Role::Proxy => "proxy",
+                    Role::Decoy => "decoy",
                 }
             };
             lines.push(row("role", role_name.to_string()));
@@ -1150,6 +1151,7 @@ fn infected_glyph(
                 Role::Tower => "⊞",
                 Role::Beacon => "⊚",
                 Role::Proxy => "⊛",
+                Role::Decoy => "▣",
             };
             (base, Style::default().fg(hue).add_modifier(Modifier::DIM))
         }
@@ -1167,6 +1169,7 @@ fn infected_glyph(
                 Role::Tower => "⊞",
                 Role::Beacon => "⊚",
                 Role::Proxy => "⊛",
+                Role::Decoy => "▣",
             };
             let g = if (tick + inf.age as u64).is_multiple_of(3) {
                 "▓"
@@ -1333,6 +1336,14 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                     Style::default()
                         .fg(th.stat_packets)
                         .add_modifier(Modifier::BOLD),
+                ),
+                // Decoy renders identical to Exfil so it's visually
+                // indistinguishable. The inspector reveals the truth.
+                Role::Decoy => (
+                    "▣",
+                    Style::default()
+                        .fg(th.exfil)
+                        .add_modifier(if node.hardened { Modifier::BOLD } else { Modifier::empty() }),
                 ),
             };
             if pulse_boost {
