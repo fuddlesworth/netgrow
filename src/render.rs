@@ -631,46 +631,75 @@ fn bordered_block(title: &'static str) -> Block<'static> {
 
 fn color_log_line(s: &str) -> Line<'static> {
     let th = theme();
-    let style = if s.contains("HONEYPOT") {
+    // Most "node X.Y <suffix>" lines are classified by the portion
+    // after the IP. Extract it once up front so matchers can use
+    // exact equality / prefix on the suffix instead of contains()
+    // substring scans that can false-match.
+    let node_suffix: Option<&str> = s
+        .strip_prefix("node ")
+        .and_then(|rest| rest.split_once(' ').map(|(_, t)| t));
+
+    let style = if s.starts_with("HONEYPOT") {
         Style::default()
             .fg(th.header_brand_fg)
             .bg(th.log_honeypot_bg)
             .add_modifier(Modifier::BOLD)
-    } else if s.contains("INJECTED") {
+    } else if s.starts_with("INJECTED") {
         Style::default()
             .fg(th.header_brand_fg)
             .bg(th.log_injected_bg)
             .add_modifier(Modifier::BOLD)
-    } else if s.contains("necrotic") {
-        Style::default().fg(th.log_strain).add_modifier(Modifier::BOLD)
-    } else if s.contains("symptomatic") {
-        Style::default().fg(th.log_worm).add_modifier(Modifier::BOLD)
-    } else if s.contains(" detected at ") {
-        Style::default().fg(th.log_strain)
-    } else if s.contains("cured") || s.contains("patched") {
-        Style::default().fg(th.log_cured).add_modifier(Modifier::BOLD)
-    } else if s.starts_with("worm delivered") || s.starts_with("worm launched") {
-        Style::default().fg(th.log_worm)
-    } else if s.contains("ZERO-DAY") {
+    } else if s.starts_with("ZERO-DAY:") {
         Style::default()
             .fg(th.header_brand_fg)
             .bg(th.log_zero_day_bg)
             .add_modifier(Modifier::BOLD)
-    } else if s.contains("mutated") {
+    } else if s.starts_with("✦ MYTHIC") {
+        Style::default()
+            .fg(th.header_brand_fg)
+            .bg(th.accent)
+            .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("⚡ STORM") || s.starts_with("⚡ DDOS") {
+        Style::default()
+            .fg(th.pwned)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else if s.starts_with("storm passes") {
+        Style::default().fg(th.label).add_modifier(Modifier::BOLD)
+    } else if s.starts_with("── era") {
+        Style::default()
+            .fg(th.frame_accent)
+            .add_modifier(Modifier::BOLD)
+    } else if node_suffix == Some("necrotic") {
+        Style::default().fg(th.log_strain).add_modifier(Modifier::BOLD)
+    } else if node_suffix == Some("symptomatic") {
+        Style::default().fg(th.log_worm).add_modifier(Modifier::BOLD)
+    } else if s.contains(" detected at ") {
+        Style::default().fg(th.log_strain)
+    } else if node_suffix == Some("cured") || node_suffix == Some("patched") {
+        Style::default().fg(th.log_cured).add_modifier(Modifier::BOLD)
+    } else if s.starts_with("worm delivered") || s.starts_with("worm launched") {
+        Style::default().fg(th.log_worm)
+    } else if node_suffix
+        .map(|t| t.starts_with("mutated "))
+        .unwrap_or(false)
+    {
         Style::default()
             .fg(th.log_mutated)
             .add_modifier(Modifier::BOLD)
-    } else if s.contains("LOST") {
+    } else if node_suffix == Some("LOST") || node_suffix == Some("skirmish LOST") {
         Style::default().fg(th.log_lost).add_modifier(Modifier::BOLD)
-    } else if s.starts_with("cascade") || s.contains("subtree") {
+    } else if s.starts_with("cascade:") || s.starts_with("HONEYPOT cascade:") {
         Style::default()
             .fg(th.log_cascade)
             .add_modifier(Modifier::BOLD)
-    } else if s.contains("hardened") {
+    } else if node_suffix == Some("hardened") {
         Style::default()
             .fg(th.log_hardened)
             .add_modifier(Modifier::BOLD)
-    } else if s.contains("shielded") || s.contains("reinforced") {
+    } else if node_suffix == Some("shielded")
+        || node_suffix == Some("skirmish shielded")
+        || node_suffix == Some("reinforced")
+    {
         Style::default()
             .fg(th.log_shielded)
             .add_modifier(Modifier::BOLD)
@@ -684,8 +713,6 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default()
             .fg(th.log_cured)
             .add_modifier(Modifier::BOLD)
-    } else if s.contains("skirmish") {
-        Style::default().fg(th.log_cascade)
     } else if s.starts_with("handshake") {
         Style::default().fg(th.log_handshake)
     } else if s.starts_with("beacon") {
@@ -700,26 +727,15 @@ fn color_log_line(s: &str) -> Line<'static> {
             .add_modifier(Modifier::BOLD)
     } else if s.starts_with("day breaks") {
         Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
-    } else if s.contains("STORM") || s.contains("DDOS") {
-        Style::default()
-            .fg(th.pwned)
-            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-    } else if s.starts_with("storm passes") {
-        Style::default().fg(th.label).add_modifier(Modifier::BOLD)
-    } else if s.starts_with("── era") {
-        Style::default()
-            .fg(th.frame_accent)
-            .add_modifier(Modifier::BOLD)
-    } else if s.contains("MYTHIC") {
-        // Mythic events get the full reversed-accent treatment so they
-        // stand apart from every other log category.
-        Style::default()
-            .fg(th.header_brand_fg)
-            .bg(th.accent)
-            .add_modifier(Modifier::BOLD)
-    } else if s.contains("packet dropped") {
+    } else if node_suffix
+        .map(|t| t.starts_with("pkt drop"))
+        .unwrap_or(false)
+    {
         Style::default().fg(th.log_cascade)
-    } else if s.contains("backdoor") {
+    } else if node_suffix
+        .map(|t| t.starts_with("backdoor"))
+        .unwrap_or(false)
+    {
         Style::default()
             .fg(th.log_honeypot_bg)
             .add_modifier(Modifier::BOLD)
