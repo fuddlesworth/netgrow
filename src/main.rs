@@ -15,6 +15,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+use crate::render::UiState;
 use crate::world::{Config, RoleWeights, World};
 
 #[derive(Parser, Debug)]
@@ -92,10 +93,7 @@ fn main() -> io::Result<()> {
     let mut terminal: Terminal<CrosstermBackend<Stdout>> = Terminal::new(backend)?;
 
     let size = terminal.size()?;
-    let initial_bounds = (
-        (size.width.saturating_sub(30)).saturating_sub(2) as i16,
-        size.height.saturating_sub(2) as i16,
-    );
+    let initial_bounds = render::mesh_bounds(size);
     let cfg = Config {
         p_spawn: cli.spawn_rate,
         p_loss: cli.loss_rate,
@@ -116,11 +114,13 @@ fn main() -> io::Result<()> {
     };
     let mut world = World::new(seed, initial_bounds, cfg);
 
-    let tick_dur = Duration::from_millis(cli.tick_ms);
+    let mut tick_ms: u64 = cli.tick_ms;
+    let mut paused = false;
     let mut mesh_bounds = initial_bounds;
 
     loop {
-        if event::poll(tick_dur)? {
+        let wait = Duration::from_millis(tick_ms);
+        if event::poll(wait)? {
             if let Event::Key(KeyEvent {
                 code, modifiers, ..
             }) = event::read()?
@@ -128,23 +128,34 @@ fn main() -> io::Result<()> {
                 match (code, modifiers) {
                     (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => break,
                     (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                    (KeyCode::Char(' '), _) => paused = !paused,
+                    (KeyCode::Char('+'), _) | (KeyCode::Char('='), _) => {
+                        tick_ms = tick_ms.saturating_sub(10).max(10);
+                    }
+                    (KeyCode::Char('-'), _) | (KeyCode::Char('_'), _) => {
+                        tick_ms = (tick_ms + 10).min(500);
+                    }
                     _ => {}
                 }
             }
+            // Redraw immediately so key feedback (pause, speed) is visible.
+            let ui = UiState { paused, tick_ms, seed };
+            terminal.draw(|f| {
+                render::draw(f, &world, ui);
+            })?;
             continue;
         }
 
-        world.tick(mesh_bounds);
+        if !paused {
+            world.tick(mesh_bounds);
+        }
 
+        let ui = UiState { paused, tick_ms, seed };
         terminal.draw(|f| {
-            render::draw(f, &world);
+            render::draw(f, &world, ui);
         })?;
 
-        let s = terminal.size()?;
-        mesh_bounds = (
-            (s.width.saturating_sub(30)).saturating_sub(2) as i16,
-            s.height.saturating_sub(2) as i16,
-        );
+        mesh_bounds = render::mesh_bounds(terminal.size()?);
     }
 
     Ok(())

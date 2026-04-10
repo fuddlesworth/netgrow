@@ -182,7 +182,46 @@ const DIRS: [(i16, i16); 8] = [
     (-1, -1),
 ];
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WorldStats {
+    pub alive: usize,
+    pub pwned: usize,
+    pub dead: usize,
+    pub dying: usize,
+    pub branches: usize,
+    pub links: usize,
+    pub cross_links: usize,
+    pub packets: usize,
+}
+
 impl World {
+    pub fn stats(&self) -> WorldStats {
+        let mut s = WorldStats::default();
+        let mut branches: HashSet<u16> = HashSet::new();
+        for n in &self.nodes {
+            match n.state {
+                State::Alive => s.alive += 1,
+                State::Pwned { .. } => s.pwned += 1,
+                State::Dead => s.dead += 1,
+            }
+            if n.dying_in > 0 {
+                s.dying += 1;
+            }
+            if !matches!(n.state, State::Dead) {
+                branches.insert(n.branch_id);
+            }
+        }
+        s.branches = branches.len();
+        s.links = self.links.len();
+        s.cross_links = self
+            .links
+            .iter()
+            .filter(|l| l.kind == LinkKind::Cross)
+            .count();
+        s.packets = self.packets.len();
+        s
+    }
+
     pub fn new(seed: u64, bounds: (i16, i16), cfg: Config) -> Self {
         let rng = ChaCha8Rng::seed_from_u64(seed);
         let center = (bounds.0 / 2, bounds.1 / 2);

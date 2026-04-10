@@ -1,33 +1,306 @@
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
-use ratatui::widgets::{Block, Paragraph, Widget};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect, Size};
+use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
 use ratatui::Frame;
 
-use crate::world::{LinkKind, Node, Role, State, World};
+use crate::world::{LinkKind, Node, Role, State, World, WorldStats};
 
-pub fn draw(frame: &mut Frame, world: &World) {
-    let chunks = Layout::horizontal([Constraint::Min(40), Constraint::Length(28)])
-        .split(frame.area());
+const RIGHT_COL_WIDTH: u16 = 34;
+const HEADER_HEIGHT: u16 = 1;
+const FOOTER_HEIGHT: u16 = 1;
 
-    let mesh_block = Block::bordered().title(" netgrow ");
-    let log_block = Block::bordered().title(" log ");
-    let mesh_area = mesh_block.inner(chunks[0]);
-    let log_area = log_block.inner(chunks[1]);
+const FRAME_COLOR: Color = Color::Rgb(60, 180, 200);
+const FRAME_ACCENT: Color = Color::Rgb(120, 220, 240);
 
-    frame.render_widget(mesh_block, chunks[0]);
-    frame.render_widget(log_block, chunks[1]);
-    frame.render_widget(MeshWidget { world }, mesh_area);
+#[derive(Clone, Copy)]
+pub struct UiState {
+    pub paused: bool,
+    pub tick_ms: u64,
+    pub seed: u64,
+}
 
-    let log_lines: Vec<Line> = world
+pub fn mesh_bounds(size: Size) -> (i16, i16) {
+    // Mirror the layout below so the world sizes its spawn area correctly.
+    let w = size.width.saturating_sub(RIGHT_COL_WIDTH).saturating_sub(2);
+    let h = size
+        .height
+        .saturating_sub(HEADER_HEIGHT + FOOTER_HEIGHT)
+        .saturating_sub(2);
+    (w as i16, h as i16)
+}
+
+pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
+    let area = frame.area();
+    let stats = world.stats();
+
+    let rows = Layout::vertical([
+        Constraint::Length(HEADER_HEIGHT),
+        Constraint::Min(5),
+        Constraint::Length(FOOTER_HEIGHT),
+    ])
+    .split(area);
+
+    let header_area = rows[0];
+    let main_area = rows[1];
+    let footer_area = rows[2];
+
+    frame.render_widget(header_bar(world, &stats, ui), header_area);
+    frame.render_widget(footer_bar(ui), footer_area);
+
+    let cols = Layout::horizontal([
+        Constraint::Min(40),
+        Constraint::Length(RIGHT_COL_WIDTH),
+    ])
+    .split(main_area);
+
+    let mesh_frame = cols[0];
+    let right_col = cols[1];
+
+    let mesh_block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(FRAME_COLOR))
+        .title(Span::styled(
+            " netgrow ",
+            Style::default()
+                .fg(FRAME_ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let mesh_inner = mesh_block.inner(mesh_frame);
+    frame.render_widget(mesh_block, mesh_frame);
+    frame.render_widget(MeshWidget { world }, mesh_inner);
+
+    let right_rows = Layout::vertical([
+        Constraint::Length(8),
+        Constraint::Length(10),
+        Constraint::Min(5),
+    ])
+    .split(right_col);
+
+    frame.render_widget(stats_block(&stats), right_rows[0]);
+    frame.render_widget(legend_block(), right_rows[1]);
+    frame.render_widget(log_block(world), right_rows[2]);
+}
+
+fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::styled(
+        " netgrow ",
+        Style::default()
+            .fg(Color::Black)
+            .bg(FRAME_ACCENT)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(
+        format!("t={}", world.tick),
+        Style::default().fg(Color::Rgb(180, 200, 220)),
+    ));
+    spans.push(sep());
+    spans.push(stat_span("nodes", format!("{}", stats.alive + stats.pwned)));
+    spans.push(sep());
+    spans.push(stat_span("branches", format!("{}", stats.branches)));
+    spans.push(sep());
+    spans.push(stat_span("links", format!("{}", stats.links)));
+    if stats.cross_links > 0 {
+        spans.push(Span::raw("/"));
+        spans.push(Span::styled(
+            format!("{}x", stats.cross_links),
+            Style::default().fg(Color::Rgb(140, 220, 240)),
+        ));
+    }
+    if stats.dying > 0 {
+        spans.push(sep());
+        spans.push(Span::styled(
+            format!("dying {}", stats.dying),
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if stats.packets > 0 {
+        spans.push(sep());
+        spans.push(Span::styled(
+            format!("pkts {}", stats.packets),
+            Style::default().fg(Color::Rgb(120, 240, 255)),
+        ));
+    }
+    spans.push(sep());
+    spans.push(Span::styled(
+        format!("seed {}", ui.seed),
+        Style::default().fg(Color::DarkGray),
+    ));
+    if ui.paused {
+        spans.push(sep());
+        spans.push(Span::styled(
+            " PAUSED ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    Paragraph::new(Line::from(spans))
+        .style(Style::default().bg(Color::Rgb(10, 20, 30)))
+}
+
+fn footer_bar(ui: UiState) -> Paragraph<'static> {
+    let key = |k: &'static str| {
+        Span::styled(
+            format!(" {} ", k),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Rgb(140, 200, 220))
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+    let lab = |t: &'static str| Span::styled(t, Style::default().fg(Color::Rgb(180, 200, 220)));
+    let spans: Vec<Span<'static>> = vec![
+        Span::raw(" "),
+        key("q"),
+        lab(" quit "),
+        key("␣"),
+        lab(" pause "),
+        key("+"),
+        key("-"),
+        lab(" speed "),
+        Span::raw("  "),
+        Span::styled(
+            format!("{}ms/tick", ui.tick_ms),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ];
+    Paragraph::new(Line::from(spans))
+        .style(Style::default().bg(Color::Rgb(10, 20, 30)))
+        .alignment(Alignment::Left)
+}
+
+fn stat_span(label: &'static str, value: String) -> Span<'static> {
+    Span::styled(
+        format!("{} {}", label, value),
+        Style::default().fg(Color::Rgb(200, 220, 240)),
+    )
+}
+
+fn sep() -> Span<'static> {
+    Span::styled(" · ", Style::default().fg(Color::DarkGray))
+}
+
+fn stats_block(s: &WorldStats) -> Paragraph<'static> {
+    let block = bordered_block(" stats ");
+    let line = |label: &'static str, value: String, color: Color| {
+        Line::from(vec![
+            Span::styled(format!(" {:<8}", label), Style::default().fg(Color::Rgb(160, 180, 200))),
+            Span::styled(value, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+        ])
+    };
+    let lines = vec![
+        line("alive", format!("{}", s.alive), Color::Rgb(120, 220, 140)),
+        line("pwned", format!("{}", s.pwned), Color::Red),
+        line("dying", format!("{}", s.dying), Color::Rgb(255, 140, 80)),
+        line("dead", format!("{}", s.dead), Color::DarkGray),
+        line(
+            "branches",
+            format!("{}", s.branches),
+            Color::Rgb(180, 220, 60),
+        ),
+        line(
+            "bridges",
+            format!("{}", s.cross_links),
+            Color::Rgb(140, 220, 240),
+        ),
+    ];
+    Paragraph::new(lines).block(block)
+}
+
+fn legend_block() -> Paragraph<'static> {
+    let block = bordered_block(" roles ");
+    let row = |glyph: &'static str, glyph_color: Color, name: &'static str| {
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                glyph,
+                Style::default().fg(glyph_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(name, Style::default().fg(Color::Rgb(180, 200, 220))),
+        ])
+    };
+    let lines = vec![
+        row("◆", Color::Cyan, "c2"),
+        row("●", Color::Rgb(120, 220, 140), "relay"),
+        row("◉", Color::Rgb(120, 220, 140), "hardened"),
+        row("◎", Color::Rgb(120, 220, 255), "scanner"),
+        row("▣", Color::Rgb(180, 180, 255), "exfil"),
+        row("◈", Color::Yellow, "honeypot!"),
+        row("✕", Color::Red, "pwned"),
+        row("·", Color::DarkGray, "ghost"),
+    ];
+    Paragraph::new(lines).block(block)
+}
+
+fn log_block(world: &World) -> Paragraph<'static> {
+    let block = bordered_block(" log ");
+    let lines: Vec<Line<'static>> = world
         .logs
         .iter()
         .rev()
-        .take(log_area.height as usize)
-        .map(|s| Line::from(s.as_str()))
+        .take(64)
+        .map(|s| color_log_line(s))
         .collect();
-    frame.render_widget(Paragraph::new(log_lines), log_area);
+    Paragraph::new(lines).block(block)
+}
+
+fn bordered_block(title: &'static str) -> Block<'static> {
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(FRAME_COLOR))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(FRAME_ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ))
+}
+
+fn color_log_line(s: &str) -> Line<'static> {
+    // Classify by distinctive tokens and apply a color + weight.
+    let style = if s.contains("HONEYPOT") {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else if s.contains("LOST") {
+        Style::default()
+            .fg(Color::Red)
+            .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("cascade") || s.contains("subtree") {
+        Style::default()
+            .fg(Color::Rgb(255, 140, 80))
+            .add_modifier(Modifier::BOLD)
+    } else if s.contains("hardened") {
+        Style::default()
+            .fg(Color::Rgb(140, 220, 255))
+            .add_modifier(Modifier::BOLD)
+    } else if s.contains("shielded") {
+        Style::default()
+            .fg(Color::Rgb(180, 220, 255))
+            .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("bridge") {
+        Style::default().fg(Color::Rgb(140, 220, 240))
+    } else if s.starts_with("handshake") {
+        Style::default().fg(Color::Rgb(120, 200, 140))
+    } else if s.starts_with("beacon") {
+        Style::default().fg(Color::Rgb(90, 130, 150))
+    } else if s.starts_with("c2 online") {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Rgb(180, 200, 220))
+    };
+    Line::from(Span::styled(s.to_string(), style))
 }
 
 pub struct MeshWidget<'a> {
@@ -55,17 +328,12 @@ impl<'a> Widget for MeshWidget<'a> {
             {
                 Style::default().fg(Color::Red)
             } else if link.kind == LinkKind::Cross {
-                // Lateral bridges render in a distinct teal so the topology
-                // is readable — these are survival routes, not tree edges.
                 Style::default()
                     .fg(Color::Rgb(140, 220, 240))
                     .add_modifier(Modifier::DIM)
             } else {
                 Style::default().fg(branch_hue(b.branch_id))
             };
-            // Once a link's endpoint is dying or dead, reveal the full route —
-            // otherwise a cascade that fires mid-animation leaves red ✕ markers
-            // floating with no trail back to their parent.
             let reveal = if dying || dead {
                 link.path.len()
             } else {
@@ -90,7 +358,7 @@ impl<'a> Widget for MeshWidget<'a> {
             }
         }
 
-        // 2. Scanner ping halos — expand 1/2/3 cells outward per tick of life.
+        // 2. Scanner ping halos
         for ping in &w.pings {
             let age = w.tick.saturating_sub(ping.born) as i16;
             if age > 3 {
@@ -110,7 +378,7 @@ impl<'a> Widget for MeshWidget<'a> {
             }
         }
 
-        // 3. Exfil packets flowing back toward C2.
+        // 3. Exfil packets
         for pkt in &w.packets {
             let link = &w.links[pkt.link_id];
             let idx = pkt.pos as usize;
@@ -118,7 +386,6 @@ impl<'a> Widget for MeshWidget<'a> {
                 continue;
             }
             let cell = link.path[idx];
-            // Skip drawing on endpoint cells — nodes take priority.
             if cell == w.nodes[link.a].pos || cell == w.nodes[link.b].pos {
                 continue;
             }
@@ -129,7 +396,7 @@ impl<'a> Widget for MeshWidget<'a> {
             put(buf, area, cell, glyph, style);
         }
 
-        // 4. Nodes on top.
+        // 4. Nodes
         for node in &w.nodes {
             let (glyph, style) = node_glyph(node, w.tick);
             put(buf, area, node.pos, glyph, style);
@@ -189,7 +456,6 @@ fn glyph_for(prev: Option<(i16, i16)>, cur: (i16, i16), next: Option<(i16, i16)>
 }
 
 fn packet_glyph(link: &crate::world::Link, idx: usize) -> &'static str {
-    // Direction of travel: from idx toward idx-1 (parent end).
     if idx == 0 {
         return "▸";
     }
@@ -243,7 +509,6 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                         .add_modifier(Modifier::BOLD),
                 );
             }
-            // Honeypot revealed at trip moment — yellow flash.
             if node.honey_reveal > 0 {
                 return (
                     "◈",
@@ -274,7 +539,6 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                         .fg(Color::Rgb(180, 180, 255))
                         .add_modifier(if node.hardened { Modifier::BOLD } else { Modifier::empty() }),
                 ),
-                // Honeypot masquerades as a Relay until tripped.
                 Role::Honeypot => ("●", Style::default().fg(hue)),
             };
             if pulse_boost {
@@ -300,4 +564,10 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
         }
         State::Dead => ("·", Style::default().fg(Color::DarkGray)),
     }
+}
+
+// Silence unused-warning stub in case Stylize is not currently referenced.
+#[allow(dead_code)]
+fn _touch_stylize() {
+    let _ = Style::default().bold();
 }
