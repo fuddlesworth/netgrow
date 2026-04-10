@@ -779,6 +779,23 @@ impl World {
         self.storm_until > self.tick
     }
 
+    /// Unified periodic-event gate. Returns true once every `period`
+    /// ticks (skipping tick 0) AND only when a `chance` roll fires.
+    /// Most `maybe_*` event handlers collapse to a single call.
+    /// Pass `chance = 1.0` for period-only firing.
+    fn roll_periodic(&mut self, period: u64, chance: f32) -> bool {
+        if period == 0 || self.tick == 0 || !self.tick.is_multiple_of(period) {
+            return false;
+        }
+        if chance >= 1.0 {
+            return true;
+        }
+        if chance <= 0.0 {
+            return false;
+        }
+        self.rng.gen_bool(chance as f64)
+    }
+
     /// True if factions `a` and `b` currently have a non-aggression
     /// alliance in effect.
     pub fn allied(&self, a: u8, b: u8) -> bool {
@@ -1769,14 +1786,10 @@ impl World {
         if self.alliances.len() < prev_len {
             self.push_log("alliance dissolved".to_string());
         }
-        let period = self.cfg.alliance_period;
-        if period == 0 || now == 0 || !now.is_multiple_of(period) {
+        if !self.roll_periodic(self.cfg.alliance_period, self.cfg.alliance_chance) {
             return;
         }
         if self.c2_nodes.len() < 2 {
-            return;
-        }
-        if !self.rng.gen_bool(self.cfg.alliance_chance as f64) {
             return;
         }
         // Pick two distinct faction ids.
@@ -1802,8 +1815,7 @@ impl World {
     /// sit near an enemy-faction neighbor. Visible as scattered
     /// shielded/LOST lines at faction frontiers during long runs.
     fn maybe_border_skirmish(&mut self) {
-        let period = self.cfg.border_skirmish_period;
-        if period == 0 || self.tick == 0 || !self.tick.is_multiple_of(period) {
+        if !self.roll_periodic(self.cfg.border_skirmish_period, 1.0) {
             return;
         }
         if self.c2_nodes.len() < 2 {
@@ -1867,8 +1879,7 @@ impl World {
     /// C2 is marked dead — visible as a dramatic color swap + mythic
     /// log line.
     fn maybe_assimilate(&mut self) {
-        let period = self.cfg.assimilation_period;
-        if period == 0 || self.tick == 0 || !self.tick.is_multiple_of(period) {
+        if !self.roll_periodic(self.cfg.assimilation_period, 1.0) {
             return;
         }
         if self.c2_nodes.len() < 2 {
@@ -1960,14 +1971,7 @@ impl World {
     }
 
     fn maybe_wormhole(&mut self) {
-        let period = self.cfg.wormhole_period;
-        if period == 0 || self.cfg.wormhole_chance <= 0.0 || self.tick == 0 {
-            return;
-        }
-        if !self.tick.is_multiple_of(period) {
-            return;
-        }
-        if !self.rng.gen_bool(self.cfg.wormhole_chance as f64) {
+        if !self.roll_periodic(self.cfg.wormhole_period, self.cfg.wormhole_chance) {
             return;
         }
         // Pick two distinct alive nodes to link.
@@ -2016,14 +2020,7 @@ impl World {
     }
 
     fn maybe_ddos(&mut self) {
-        let period = self.cfg.ddos_period;
-        if period == 0 || self.cfg.ddos_chance <= 0.0 || self.tick == 0 {
-            return;
-        }
-        if !self.tick.is_multiple_of(period) {
-            return;
-        }
-        if !self.rng.gen_bool(self.cfg.ddos_chance as f64) {
+        if !self.roll_periodic(self.cfg.ddos_period, self.cfg.ddos_chance) {
             return;
         }
         // Pick a random edge to originate from and sweep toward the
@@ -2094,17 +2091,11 @@ impl World {
             self.push_log("storm passes — mesh settling".to_string());
             return;
         }
-        // Roll for a new storm only when one isn't already active, and
-        // only once per storm_period, skipping tick 0 so fresh worlds
-        // don't storm on frame one.
-        let period = self.cfg.storm_period;
-        if period == 0 || self.storm_until > 0 || self.tick == 0 {
+        // Roll for a new storm only when one isn't already active.
+        if self.storm_until > 0 {
             return;
         }
-        if !self.tick.is_multiple_of(period) {
-            return;
-        }
-        if !self.rng.gen_bool(self.cfg.storm_chance as f64) {
+        if !self.roll_periodic(self.cfg.storm_period, self.cfg.storm_chance) {
             return;
         }
         self.storm_until = self.tick + self.cfg.storm_duration;
@@ -2651,13 +2642,8 @@ impl World {
     }
 
     fn maybe_zero_day(&mut self) {
-        let period = self.cfg.zero_day_period;
-        if period == 0 || self.cfg.zero_day_chance <= 0.0 {
-            return;
-        }
-        if self.tick == 0 || !self.tick.is_multiple_of(period) {
-            return;
-        }
+        // Need enough alive nodes before the roll even becomes
+        // meaningful — preserve the existing ZERO_DAY_MIN_ALIVE floor.
         let alive_count = self
             .nodes
             .iter()
@@ -2666,7 +2652,7 @@ impl World {
         if alive_count < ZERO_DAY_MIN_ALIVE {
             return;
         }
-        if !self.rng.gen_bool(self.cfg.zero_day_chance as f64) {
+        if !self.roll_periodic(self.cfg.zero_day_period, self.cfg.zero_day_chance) {
             return;
         }
         // Mythic: zero-day coinciding with an active storm.
