@@ -152,6 +152,7 @@ fn main() -> io::Result<()> {
     let mut tick_ms: u64 = cli.tick_ms;
     let mut paused = false;
     let mut mesh_bounds = initial_bounds;
+    let mut cursor: Option<(i16, i16)> = None;
 
     loop {
         let wait = Duration::from_millis(tick_ms);
@@ -173,11 +174,43 @@ fn main() -> io::Result<()> {
                     (KeyCode::Char('i'), _) => {
                         world.inject_infection();
                     }
+                    (KeyCode::Tab, _) => {
+                        cursor = if cursor.is_some() {
+                            None
+                        } else {
+                            Some((mesh_bounds.0 / 2, mesh_bounds.1 / 2))
+                        };
+                    }
+                    (KeyCode::Left, _) if cursor.is_some() => {
+                        if let Some(c) = cursor.as_mut() {
+                            c.0 = (c.0 - 1).max(0);
+                        }
+                    }
+                    (KeyCode::Right, _) if cursor.is_some() => {
+                        if let Some(c) = cursor.as_mut() {
+                            c.0 = (c.0 + 1).min(mesh_bounds.0 - 1);
+                        }
+                    }
+                    (KeyCode::Up, _) if cursor.is_some() => {
+                        if let Some(c) = cursor.as_mut() {
+                            c.1 = (c.1 - 1).max(0);
+                        }
+                    }
+                    (KeyCode::Down, _) if cursor.is_some() => {
+                        if let Some(c) = cursor.as_mut() {
+                            c.1 = (c.1 + 1).min(mesh_bounds.1 - 1);
+                        }
+                    }
                     _ => {}
                 }
             }
             // Redraw immediately so key feedback (pause, speed) is visible.
-            let ui = UiState { paused, tick_ms, seed };
+            let ui = UiState {
+                paused,
+                tick_ms,
+                seed,
+                cursor,
+            };
             terminal.draw(|f| {
                 render::draw(f, &world, ui);
             })?;
@@ -188,7 +221,12 @@ fn main() -> io::Result<()> {
             world.tick(mesh_bounds);
         }
 
-        let ui = UiState { paused, tick_ms, seed };
+        let ui = UiState {
+            paused,
+            tick_ms,
+            seed,
+            cursor,
+        };
         terminal.draw(|f| {
             render::draw(f, &world, ui);
         })?;

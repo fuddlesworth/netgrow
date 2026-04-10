@@ -14,7 +14,7 @@ const FOOTER_HEIGHT: u16 = 1;
 const FRAME_COLOR: Color = Color::Rgb(60, 180, 200);
 const FRAME_ACCENT: Color = Color::Rgb(120, 220, 240);
 /// Muted blue-gray used for ghosts, dead links, separators, and other
-/// low-priority text. Explicit RGB instead of GHOST_COLOR because the
+/// low-priority text. Explicit RGB instead of Color::DarkGray because the
 /// ANSI bright-black slot is invisible on common pure-black terminals.
 const GHOST_COLOR: Color = Color::Rgb(95, 105, 130);
 
@@ -23,6 +23,9 @@ pub struct UiState {
     pub paused: bool,
     pub tick_ms: u64,
     pub seed: u64,
+    /// When `Some`, draws an inspector cursor highlight at the given mesh
+    /// cell and shows an inspector panel with the node's details.
+    pub cursor: Option<(i16, i16)>,
 }
 
 pub fn mesh_bounds(size: Size) -> (i16, i16) {
@@ -73,18 +76,29 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
         ));
     let mesh_inner = mesh_block.inner(mesh_frame);
     frame.render_widget(mesh_block, mesh_frame);
-    frame.render_widget(MeshWidget { world }, mesh_inner);
+    frame.render_widget(
+        MeshWidget {
+            world,
+            cursor: ui.cursor,
+        },
+        mesh_inner,
+    );
 
+    let inspector_height: u16 = if ui.cursor.is_some() { 9 } else { 0 };
     let right_rows = Layout::vertical([
         Constraint::Length(8),
         Constraint::Length(11),
+        Constraint::Length(inspector_height),
         Constraint::Min(5),
     ])
     .split(right_col);
 
     frame.render_widget(stats_block(&stats), right_rows[0]);
     frame.render_widget(legend_block(), right_rows[1]);
-    frame.render_widget(log_block(world), right_rows[2]);
+    if let Some(pos) = ui.cursor {
+        frame.render_widget(inspector_block(world, pos), right_rows[2]);
+    }
+    frame.render_widget(log_block(world), right_rows[3]);
 }
 
 fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'static> {
@@ -180,6 +194,8 @@ fn footer_bar(ui: UiState) -> Paragraph<'static> {
         lab(" speed "),
         key("i"),
         lab(" infect "),
+        key("⇥"),
+        lab(" inspect "),
         Span::raw(" "),
         Span::styled(
             format!("{}ms/tick", ui.tick_ms),
@@ -253,6 +269,83 @@ fn legend_block() -> Paragraph<'static> {
         row("✕", Color::Red, "pwned"),
         row("·", GHOST_COLOR, "ghost"),
     ];
+    Paragraph::new(lines).block(block)
+}
+
+fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
+    let block = bordered_block(" inspect ");
+    let label_style = Style::default().fg(Color::Rgb(150, 170, 200));
+    let value_style = Style::default()
+        .fg(Color::Rgb(220, 240, 255))
+        .add_modifier(Modifier::BOLD);
+    let row = |label: &'static str, value: String| {
+        Line::from(vec![
+            Span::styled(format!(" {:<8}", label), label_style),
+            Span::styled(value, value_style),
+        ])
+    };
+    let header = Line::from(vec![
+        Span::styled(" cell ", label_style),
+        Span::styled(
+            format!("{},{}", pos.0, pos.1),
+            Style::default()
+                .fg(Color::Rgb(255, 220, 80))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    let mut lines: Vec<Line<'static>> = vec![header];
+    let node = world.nodes.iter().find(|n| n.pos == pos);
+    match node {
+        None => {
+            lines.push(Line::from(Span::styled(
+                " (empty cell)".to_string(),
+                Style::default().fg(GHOST_COLOR),
+            )));
+        }
+        Some(n) => {
+            let role_name = if n.parent.is_none() {
+                "C2"
+            } else {
+                match n.role {
+                    Role::Relay => "relay",
+                    Role::Scanner => "scanner",
+                    Role::Exfil => "exfil",
+                    Role::Honeypot => "honeypot",
+                }
+            };
+            lines.push(row("role", role_name.to_string()));
+            let state_name = match n.state {
+                State::Alive => "alive".to_string(),
+                State::Pwned { ticks_left } => format!("pwned ({}t)", ticks_left),
+                State::Dead => "dead".to_string(),
+            };
+            lines.push(row("state", state_name));
+            lines.push(row("branch", format!("{}", n.branch_id)));
+            let age = world.tick.saturating_sub(n.born);
+            lines.push(row("age", format!("{}t", age)));
+            let mut tags: Vec<String> = Vec::new();
+            if n.hardened {
+                tags.push("hardened".into());
+            }
+            if n.dying_in > 0 {
+                tags.push(format!("dying({}t)", n.dying_in));
+            }
+            if let Some(inf) = n.infection {
+                let stage = match inf.stage {
+                    InfectionStage::Incubating => "incubating",
+                    InfectionStage::Active => "active",
+                    InfectionStage::Terminal => "terminal",
+                };
+                tags.push(format!("strain {} {}", inf.strain, stage));
+            }
+            let tag_text = if tags.is_empty() {
+                "—".to_string()
+            } else {
+                tags.join(" · ")
+            };
+            lines.push(row("flags", tag_text));
+        }
+    }
     Paragraph::new(lines).block(block)
 }
 
@@ -351,6 +444,7 @@ fn color_log_line(s: &str) -> Line<'static> {
 
 pub struct MeshWidget<'a> {
     pub world: &'a World,
+    pub cursor: Option<(i16, i16)>,
 }
 
 impl<'a> Widget for MeshWidget<'a> {
@@ -483,6 +577,46 @@ impl<'a> Widget for MeshWidget<'a> {
         for node in &w.nodes {
             let (glyph, style) = node_glyph(node, w.tick);
             put(buf, area, node.pos, glyph, style);
+        }
+
+        // 5. Inspector cursor — drawn last so it sits above everything else.
+        // We draw a 5-cell crosshair around the cursor: a reverse-video cell
+        // at the position plus four bracket marks at the four diagonals so
+        // it stays visible regardless of what's underneath.
+        if let Some(pos) = self.cursor {
+            // Center cell — reverse video on whatever glyph is underneath.
+            if pos.0 >= 0 && pos.1 >= 0 {
+                let cx = area.x as i32 + pos.0 as i32;
+                let cy = area.y as i32 + pos.1 as i32;
+                if cx >= area.x as i32
+                    && cy >= area.y as i32
+                    && cx < area.right() as i32
+                    && cy < area.bottom() as i32
+                {
+                    if let Some(cell) = buf.cell_mut((cx as u16, cy as u16)) {
+                        let existing = cell.symbol().to_string();
+                        let glyph = if existing.is_empty() || existing == " " {
+                            "+".to_string()
+                        } else {
+                            existing
+                        };
+                        cell.set_symbol(&glyph).set_style(
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(Color::Rgb(255, 220, 80))
+                                .add_modifier(Modifier::BOLD),
+                        );
+                    }
+                }
+            }
+            // Bracket corners.
+            let bracket_style = Style::default()
+                .fg(Color::Rgb(255, 220, 80))
+                .add_modifier(Modifier::BOLD);
+            put(buf, area, (pos.0 - 1, pos.1 - 1), "┌", bracket_style);
+            put(buf, area, (pos.0 + 1, pos.1 - 1), "┐", bracket_style);
+            put(buf, area, (pos.0 - 1, pos.1 + 1), "└", bracket_style);
+            put(buf, area, (pos.0 + 1, pos.1 + 1), "┘", bracket_style);
         }
     }
 }
