@@ -514,6 +514,11 @@ impl<'a> Widget for MeshWidget<'a> {
             let dying = a.dying_in > 0 || b.dying_in > 0;
             let dead = matches!(a.state, State::Dead) || matches!(b.state, State::Dead);
             let th = theme();
+            // A scanner's pulse quietly lifts every wire touching it from
+            // its branch hue to the scanner color for SCANNER_PULSE_TICKS
+            // ticks — no strobe, no reversed fill, the wire glyphs stay
+            // legible, they just brighten.
+            let scan_pulse = a.scan_pulse.max(b.scan_pulse);
             let style = if dying {
                 Style::default()
                     .fg(th.pwned)
@@ -524,6 +529,10 @@ impl<'a> Widget for MeshWidget<'a> {
                 || matches!(b.state, State::Pwned { .. })
             {
                 Style::default().fg(th.pwned)
+            } else if scan_pulse > 0 {
+                Style::default()
+                    .fg(th.scanner)
+                    .add_modifier(Modifier::BOLD)
             } else if link.kind == LinkKind::Cross {
                 Style::default()
                     .fg(th.cross_link)

@@ -27,10 +27,10 @@ const PACKET_LOAD_INCREMENT: u8 = 2;
 /// How much each in-flight worm adds to its current link's load per tick.
 const WORM_LOAD_INCREMENT: u8 = 1;
 
-/// Duration in ticks of a scanner's ping pulse. While scan_pulse is
-/// nonzero the scanner's own node renders with a reversed fill so a
-/// single cell blinks briefly when the scan fires — no link flashing.
-const SCANNER_PULSE_TICKS: u8 = 4;
+/// Duration in ticks of a scanner's ping pulse. Adjacent links brighten
+/// to the scanner color for this many ticks — no strobe, no reversed
+/// fill, just a quiet lift over the branch hue.
+const SCANNER_PULSE_TICKS: u8 = 8;
 
 /// Zero-day event weights. Rolls `0.0..1.0`: outbreak below the first
 /// threshold, emergency patch below the second, immune breakthrough above.
