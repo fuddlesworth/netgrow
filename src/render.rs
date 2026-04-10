@@ -87,7 +87,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     let inspector_height: u16 = if ui.cursor.is_some() { 10 } else { 0 };
     let right_rows = Layout::vertical([
         Constraint::Length(8),
-        Constraint::Length(12),
+        Constraint::Length(11),
         Constraint::Length(inspector_height),
         Constraint::Min(5),
     ])
@@ -262,6 +262,9 @@ fn legend_block() -> Paragraph<'static> {
             Span::styled(name, Style::default().fg(Color::Rgb(180, 200, 220))),
         ])
     };
+    // Note: honeypots are intentionally absent — they masquerade as relays
+    // (●) until tripped, at which point ◈ flashes for 2 ticks only. Same
+    // reason worms and patch waves aren't here: transient-only glyphs.
     let lines = vec![
         row("◆", Color::Cyan, "c2"),
         row("●", Color::Rgb(120, 220, 140), "relay"),
@@ -269,7 +272,6 @@ fn legend_block() -> Paragraph<'static> {
         row("◎", Color::Rgb(120, 220, 255), "scanner"),
         row("▣", Color::Rgb(180, 180, 255), "exfil"),
         row("◇", Color::Rgb(180, 240, 220), "defender"),
-        row("◈", Color::Yellow, "honeypot!"),
         row("▓", Color::Rgb(220, 100, 220), "infected"),
         row("✕", Color::Red, "pwned"),
         row("·", GHOST_COLOR, "ghost"),
