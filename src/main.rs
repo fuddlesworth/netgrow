@@ -64,6 +64,19 @@ struct Cli {
     /// Maximum Chebyshev distance between reconnect candidates.
     #[arg(long, default_value_t = 10)]
     reconnect_radius: i16,
+
+    /// Virus spread probability per infected neighbor per tick.
+    #[arg(long, default_value_t = 0.05)]
+    virus_spread_rate: f32,
+    /// Per-tick probability that a mature live node mutates its role.
+    #[arg(long, default_value_t = 0.0008)]
+    mutate_rate: f32,
+    /// Chance that a zero-day event fires when its period elapses.
+    #[arg(long, default_value_t = 0.4)]
+    zero_day_chance: f32,
+    /// Disable the entire virus layer (overrides spread/seed/worm rates).
+    #[arg(long, default_value_t = false)]
+    disable_virus: bool,
 }
 
 struct TerminalGuard;
@@ -110,6 +123,11 @@ fn main() -> io::Result<()> {
         honeypot_cascade_mult: cli.honeypot_cascade_mult,
         reconnect_rate: cli.reconnect_rate,
         reconnect_radius: cli.reconnect_radius,
+        virus_spread_rate: if cli.disable_virus { 0.0 } else { cli.virus_spread_rate },
+        virus_seed_rate: if cli.disable_virus { 0.0 } else { 0.004 },
+        worm_spawn_rate: if cli.disable_virus { 0.0 } else { 0.04 },
+        mutate_rate: cli.mutate_rate,
+        zero_day_chance: if cli.disable_virus { 0.0 } else { cli.zero_day_chance },
         ..Config::default()
     };
     let mut world = World::new(seed, initial_bounds, cfg);
@@ -134,6 +152,9 @@ fn main() -> io::Result<()> {
                     }
                     (KeyCode::Char('-'), _) | (KeyCode::Char('_'), _) => {
                         tick_ms = (tick_ms + 10).min(500);
+                    }
+                    (KeyCode::Char('i'), _) => {
+                        world.inject_infection();
                     }
                     _ => {}
                 }

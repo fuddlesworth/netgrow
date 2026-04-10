@@ -174,7 +174,9 @@ fn footer_bar(ui: UiState) -> Paragraph<'static> {
         key("+"),
         key("-"),
         lab(" speed "),
-        Span::raw("  "),
+        key("i"),
+        lab(" infect "),
+        Span::raw(" "),
         Span::styled(
             format!("{}ms/tick", ui.tick_ms),
             Style::default().fg(Color::DarkGray),
@@ -302,6 +304,15 @@ fn color_log_line(s: &str) -> Line<'static> {
             .add_modifier(Modifier::BOLD)
     } else if s.starts_with("worm delivered") {
         Style::default().fg(Color::Rgb(220, 120, 240))
+    } else if s.contains("ZERO-DAY") {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Rgb(255, 220, 80))
+            .add_modifier(Modifier::BOLD)
+    } else if s.contains("mutated") {
+        Style::default()
+            .fg(Color::Rgb(255, 140, 230))
+            .add_modifier(Modifier::BOLD)
     } else if s.contains("LOST") {
         Style::default()
             .fg(Color::Red)
@@ -650,6 +661,18 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD | Modifier::REVERSED),
                 );
+            }
+            if node.mutated_flash > 0 {
+                let st = if (tick + node.mutated_flash as u64).is_multiple_of(2) {
+                    Style::default()
+                        .fg(Color::Rgb(255, 120, 220))
+                        .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                } else {
+                    Style::default()
+                        .fg(Color::Rgb(255, 180, 240))
+                        .add_modifier(Modifier::BOLD)
+                };
+                return ("✦", st);
             }
             if node.shield_flash > 0 {
                 // Alternate between a bright shield ring and a reversed flash

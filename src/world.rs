@@ -80,6 +80,8 @@ pub struct Node {
     /// shield glyph for a few ticks so the viewer sees the save happen.
     pub shield_flash: u8,
     pub infection: Option<Infection>,
+    /// Nonzero means the node just mutated its role — flashes pink.
+    pub mutated_flash: u8,
 }
 
 impl Node {
@@ -111,6 +113,7 @@ impl Node {
             honey_reveal: 0,
             shield_flash: 0,
             infection: None,
+            mutated_flash: 0,
         }
     }
 }
@@ -206,6 +209,10 @@ pub struct Config {
     pub virus_seed_rate: f32,
     pub worm_spawn_rate: f32,
     pub patch_wave_radius: i16,
+    pub mutate_rate: f32,
+    pub mutate_min_age: u64,
+    pub zero_day_period: u64,
+    pub zero_day_chance: f32,
 }
 
 impl Default for Config {
@@ -233,6 +240,10 @@ impl Default for Config {
             virus_seed_rate: 0.004,
             worm_spawn_rate: 0.04,
             patch_wave_radius: 10,
+            mutate_rate: 0.0008,
+            mutate_min_age: 400,
+            zero_day_period: 2000,
+            zero_day_chance: 0.4,
         }
     }
 }
@@ -346,6 +357,8 @@ impl World {
         self.advance_patch_waves();
         self.heartbeat();
         self.advance_role_cooldowns();
+        self.maybe_mutate();
+        self.maybe_zero_day();
         self.fire_scanner_pings();
         self.fire_exfil_packets();
         self.advance_infections();
@@ -678,6 +691,9 @@ impl World {
             }
             if n.shield_flash > 0 {
                 n.shield_flash -= 1;
+            }
+            if n.mutated_flash > 0 {
+                n.mutated_flash -= 1;
             }
         }
     }
@@ -1119,9 +1135,164 @@ impl World {
         self.push_log(format!("strain {} detected at 10.0.{}.{}", strain, a, b));
     }
 
+    fn maybe_mutate(&mut self) {
+        let rate = self.cfg.mutate_rate;
+        if rate <= 0.0 {
+            return;
+        }
+        let min_age = self.cfg.mutate_min_age;
+        let now = self.tick;
+        // Collect eligible candidates first to avoid aliasing rng borrow.
+        let candidates: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                if i == self.c2 {
+                    return None;
+                }
+                if !matches!(n.state, State::Alive) {
+                    return None;
+                }
+                if n.infection.is_some() {
+                    return None;
+                }
+                if n.role == Role::Honeypot {
+                    return None; // honeypots hide; mutation would blow cover
+                }
+                if now.saturating_sub(n.born) < min_age {
+                    return None;
+                }
+                Some(i)
+            })
+            .collect();
+        for id in candidates {
+            if !self.rng.gen_bool(rate as f64) {
+                continue;
+            }
+            let current = self.nodes[id].role;
+            let choices: [Role; 3] = match current {
+                Role::Relay => [Role::Scanner, Role::Exfil, Role::Relay],
+                Role::Scanner => [Role::Relay, Role::Exfil, Role::Scanner],
+                Role::Exfil => [Role::Relay, Role::Scanner, Role::Exfil],
+                Role::Honeypot => continue,
+            };
+            // Pick uniformly from the first two (the third is the sentinel).
+            let new_role = choices[self.rng.gen_range(0..2)];
+            self.nodes[id].role = new_role;
+            self.nodes[id].mutated_flash = 6;
+            let (a, b) = octet_pair(self.nodes[id].pos);
+            let name = match new_role {
+                Role::Relay => "relay",
+                Role::Scanner => "scanner",
+                Role::Exfil => "exfil",
+                Role::Honeypot => "honeypot",
+            };
+            self.push_log(format!("node 10.0.{}.{} mutated → {}", a, b, name));
+        }
+    }
+
+    fn maybe_zero_day(&mut self) {
+        let period = self.cfg.zero_day_period;
+        if period == 0 || self.cfg.zero_day_chance <= 0.0 {
+            return;
+        }
+        if self.tick == 0 || !self.tick.is_multiple_of(period) {
+            return;
+        }
+        let alive_count = self
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.state, State::Alive))
+            .count();
+        if alive_count < 10 {
+            return;
+        }
+        if !self.rng.gen_bool(self.cfg.zero_day_chance as f64) {
+            return;
+        }
+        // Pick event type.
+        let roll = self.rng.gen::<f32>();
+        if roll < 0.6 {
+            self.zero_day_outbreak();
+        } else if roll < 0.9 {
+            self.zero_day_emergency_patch();
+        } else {
+            self.zero_day_immune_breakthrough();
+        }
+    }
+
+    fn zero_day_outbreak(&mut self) {
+        let strain = self.rng.gen_range(0..8u8);
+        // Infect 3-5 random alive nodes with a high cure_resist strain.
+        let count = self.rng.gen_range(3..=5);
+        let cure_resist = self.cfg.virus_cure_resist.saturating_mul(2);
+        let candidates: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                if i != self.c2
+                    && matches!(n.state, State::Alive)
+                    && n.infection.is_none()
+                {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let mut hit = 0u32;
+        for _ in 0..count {
+            let id = candidates[self.rng.gen_range(0..candidates.len())];
+            if self.nodes[id].infection.is_none() {
+                self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
+                hit += 1;
+            }
+        }
+        self.push_log(format!(
+            "ZERO-DAY: strain {} outbreak — {} hosts infected",
+            strain, hit
+        ));
+    }
+
+    fn zero_day_emergency_patch(&mut self) {
+        let mut cleared = 0u32;
+        for n in self.nodes.iter_mut() {
+            if let Some(inf) = n.infection {
+                if matches!(inf.stage, InfectionStage::Incubating) {
+                    n.infection = None;
+                    cleared += 1;
+                }
+            }
+        }
+        self.push_log(format!(
+            "ZERO-DAY: emergency patch deployed — {} hosts cleared",
+            cleared
+        ));
+    }
+
+    fn zero_day_immune_breakthrough(&mut self) {
+        // One-shot boost: raise cure_resist on any active infection so the
+        // next patch wave won't clear them quite as fast. Mostly flavor.
+        let mut boosted = 0u32;
+        for n in self.nodes.iter_mut() {
+            if let Some(inf) = n.infection.as_mut() {
+                inf.cure_resist = inf.cure_resist.saturating_add(2);
+                boosted += 1;
+            }
+        }
+        self.push_log(format!(
+            "ZERO-DAY: immune breakthrough — {} strains entrenched",
+            boosted
+        ));
+    }
+
     /// Infect a random Alive non-C2 node with a fresh strain. Used by the
-    /// `i` keybinding (added in commit 3) and by tests.
-    #[allow(dead_code)]
+    /// `i` keybinding and by tests.
     pub fn inject_infection(&mut self) -> Option<NodeId> {
         let candidates: Vec<NodeId> = self
             .nodes
@@ -1750,6 +1921,52 @@ mod tests {
             State::Pwned { .. } | State::Dead
         ));
         assert!(w.nodes[a].infection.is_none());
+    }
+
+    #[test]
+    fn mutation_skips_honeypots() {
+        let mut w = World::new(26, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 0.0;
+        w.cfg.mutate_rate = 1.0;
+        w.cfg.mutate_min_age = 0;
+        w.cfg.virus_seed_rate = 0.0;
+        let id = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Honeypot, 1));
+        for _ in 0..10 {
+            w.maybe_mutate();
+        }
+        assert_eq!(w.nodes[id].role, Role::Honeypot);
+        assert_eq!(w.nodes[id].mutated_flash, 0);
+    }
+
+    #[test]
+    fn mutation_flips_relay_role_and_flashes() {
+        let mut w = World::new(27, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 0.0;
+        w.cfg.mutate_rate = 1.0;
+        w.cfg.mutate_min_age = 0;
+        w.cfg.virus_seed_rate = 0.0;
+        let id = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+        w.maybe_mutate();
+        assert!(matches!(w.nodes[id].role, Role::Scanner | Role::Exfil));
+        assert!(w.nodes[id].mutated_flash > 0);
+    }
+
+    #[test]
+    fn zero_day_respects_min_node_floor() {
+        let mut w = World::new(28, (80, 30), Config::default());
+        w.cfg.zero_day_period = 1;
+        w.cfg.zero_day_chance = 1.0;
+        w.cfg.virus_seed_rate = 0.0;
+        // Only C2 alive: 1 node, well below the 10-node minimum.
+        w.tick = 1;
+        w.maybe_zero_day();
+        assert!(w.nodes.iter().all(|n| n.infection.is_none()));
     }
 
     #[test]
