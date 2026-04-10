@@ -340,6 +340,9 @@ pub struct Config {
     /// a multiple of this value, it enters a new era with a name drawn
     /// from ERA_NAMES. Set to 0 to disable.
     pub epoch_period: u64,
+    /// A cascade of this size or larger logs 'THE BIG ONE' as a mythic
+    /// event. Tune lower for a smaller mesh or to see it more often.
+    pub mythic_big_one_threshold: usize,
 }
 
 impl Default for Config {
@@ -395,6 +398,7 @@ impl Default for Config {
             tower_spawn_radius: 10,
             tower_pwn_resist: 2,
             epoch_period: 5000,
+            mythic_big_one_threshold: 30,
         }
     }
 }
@@ -471,6 +475,9 @@ pub struct World {
     /// Per-faction running stats. Indexed by faction id and sized to
     /// c2_count at World::new.
     pub faction_stats: Vec<FactionStats>,
+    /// True once the 'PANDEMIC' mythic event has fired this run. Used
+    /// to make sure it only lands once even if the condition persists.
+    pub mythic_pandemic_seen: bool,
 }
 
 impl World {
@@ -653,6 +660,7 @@ impl World {
             storm_until: 0,
             strain_names,
             faction_stats: vec![FactionStats::default(); count],
+            mythic_pandemic_seen: false,
         }
     }
 
@@ -1682,6 +1690,21 @@ impl World {
         for pos in newly_active {
             self.log_node(pos, "symptomatic");
         }
+
+        // Mythic: PANDEMIC fires once per run if every one of the
+        // STRAIN_COUNT strains is simultaneously alive in the mesh.
+        if !self.mythic_pandemic_seen {
+            let mut seen = [false; STRAIN_COUNT];
+            for n in &self.nodes {
+                if let Some(inf) = n.infection {
+                    seen[(inf.strain as usize) % STRAIN_COUNT] = true;
+                }
+            }
+            if seen.iter().all(|s| *s) {
+                self.mythic_pandemic_seen = true;
+                self.push_log("✦ MYTHIC ✦ PANDEMIC — all strains active".to_string());
+            }
+        }
     }
 
     fn maybe_seed_infection(&mut self) {
@@ -1800,6 +1823,10 @@ impl World {
         }
         if !self.rng.gen_bool(self.cfg.zero_day_chance as f64) {
             return;
+        }
+        // Mythic: zero-day coinciding with an active storm.
+        if self.is_storming() {
+            self.push_log("✦ MYTHIC ✦ CONFLUENCE — zero-day amid storm".to_string());
         }
         let roll = self.rng.gen::<f32>();
         if roll < ZERO_DAY_OUTBREAK_WEIGHT {
@@ -2234,6 +2261,9 @@ impl World {
         if touched > 0 {
             let label = if mult > 1.5 { "HONEYPOT cascade" } else { "cascade" };
             self.push_log(format!("{}: {} hosts burning", label, touched));
+            if (touched as usize) >= self.cfg.mythic_big_one_threshold {
+                self.push_log(format!("✦ MYTHIC ✦ THE BIG ONE — {} hosts", touched));
+            }
         }
     }
 

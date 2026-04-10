@@ -529,6 +529,13 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default()
             .fg(th.frame_accent)
             .add_modifier(Modifier::BOLD)
+    } else if s.contains("MYTHIC") {
+        // Mythic events get the full reversed-accent treatment so they
+        // stand apart from every other log category.
+        Style::default()
+            .fg(th.header_brand_fg)
+            .bg(th.accent)
+            .add_modifier(Modifier::BOLD)
     } else if s.contains("packet dropped") {
         Style::default().fg(th.log_cascade)
     } else if s.contains("backdoor") {
