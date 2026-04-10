@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 use ratatui::Frame;
 
 use crate::theme::theme;
-use crate::util::{braille_area_graph, session_name, sparkline, with_commas};
+use crate::util::{braille_area_graph, braille_bar, session_name, sparkline, with_commas};
 use crate::world::{
     InfectionStage, LinkKind, Node, Role, State, World, WorldStats, HOT_LINK, WARM_LINK,
 };
@@ -93,7 +93,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
 
     let inspector_height: u16 = if ui.cursor.is_some() { 10 } else { 0 };
     let right_rows = Layout::vertical([
-        Constraint::Length(5), // stats: 3 content rows + border
+        Constraint::Length(8), // stats: 6 content rows + border
         Constraint::Length(5), // activity: 3 braille content rows + border
         Constraint::Length(7), // roles: 5 content rows + border
         Constraint::Length(inspector_height),
@@ -101,7 +101,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     ])
     .split(right_col);
 
-    frame.render_widget(stats_block(&stats), right_rows[0]);
+    frame.render_widget(stats_block(&stats, world.cfg.max_nodes), right_rows[0]);
     frame.render_widget(activity_block(world, right_rows[1].width), right_rows[1]);
     frame.render_widget(legend_block(), right_rows[2]);
     if let Some(pos) = ui.cursor {
@@ -415,43 +415,43 @@ fn sep() -> Span<'static> {
     Span::styled(" · ", Style::default().fg(theme().ghost))
 }
 
-fn stats_block(s: &WorldStats) -> Paragraph<'static> {
+fn stats_block(s: &WorldStats, max_nodes: usize) -> Paragraph<'static> {
     let th = theme();
     let block = bordered_block(" stats ");
     let label_style = Style::default().fg(th.stat_label);
-    // Label padding must exceed the longest label ("branches" = 8) so every
-    // row gets at least one space between label and value, otherwise the
-    // longest-label rows render with the value flush against the label and
-    // the second column drifts left.
-    let cell = move |label: &'static str, value: String, color: Color| -> Vec<Span<'static>> {
-        vec![
-            Span::styled(format!(" {:<9}", label), label_style),
-            Span::styled(
-                format!("{:<5}", value),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-        ]
-    };
-    let two = |a: Vec<Span<'static>>, b: Vec<Span<'static>>| {
-        let mut spans = a;
-        spans.extend(b);
-        Line::from(spans)
-    };
     let alive_color = th.branch_palette.first().copied().unwrap_or(th.value);
     let branch_color = th.branch_palette.get(1).copied().unwrap_or(th.value);
+    let cap = max_nodes.max(1);
+    // Node-population denominator: scales every meter to the shared
+    // max_nodes cap so the bars are comparable at a glance.
+    let row_with_bar =
+        |label: &'static str, value: usize, color: Color| -> Line<'static> {
+            let bar = braille_bar(value as u64, cap as u64, 10);
+            Line::from(vec![
+                Span::styled(format!(" {:<9}", label), label_style),
+                Span::styled(
+                    format!("{:<4}", value),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(bar, Style::default().fg(color)),
+            ])
+        };
+    let row_plain = |label: &'static str, value: usize, color: Color| -> Line<'static> {
+        Line::from(vec![
+            Span::styled(format!(" {:<9}", label), label_style),
+            Span::styled(
+                format!("{}", value),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+        ])
+    };
     let lines = vec![
-        two(
-            cell("alive", format!("{}", s.alive), alive_color),
-            cell("dying", format!("{}", s.dying), th.log_cascade),
-        ),
-        two(
-            cell("pwned", format!("{}", s.pwned), th.pwned),
-            cell("dead", format!("{}", s.dead), th.ghost),
-        ),
-        two(
-            cell("branches", format!("{}", s.branches), branch_color),
-            cell("bridges", format!("{}", s.cross_links), th.cross_link),
-        ),
+        row_with_bar("alive", s.alive, alive_color),
+        row_with_bar("pwned", s.pwned, th.pwned),
+        row_with_bar("dying", s.dying, th.log_cascade),
+        row_with_bar("dead", s.dead, th.ghost),
+        row_plain("branches", s.branches, branch_color),
+        row_plain("bridges", s.cross_links, th.cross_link),
     ];
     Paragraph::new(lines).block(block)
 }
