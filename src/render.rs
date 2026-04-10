@@ -510,7 +510,10 @@ fn legend_block() -> Paragraph<'static> {
             cell("▣", th.exfil, "exfil"),
             Some(cell("⊞", th.frame_accent, "tower")),
         ),
-        two(cell("⊚", th.accent, "beacon"), None),
+        two(
+            cell("⊚", th.accent, "beacon"),
+            Some(cell("⊛", th.stat_packets, "proxy")),
+        ),
     ];
     Paragraph::new(lines).block(block)
 }
@@ -554,6 +557,7 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
                     Role::Defender => "defender",
                     Role::Tower => "tower",
                     Role::Beacon => "beacon",
+                    Role::Proxy => "proxy",
                 }
             };
             lines.push(row("role", role_name.to_string()));
@@ -1145,6 +1149,7 @@ fn infected_glyph(
                 Role::Defender => "◇",
                 Role::Tower => "⊞",
                 Role::Beacon => "⊚",
+                Role::Proxy => "⊛",
             };
             (base, Style::default().fg(hue).add_modifier(Modifier::DIM))
         }
@@ -1161,6 +1166,7 @@ fn infected_glyph(
                 Role::Defender => "◇",
                 Role::Tower => "⊞",
                 Role::Beacon => "⊚",
+                Role::Proxy => "⊛",
             };
             let g = if (tick + inf.age as u64).is_multiple_of(3) {
                 "▓"
@@ -1320,6 +1326,12 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                     "⊚",
                     Style::default()
                         .fg(th.accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Role::Proxy => (
+                    "⊛",
+                    Style::default()
+                        .fg(th.stat_packets)
                         .add_modifier(Modifier::BOLD),
                 ),
             };

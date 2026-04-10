@@ -71,6 +71,10 @@ pub enum Role {
     /// Rally-point node that boosts nearby nodes' parent-selection weight,
     /// creating visible spawn clusters. Rendered with an always-on glow.
     Beacon,
+    /// Scanner repeater — when any scanner within `proxy_radius` fires,
+    /// this node also pulses, propagating the scanner highlight through
+    /// a chain of proxies.
+    Proxy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -269,18 +273,20 @@ pub struct RoleWeights {
     pub defender: f32,
     pub tower: f32,
     pub beacon: f32,
+    pub proxy: f32,
 }
 
 impl Default for RoleWeights {
     fn default() -> Self {
         Self {
-            relay: 0.56,
+            relay: 0.53,
             scanner: 0.13,
             exfil: 0.10,
             honeypot: 0.04,
             defender: 0.08,
             tower: 0.05,
             beacon: 0.04,
+            proxy: 0.03,
         }
     }
 }
@@ -366,6 +372,11 @@ pub struct Config {
     /// a multiple of this value, it enters a new era with a name drawn
     /// from ERA_NAMES. Set to 0 to disable.
     pub epoch_period: u64,
+    /// Radius within which a Proxy node echoes a firing scanner's
+    /// pulse. When a scanner fires, every proxy inside this Chebyshev
+    /// radius also gets scan_pulse set, so the pulse ripples through
+    /// a chain of proxies.
+    pub proxy_radius: i16,
     /// Radius within which an alive Beacon boosts a candidate's
     /// parent-selection weight during try_spawn.
     pub beacon_radius: i16,
@@ -440,6 +451,7 @@ impl Default for Config {
             storm_loss_mult: 2.2,
             tower_spawn_radius: 10,
             tower_pwn_resist: 2,
+            proxy_radius: 8,
             beacon_radius: 6,
             beacon_weight_mult: 1.5,
             epoch_period: 5000,
@@ -969,7 +981,7 @@ impl World {
 
     fn roll_role(&mut self) -> Role {
         let w = &self.cfg.role_weights;
-        let total = w.relay + w.scanner + w.exfil + w.honeypot + w.defender + w.tower + w.beacon;
+        let total = w.relay + w.scanner + w.exfil + w.honeypot + w.defender + w.tower + w.beacon + w.proxy;
         let mut r = self.rng.gen::<f32>() * total.max(f32::EPSILON);
         if r < w.relay {
             return Role::Relay;
@@ -994,7 +1006,11 @@ impl World {
         if r < w.tower {
             return Role::Tower;
         }
-        Role::Beacon
+        r -= w.tower;
+        if r < w.beacon {
+            return Role::Beacon;
+        }
+        Role::Proxy
     }
 
     fn alloc_branch_id(&mut self) -> u16 {
@@ -1320,6 +1336,7 @@ impl World {
                 }
             })
             .collect();
+        let mut fired_positions: Vec<(i16, i16)> = Vec::new();
         for id in scanner_ids {
             // Pick a direction so the spawn bias in try_spawn still favors
             // growth along the scanner's last sweep. Pulled out of the
@@ -1334,6 +1351,25 @@ impl World {
             // ticks. The render pass reads scan_pulse to brighten the node
             // and every link touching it.
             n.scan_pulse = SCANNER_PULSE_TICKS;
+            fired_positions.push(n.pos);
+        }
+        // Proxies within proxy_radius of any fired scanner echo the
+        // pulse on the same tick, so a single scanner firing lights
+        // up a chain of connected proxies.
+        if !fired_positions.is_empty() {
+            let radius = self.cfg.proxy_radius;
+            for n in self.nodes.iter_mut() {
+                if !matches!(n.state, State::Alive) || n.role != Role::Proxy {
+                    continue;
+                }
+                for fpos in &fired_positions {
+                    let d = (fpos.0 - n.pos.0).abs().max((fpos.1 - n.pos.1).abs());
+                    if d <= radius {
+                        n.scan_pulse = SCANNER_PULSE_TICKS;
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -1986,7 +2022,11 @@ impl World {
                 }
                 if matches!(
                     n.role,
-                    Role::Honeypot | Role::Defender | Role::Tower | Role::Beacon
+                    Role::Honeypot
+                        | Role::Defender
+                        | Role::Tower
+                        | Role::Beacon
+                        | Role::Proxy
                 ) {
                     return None; // specialized roles stay in their lane
                 }
@@ -2005,7 +2045,11 @@ impl World {
                 Role::Relay => [Role::Scanner, Role::Exfil, Role::Relay],
                 Role::Scanner => [Role::Relay, Role::Exfil, Role::Scanner],
                 Role::Exfil => [Role::Relay, Role::Scanner, Role::Exfil],
-                Role::Honeypot | Role::Defender | Role::Tower | Role::Beacon => continue,
+                Role::Honeypot
+                | Role::Defender
+                | Role::Tower
+                | Role::Beacon
+                | Role::Proxy => continue,
             };
             // Pick uniformly from the first two (the third is the sentinel).
             let new_role = choices[self.rng.gen_range(0..2)];
@@ -2020,6 +2064,7 @@ impl World {
                 Role::Defender => "defender",
                 Role::Tower => "tower",
                 Role::Beacon => "beacon",
+                Role::Proxy => "proxy",
             };
             self.log_node(pos, &format!("mutated → {}", name));
         }

@@ -70,6 +70,10 @@ struct Cli {
     /// parent-selection weight of nearby nodes, producing spawn clusters.
     #[arg(long, default_value_t = 0.04)]
     beacon_weight: f32,
+    /// Relative weight of Proxy nodes at spawn. Proxies echo scanner
+    /// pulses to their neighbors, extending the scan reach.
+    #[arg(long, default_value_t = 0.03)]
+    proxy_weight: f32,
 
     /// Ticks between Scanner pings.
     #[arg(long, default_value_t = 30)]
@@ -258,6 +262,7 @@ fn main() -> io::Result<()> {
     let defender_weight = pick_f32("defender_weight", cli.defender_weight, file.defender_weight);
     let tower_weight = pick_f32("tower_weight", cli.tower_weight, file.tower_weight);
     let beacon_weight = pick_f32("beacon_weight", cli.beacon_weight, file.beacon_weight);
+    let proxy_weight = pick_f32("proxy_weight", cli.proxy_weight, file.proxy_weight);
     let scanner_ping_period = pick_u16(
         "scanner_ping_period",
         cli.scanner_ping_period,
@@ -324,6 +329,7 @@ fn main() -> io::Result<()> {
             defender: defender_weight,
             tower: tower_weight,
             beacon: beacon_weight,
+            proxy: proxy_weight,
         },
         scanner_ping_period,
         exfil_packet_period,
