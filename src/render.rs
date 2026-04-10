@@ -618,15 +618,18 @@ fn strain_hue(strain: u8) -> Color {
 }
 
 fn branch_hue(branch_id: u16) -> Color {
+    // Eight visually distinct hues spread across the wheel. We deliberately
+    // avoid pure red (used for cascades), pure cyan (C2), and the magenta /
+    // pink range (infections) so branches stay readable as their own thing.
     const PALETTE: [Color; 8] = [
-        Color::Rgb(60, 200, 100),
-        Color::Rgb(80, 220, 160),
-        Color::Rgb(180, 220, 60),
-        Color::Rgb(60, 180, 200),
-        Color::Rgb(200, 220, 80),
-        Color::Rgb(40, 220, 140),
-        Color::Rgb(120, 200, 80),
-        Color::Rgb(60, 200, 180),
+        Color::Rgb(80, 230, 100),  // green
+        Color::Rgb(180, 240, 60),  // lime
+        Color::Rgb(240, 200, 60),  // gold
+        Color::Rgb(240, 130, 60),  // orange
+        Color::Rgb(80, 240, 200),  // mint
+        Color::Rgb(60, 190, 220),  // teal
+        Color::Rgb(120, 160, 240), // periwinkle
+        Color::Rgb(220, 240, 140), // pale chartreuse
     ];
     PALETTE[branch_id as usize % PALETTE.len()]
 }

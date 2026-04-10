@@ -77,6 +77,16 @@ struct Cli {
     /// Disable the entire virus layer (overrides spread/seed/worm rates).
     #[arg(long, default_value_t = false)]
     disable_virus: bool,
+    /// Constant weight given to C2 in parent selection. Higher values create
+    /// more distinct branches by keeping C2 a viable parent throughout the
+    /// run instead of letting age decay collapse its weight to zero.
+    #[arg(long, default_value_t = 0.6)]
+    c2_spawn_bias: f32,
+    /// Per-spawn chance that a new node forks off into its own branch
+    /// instead of inheriting its parent's branch_id. Set to 0 to keep all
+    /// branches rooted at C2.
+    #[arg(long, default_value_t = 0.05)]
+    fork_rate: f32,
 }
 
 struct TerminalGuard;
@@ -127,6 +137,8 @@ fn main() -> io::Result<()> {
         virus_spread_rate: cli.virus_spread_rate,
         mutate_rate: cli.mutate_rate,
         zero_day_chance: cli.zero_day_chance,
+        c2_spawn_bias: cli.c2_spawn_bias,
+        fork_rate: cli.fork_rate,
         ..Config::default()
     };
     if cli.disable_virus {

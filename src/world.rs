@@ -230,6 +230,14 @@ pub struct Config {
     pub mutate_min_age: u64,
     pub zero_day_period: u64,
     pub zero_day_chance: f32,
+    /// Constant weight given to C2 in the parent-selection roll. Without
+    /// this, C2's age-decayed weight collapses below all frontier nodes
+    /// after the first few ticks and the mesh stops minting new branches.
+    pub c2_spawn_bias: f32,
+    /// Per-spawn probability that a new node starts its own branch instead
+    /// of inheriting its parent's branch_id. Lets distinct sub-botnets fork
+    /// off existing nodes anywhere in the mesh, not just at C2.
+    pub fork_rate: f32,
 }
 
 impl Default for Config {
@@ -264,6 +272,8 @@ impl Default for Config {
             mutate_min_age: 400,
             zero_day_period: 2000,
             zero_day_chance: 0.4,
+            c2_spawn_bias: 0.6,
+            fork_rate: 0.05,
         }
     }
 }
@@ -539,16 +549,26 @@ impl World {
             return;
         }
 
-        // Weighted pick over Alive nodes, favoring recent births.
+        // Weighted pick over Alive nodes, favoring recent births. C2 gets a
+        // constant weight floor so it remains a viable parent throughout the
+        // run — otherwise its age-decayed weight collapses below the frontier
+        // and the mesh stops minting new branches after the first ~30 ticks.
         let now = self.tick;
+        let c2 = self.c2;
+        let c2_bias = self.cfg.c2_spawn_bias;
         let mut candidates: Vec<(NodeId, f32)> = self
             .nodes
             .iter()
             .enumerate()
             .filter_map(|(i, n)| match n.state {
                 State::Alive => {
-                    let age = (now - n.born) as f32;
-                    Some((i, 1.0 / (1.0 + age * 0.1)))
+                    let weight = if i == c2 {
+                        c2_bias
+                    } else {
+                        let age = (now - n.born) as f32;
+                        1.0 / (1.0 + age * 0.1)
+                    };
+                    Some((i, weight))
                 }
                 _ => None,
             })
@@ -615,9 +635,13 @@ impl World {
             None => return,
         };
 
-        // Branch id: first-hop children of C2 each spawn a fresh branch so
-        // distinct colonies get distinct colors; deeper children inherit.
-        let branch_id = if parent_id == self.c2 {
+        // Branch id: first-hop children of C2 each spawn a fresh branch, and
+        // any other spawn occasionally forks off into its own sub-botnet via
+        // the configurable fork_rate roll. Otherwise the new node inherits
+        // its parent's branch.
+        let forks = parent_id == self.c2
+            || (self.cfg.fork_rate > 0.0 && self.rng.gen_bool(self.cfg.fork_rate as f64));
+        let branch_id = if forks {
             self.alloc_branch_id()
         } else {
             self.nodes[parent_id].branch_id
