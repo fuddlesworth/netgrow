@@ -788,7 +788,24 @@ impl<'a> Widget for MeshWidget<'a> {
                 } else {
                     None
                 };
-                let glyph = glyph_for(prev, cell, next);
+                // Loaded links swap from the normal box-drawing glyph
+                // to a braille fill character whose dot density scales
+                // with the wire's current load. Hot wires read as
+                // solid blocks, warm wires as half-fills, idle wires
+                // keep their normal path shape.
+                let glyph = if link.kind == LinkKind::Parent && !dying && !dead {
+                    if link.load >= HOT_LINK {
+                        "⣿"
+                    } else if link.load >= WARM_LINK + 4 {
+                        "⣶"
+                    } else if link.load >= WARM_LINK {
+                        "⣤"
+                    } else {
+                        glyph_for(prev, cell, next)
+                    }
+                } else {
+                    glyph_for(prev, cell, next)
+                };
                 put(buf, area, cell, glyph, style);
             }
         }
