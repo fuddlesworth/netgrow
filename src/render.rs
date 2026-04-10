@@ -5,7 +5,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui::Frame;
 
-use crate::world::{Link, Node, State, World};
+use crate::world::{Node, Role, State, World};
 
 pub fn draw(frame: &mut Frame, world: &World) {
     let chunks = Layout::horizontal([Constraint::Min(40), Constraint::Length(28)])
@@ -38,6 +38,7 @@ impl<'a> Widget for MeshWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let w = self.world;
 
+        // 1. Links
         for link in &w.links {
             let a = &w.nodes[link.a];
             let b = &w.nodes[link.b];
@@ -47,8 +48,14 @@ impl<'a> Widget for MeshWidget<'a> {
                 Style::default()
                     .fg(Color::Red)
                     .add_modifier(Modifier::BOLD)
+            } else if dead {
+                Style::default().fg(Color::DarkGray)
+            } else if matches!(a.state, State::Pwned { .. })
+                || matches!(b.state, State::Pwned { .. })
+            {
+                Style::default().fg(Color::Red)
             } else {
-                link_style(a.state, b.state)
+                Style::default().fg(branch_hue(b.branch_id))
             };
             // Once a link's endpoint is dying or dead, reveal the full route —
             // otherwise a cascade that fires mid-animation leaves red ✕ markers
@@ -63,7 +70,6 @@ impl<'a> Widget for MeshWidget<'a> {
             }
             for i in 0..reveal {
                 let cell = link.path[i];
-                // Skip the endpoint cells; nodes draw on top of them.
                 if cell == w.nodes[link.a].pos || cell == w.nodes[link.b].pos {
                     continue;
                 }
@@ -78,6 +84,46 @@ impl<'a> Widget for MeshWidget<'a> {
             }
         }
 
+        // 2. Scanner ping halos — expand 1/2/3 cells outward per tick of life.
+        for ping in &w.pings {
+            let age = w.tick.saturating_sub(ping.born) as i16;
+            if age > 3 {
+                continue;
+            }
+            let radius = age.max(1);
+            let dim = 80u8.saturating_sub((age as u8) * 20);
+            let style = Style::default().fg(Color::Rgb(dim, 220, 220));
+            for dy in -radius..=radius {
+                for dx in -radius..=radius {
+                    if dx.abs().max(dy.abs()) != radius {
+                        continue;
+                    }
+                    let cell = (ping.origin.0 + dx, ping.origin.1 + dy);
+                    put(buf, area, cell, "·", style);
+                }
+            }
+        }
+
+        // 3. Exfil packets flowing back toward C2.
+        for pkt in &w.packets {
+            let link = &w.links[pkt.link_id];
+            let idx = pkt.pos as usize;
+            if idx >= link.path.len() {
+                continue;
+            }
+            let cell = link.path[idx];
+            // Skip drawing on endpoint cells — nodes take priority.
+            if cell == w.nodes[link.a].pos || cell == w.nodes[link.b].pos {
+                continue;
+            }
+            let glyph = packet_glyph(link, idx);
+            let style = Style::default()
+                .fg(Color::Rgb(120, 240, 255))
+                .add_modifier(Modifier::BOLD);
+            put(buf, area, cell, glyph, style);
+        }
+
+        // 4. Nodes on top.
         for node in &w.nodes {
             let (glyph, style) = node_glyph(node, w.tick);
             put(buf, area, node.pos, glyph, style);
@@ -113,16 +159,10 @@ fn glyph_for(prev: Option<(i16, i16)>, cur: (i16, i16), next: Option<(i16, i16)>
             } else if d1.1 == 0 && d2.1 == 0 {
                 "─"
             } else {
-                // Bend: figure out which corner.
-                // Incoming direction and outgoing direction.
                 match (d1, d2) {
-                    // came from left (+x), going down (+y): ┐
                     ((1, 0), (0, 1)) | ((0, -1), (-1, 0)) => "┐",
-                    // came from left (+x), going up (-y): ┘
                     ((1, 0), (0, -1)) | ((0, 1), (-1, 0)) => "┘",
-                    // came from right (-x), going down (+y): ┌
                     ((-1, 0), (0, 1)) | ((0, -1), (1, 0)) => "┌",
-                    // came from right (-x), going up (-y): └
                     ((-1, 0), (0, -1)) | ((0, 1), (1, 0)) => "└",
                     _ => "·",
                 }
@@ -142,21 +182,40 @@ fn glyph_for(prev: Option<(i16, i16)>, cur: (i16, i16), next: Option<(i16, i16)>
     }
 }
 
-fn link_style(a: State, b: State) -> Style {
-    let any_dead = matches!(a, State::Dead) || matches!(b, State::Dead);
-    let any_pwned = matches!(a, State::Pwned { .. }) || matches!(b, State::Pwned { .. });
-    if any_dead {
-        Style::default().fg(Color::DarkGray)
-    } else if any_pwned {
-        Style::default().fg(Color::Red)
-    } else {
-        Style::default().fg(Color::Rgb(60, 200, 100))
+fn packet_glyph(link: &crate::world::Link, idx: usize) -> &'static str {
+    // Direction of travel: from idx toward idx-1 (parent end).
+    if idx == 0 {
+        return "▸";
     }
+    let cur = link.path[idx];
+    let prev = link.path[idx - 1];
+    let dx = prev.0 - cur.0;
+    let dy = prev.1 - cur.1;
+    match (dx.signum(), dy.signum()) {
+        (1, 0) => "▸",
+        (-1, 0) => "◂",
+        (0, 1) => "▾",
+        (0, -1) => "▴",
+        _ => "◆",
+    }
+}
+
+fn branch_hue(branch_id: u16) -> Color {
+    const PALETTE: [Color; 8] = [
+        Color::Rgb(60, 200, 100),
+        Color::Rgb(80, 220, 160),
+        Color::Rgb(180, 220, 60),
+        Color::Rgb(60, 180, 200),
+        Color::Rgb(200, 220, 80),
+        Color::Rgb(40, 220, 140),
+        Color::Rgb(120, 200, 80),
+        Color::Rgb(60, 200, 180),
+    ];
+    PALETTE[branch_id as usize % PALETTE.len()]
 }
 
 fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
     if node.dying_in > 0 && !matches!(node.state, State::Dead) {
-        // Blink red ✕ while the death wave is passing through this node.
         let st = if (tick + node.dying_in as u64) % 2 == 0 {
             Style::default()
                 .fg(Color::Red)
@@ -171,21 +230,56 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
     match node.state {
         State::Alive => {
             if node.parent.is_none() {
-                (
+                return (
                     "◆",
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
-                )
-            } else if node.pulse > 0 {
+                );
+            }
+            // Honeypot revealed at trip moment — yellow flash.
+            if node.honey_reveal > 0 {
+                return (
+                    "◈",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                );
+            }
+            let hue = branch_hue(node.branch_id);
+            let pulse_boost = node.pulse > 0;
+            let (glyph, base_style) = match node.role {
+                Role::Relay => {
+                    if node.hardened {
+                        ("◉", Style::default().fg(hue).add_modifier(Modifier::BOLD))
+                    } else {
+                        ("●", Style::default().fg(hue))
+                    }
+                }
+                Role::Scanner => (
+                    "◎",
+                    Style::default()
+                        .fg(Color::Rgb(120, 220, 255))
+                        .add_modifier(if node.hardened { Modifier::BOLD } else { Modifier::empty() }),
+                ),
+                Role::Exfil => (
+                    "▣",
+                    Style::default()
+                        .fg(Color::Rgb(180, 180, 255))
+                        .add_modifier(if node.hardened { Modifier::BOLD } else { Modifier::empty() }),
+                ),
+                // Honeypot masquerades as a Relay until tripped.
+                Role::Honeypot => ("●", Style::default().fg(hue)),
+            };
+            if pulse_boost {
                 (
-                    "●",
+                    glyph,
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
-                ("●", Style::default().fg(Color::LightGreen))
+                (glyph, base_style)
             }
         }
         State::Pwned { .. } => {
@@ -201,7 +295,3 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
         State::Dead => ("·", Style::default().fg(Color::DarkGray)),
     }
 }
-
-// Keep unused-import silencer: Link referenced for intent.
-#[allow(dead_code)]
-fn _ref_link(_l: &Link) {}
