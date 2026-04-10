@@ -128,6 +128,16 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
             ));
         }
     }
+    if world.is_storming() {
+        spans.push(sep());
+        let remaining = world.storm_until.saturating_sub(world.tick);
+        spans.push(Span::styled(
+            format!("⚡ STORM ({})", remaining),
+            Style::default()
+                .fg(th.pwned)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        ));
+    }
     spans.push(sep());
     spans.push(stat_span("nodes", format!("{}", stats.alive + stats.pwned)));
     if stats.factions > 1 {
@@ -486,6 +496,12 @@ fn color_log_line(s: &str) -> Line<'static> {
             .add_modifier(Modifier::BOLD)
     } else if s.starts_with("day breaks") {
         Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
+    } else if s.contains("STORM") {
+        Style::default()
+            .fg(th.pwned)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else if s.starts_with("storm passes") {
+        Style::default().fg(th.label).add_modifier(Modifier::BOLD)
     } else if s.contains("packet dropped") {
         Style::default().fg(th.log_cascade)
     } else if s.contains("backdoor") {

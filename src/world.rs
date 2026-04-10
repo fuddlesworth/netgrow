@@ -306,6 +306,18 @@ pub struct Config {
     /// Maximum number of backdoor cross-links a single honeypot trip
     /// may reveal.
     pub honeypot_backdoor_max: u8,
+    /// Ticks between network-storm rolls. A storm is a rare event that
+    /// briefly spikes both spawn and loss, producing a chaotic burst.
+    /// Set to 0 to disable.
+    pub storm_period: u64,
+    /// Probability of a storm firing when `storm_period` elapses.
+    pub storm_chance: f32,
+    /// How many ticks a storm stays active once it fires.
+    pub storm_duration: u64,
+    /// Multiplier applied to p_spawn while a storm is active.
+    pub storm_spawn_mult: f32,
+    /// Multiplier applied to p_loss while a storm is active.
+    pub storm_loss_mult: f32,
 }
 
 impl Default for Config {
@@ -353,6 +365,11 @@ impl Default for Config {
             night_loss_mult: 1.5,
             honeypot_backdoor_radius: 14,
             honeypot_backdoor_max: 3,
+            storm_period: 1800,
+            storm_chance: 0.35,
+            storm_duration: 150,
+            storm_spawn_mult: 2.2,
+            storm_loss_mult: 2.2,
         }
     }
 }
@@ -374,6 +391,9 @@ pub struct World {
     pub worms: Vec<Worm>,
     pub patch_waves: Vec<PatchWave>,
     pub next_branch_id: u16,
+    /// Tick at which the current network storm ends. 0 if no storm is
+    /// active. Storms spike both spawn and loss rates for a short burst.
+    pub storm_until: u64,
 }
 
 impl World {
@@ -396,6 +416,11 @@ impl World {
             return false;
         }
         (self.tick % period) >= period / 2
+    }
+
+    /// True while a network storm is currently active.
+    pub fn is_storming(&self) -> bool {
+        self.storm_until > self.tick
     }
 }
 
@@ -501,6 +526,7 @@ impl World {
             worms: Vec::new(),
             patch_waves: Vec::new(),
             next_branch_id: 1,
+            storm_until: 0,
         }
     }
 
@@ -522,6 +548,11 @@ impl World {
                 self.push_log(msg.to_string());
             }
         }
+
+        // Network storm: rare chaotic burst that spikes spawn + loss for
+        // a short window. Logged at start and end so the phase reads
+        // clearly in the log.
+        self.maybe_storm();
 
         // Phase 1: growth — add new nodes and extend link animations.
         self.try_spawn();
@@ -702,11 +733,14 @@ impl World {
         if self.nodes.len() >= self.cfg.max_nodes {
             return;
         }
-        let spawn_mult = if self.is_night() {
+        let mut spawn_mult = if self.is_night() {
             self.cfg.night_spawn_mult
         } else {
             1.0
         };
+        if self.is_storming() {
+            spawn_mult *= self.cfg.storm_spawn_mult;
+        }
         let effective_spawn = (self.cfg.p_spawn * spawn_mult).clamp(0.0, 1.0);
         if !self.rng.gen_bool(effective_spawn as f64) {
             return;
@@ -1057,6 +1091,32 @@ impl World {
             link.load = link.load.saturating_sub(1);
             link.breach_ttl = link.breach_ttl.saturating_sub(1);
         }
+    }
+
+    /// Roll for a network storm. Storms spike both spawn and loss rates
+    /// for a configurable duration and log the start / end transitions.
+    fn maybe_storm(&mut self) {
+        // End an active storm when its window elapses.
+        if self.storm_until > 0 && self.tick >= self.storm_until {
+            self.storm_until = 0;
+            self.push_log("storm passes — mesh settling".to_string());
+            return;
+        }
+        // Roll for a new storm only when one isn't already active, and
+        // only once per storm_period, skipping tick 0 so fresh worlds
+        // don't storm on frame one.
+        let period = self.cfg.storm_period;
+        if period == 0 || self.storm_until > 0 || self.tick == 0 {
+            return;
+        }
+        if !self.tick.is_multiple_of(period) {
+            return;
+        }
+        if !self.rng.gen_bool(self.cfg.storm_chance as f64) {
+            return;
+        }
+        self.storm_until = self.tick + self.cfg.storm_duration;
+        self.push_log("⚡ STORM — mesh destabilizing".to_string());
     }
 
     /// Walk up the parent chain from `victim` toward C2, marking each
@@ -1714,11 +1774,14 @@ impl World {
         }
 
         // Pick a new victim?
-        let loss_mult = if self.is_night() {
+        let mut loss_mult = if self.is_night() {
             self.cfg.night_loss_mult
         } else {
             1.0
         };
+        if self.is_storming() {
+            loss_mult *= self.cfg.storm_loss_mult;
+        }
         let effective_loss = (self.cfg.p_loss * loss_mult).clamp(0.0, 1.0);
         if self.rng.gen_bool(effective_loss as f64) {
             let alive_ids: Vec<NodeId> = self
