@@ -30,6 +30,11 @@ struct Cli {
     /// silently ignored, parse errors abort startup.
     #[arg(long)]
     config: Option<PathBuf>,
+    /// Theme to apply. Either a built-in name (gruvbox, nord, dracula,
+    /// catppuccin-mocha, solarized-dark) or a path to a custom TOML
+    /// theme file. Overrides any `theme = ...` in the config file.
+    #[arg(long)]
+    theme: Option<String>,
     #[arg(long)]
     seed: Option<u64>,
     #[arg(long, default_value_t = 50)]
@@ -164,25 +169,28 @@ fn main() -> io::Result<()> {
         }
     }
 
-    // Theme: load from the file config's `theme = "..."` setting if present.
-    // Path is taken as-is if absolute, otherwise resolved relative to the
-    // config file (so theme = "themes/matrix.toml" works alongside the config).
-    if let Some(theme_path) = file.theme.as_ref() {
-        let mut p = std::path::PathBuf::from(theme_path);
-        if p.is_relative() {
-            if let Some(cfg_path) = file_path.as_ref() {
-                if let Some(parent) = cfg_path.parent() {
-                    p = parent.join(&p);
-                }
-            }
-        }
-        match theme::Theme::load(&p) {
+    // Theme: --theme on the CLI wins over `theme = "..."` in the config
+    // file. Both accept either a built-in name (nord, dracula, …) or a
+    // filesystem path. Relative paths from the config file resolve
+    // against that file's directory; relative paths from the CLI resolve
+    // against the current working directory.
+    let theme_request = cli.theme.as_deref().or(file.theme.as_deref());
+    if let Some(req) = theme_request {
+        let base_dir = if cli.theme.is_some() {
+            std::env::current_dir().ok()
+        } else {
+            file_path
+                .as_ref()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        };
+        match theme::Theme::resolve(req, base_dir.as_deref()) {
             Ok(t) => {
-                eprintln!("netgrow loaded theme from {}", p.display());
+                eprintln!("netgrow loaded theme '{}'", req);
                 theme::install(t);
             }
             Err(e) => {
                 eprintln!("netgrow theme load failed: {}", e);
+                eprintln!("built-in themes: {}", theme::BUILTIN_NAMES.join(", "));
                 return Err(e);
             }
         }

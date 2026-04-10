@@ -1,5 +1,5 @@
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use ratatui::style::Color;
@@ -265,22 +265,68 @@ pub struct ThemeFile {
 }
 
 impl Theme {
-    /// Load a theme from a TOML file, merging with the default for any
-    /// fields the file doesn't override. Empty/missing palettes also fall
-    /// back to the default.
-    pub fn load(path: &Path) -> io::Result<Self> {
-        let text = std::fs::read_to_string(path)?;
-        let file: ThemeFile = toml::from_str(&text).map_err(|e| {
+    /// Parse a theme from raw TOML text. `src` is just used in error
+    /// messages so the user knows which file/preset blew up.
+    pub fn from_toml_str(text: &str, src: &str) -> io::Result<Self> {
+        let file: ThemeFile = toml::from_str(text).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("theme parse error in {}: {}", path.display(), e),
+                format!("theme parse error in {}: {}", src, e),
             )
         })?;
         let mut t = Theme::default();
         merge(&mut t, file);
         Ok(t)
     }
+
+    /// Load a theme from a filesystem path.
+    pub fn load(path: &Path) -> io::Result<Self> {
+        let text = std::fs::read_to_string(path)?;
+        Self::from_toml_str(&text, &path.display().to_string())
+    }
+
+    /// Resolve a theme reference that may be either a built-in name
+    /// (`nord`, `dracula`, …) or a path to a TOML file. Relative paths
+    /// resolve against `base_dir` if provided — typically the directory
+    /// of the config file that requested the theme.
+    pub fn resolve(name_or_path: &str, base_dir: Option<&Path>) -> io::Result<Self> {
+        if let Some(text) = builtin_theme(name_or_path) {
+            return Self::from_toml_str(text, &format!("builtin:{}", name_or_path));
+        }
+        let mut p = PathBuf::from(name_or_path);
+        if p.is_relative() {
+            if let Some(dir) = base_dir {
+                p = dir.join(p);
+            }
+        }
+        Self::load(&p)
+    }
 }
+
+/// Themes shipped with the binary, looked up by short name. Each entry
+/// embeds the corresponding TOML file at compile time so users don't
+/// need the themes directory on disk.
+pub fn builtin_theme(name: &str) -> Option<&'static str> {
+    match name {
+        "gruvbox" => Some(include_str!("../themes/gruvbox.toml")),
+        "nord" => Some(include_str!("../themes/nord.toml")),
+        "dracula" => Some(include_str!("../themes/dracula.toml")),
+        "catppuccin" | "catppuccin-mocha" | "mocha" => {
+            Some(include_str!("../themes/catppuccin-mocha.toml"))
+        }
+        "solarized" | "solarized-dark" => Some(include_str!("../themes/solarized-dark.toml")),
+        _ => None,
+    }
+}
+
+/// Sorted list of built-in theme names for `--help` text and listings.
+pub const BUILTIN_NAMES: &[&str] = &[
+    "catppuccin-mocha",
+    "dracula",
+    "gruvbox",
+    "nord",
+    "solarized-dark",
+];
 
 fn merge(t: &mut Theme, f: ThemeFile) {
     macro_rules! single {
