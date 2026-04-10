@@ -1,0 +1,17 @@
+[package]
+name = "netgrow"
+version = "0.1.0"
+edition = "2021"
+description = "A cyberpunk botnet/mesh growing in your terminal"
+
+[dependencies]
+ratatui = "0.28"
+crossterm = "0.28"
+rand = "0.8"
+rand_chacha = "0.3"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
