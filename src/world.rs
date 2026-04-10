@@ -66,12 +66,22 @@ impl Node {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkKind {
+    /// Tree edge created when a node is spawned from its parent.
+    Parent,
+    /// Lateral bridge between two live nodes in different branches. Used
+    /// purely for cascade reachability — packets never relay through these.
+    Cross,
+}
+
 #[derive(Clone, Debug)]
 pub struct Link {
     pub a: NodeId,
     pub b: NodeId,
     pub path: Vec<(i16, i16)>,
     pub drawn: u16,
+    pub kind: LinkKind,
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +131,8 @@ pub struct Config {
     pub exfil_packet_period: u16,
     pub hardened_after_heartbeats: u8,
     pub honeypot_cascade_mult: f32,
+    pub reconnect_rate: f32,
+    pub reconnect_radius: i16,
 }
 
 impl Default for Config {
@@ -138,6 +150,8 @@ impl Default for Config {
             exfil_packet_period: 25,
             hardened_after_heartbeats: 4,
             honeypot_cascade_mult: 3.0,
+            reconnect_rate: 0.0,
+            reconnect_radius: 10,
         }
     }
 }
@@ -206,8 +220,91 @@ impl World {
         self.fire_exfil_packets();
         self.advance_pwned_and_loss();
         self.advance_dying();
+        self.maybe_reconnect();
 
         self.tick += 1;
+    }
+
+    fn maybe_reconnect(&mut self) {
+        if self.cfg.reconnect_rate <= 0.0 {
+            return;
+        }
+        if !self.rng.gen_bool(self.cfg.reconnect_rate.clamp(0.0, 1.0) as f64) {
+            return;
+        }
+        let alive: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                if i != self.c2
+                    && matches!(n.state, State::Alive)
+                    && n.dying_in == 0
+                {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if alive.len() < 2 {
+            return;
+        }
+        let a = alive[self.rng.gen_range(0..alive.len())];
+        let a_pos = self.nodes[a].pos;
+        let a_branch = self.nodes[a].branch_id;
+        let radius = self.cfg.reconnect_radius;
+        let mut candidates: Vec<NodeId> = alive
+            .iter()
+            .copied()
+            .filter(|&b| {
+                if b == a {
+                    return false;
+                }
+                if self.nodes[b].branch_id == a_branch {
+                    return false;
+                }
+                let dp = self.nodes[b].pos;
+                (dp.0 - a_pos.0).abs().max((dp.1 - a_pos.1).abs()) <= radius
+            })
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        // Skip if a cross link already exists between these two.
+        let already_linked = |x: NodeId, y: NodeId, links: &[Link]| {
+            links.iter().any(|l| {
+                l.kind == LinkKind::Cross
+                    && ((l.a == x && l.b == y) || (l.a == y && l.b == x))
+            })
+        };
+        candidates.retain(|&b| !already_linked(a, b, &self.links));
+        if candidates.is_empty() {
+            return;
+        }
+        let b = candidates[self.rng.gen_range(0..candidates.len())];
+        let b_pos = self.nodes[b].pos;
+        let path = match routing::route_link(
+            a_pos,
+            b_pos,
+            &self.occupied,
+            self.bounds,
+            &mut self.rng,
+        ) {
+            Some(p) => p,
+            None => return,
+        };
+        self.links.push(Link {
+            a,
+            b,
+            path,
+            drawn: 0,
+            kind: LinkKind::Cross,
+        });
+        self.push_log(format!(
+            "bridge {}↔{} established",
+            self.nodes[a].branch_id, self.nodes[b].branch_id
+        ));
     }
 
     fn roll_role(&mut self) -> Role {
@@ -338,6 +435,7 @@ impl World {
             b: new_id,
             path,
             drawn: 0,
+            kind: LinkKind::Parent,
         });
 
         let h = (cand.0 as u32).wrapping_mul(2654435761) ^ (cand.1 as u32).wrapping_mul(40503);
@@ -469,10 +567,14 @@ impl World {
 
     fn fire_exfil_packets(&mut self) {
         let period = self.cfg.exfil_packet_period;
-        // Index inbound link per node (parent → this node).
+        // Index inbound link per node (parent → this node). Packets only ride
+        // parent chains home, never cross-links — keeps exfil routing simple
+        // and prevents loops.
         let mut inbound: HashMap<NodeId, usize> = HashMap::new();
         for (li, link) in self.links.iter().enumerate() {
-            inbound.insert(link.b, li);
+            if link.kind == LinkKind::Parent {
+                inbound.insert(link.b, li);
+            }
         }
         let exfil_ids: Vec<NodeId> = self
             .nodes
@@ -509,10 +611,12 @@ impl World {
         if self.packets.is_empty() {
             return;
         }
-        // Build inbound index for parent-hops.
+        // Build inbound index for parent-hops (parent links only).
         let mut inbound: HashMap<NodeId, usize> = HashMap::new();
         for (li, link) in self.links.iter().enumerate() {
-            inbound.insert(link.b, li);
+            if link.kind == LinkKind::Parent {
+                inbound.insert(link.b, li);
+            }
         }
 
         let mut keep: Vec<Packet> = Vec::with_capacity(self.packets.len());
@@ -626,26 +730,14 @@ impl World {
     /// Like schedule_subtree_death but each hop's delay is multiplied by `mult`,
     /// stretching the red wave out for a more theatrical kill (honeypot trap).
     pub fn schedule_subtree_death_scaled(&mut self, root: NodeId, mult: f32) {
-        let mut children: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-        for (i, n) in self.nodes.iter().enumerate() {
-            if let Some(p) = n.parent {
-                children.entry(p).or_default().push(i);
-            }
-        }
-        let mut queue: VecDeque<(NodeId, u8)> = VecDeque::new();
-        queue.push_back((root, 0));
+        let cascade = self.compute_cascade(root);
         let mut touched = 0u32;
-        while let Some((id, distance)) = queue.pop_front() {
+        for (id, distance) in cascade {
             let base = distance.saturating_mul(2).saturating_add(3) as f32;
             let delay = (base * mult).round().clamp(1.0, 255.0) as u8;
             if self.nodes[id].dying_in == 0 || self.nodes[id].dying_in > delay {
                 self.nodes[id].dying_in = delay;
                 touched += 1;
-            }
-            if let Some(cs) = children.get(&id) {
-                for &c in cs {
-                    queue.push_back((c, distance + 1));
-                }
             }
         }
         if touched > 0 {
@@ -653,32 +745,115 @@ impl World {
         }
     }
 
-    /// Stagger death through a subtree so the kill is visible as a red wave
-    /// spreading outward from `root`. Nodes are left in their current state
-    /// but tagged with `dying_in`; render reads that and paints red.
-    /// NOTE: parent-based subtree walk. If the graph ever becomes a mesh
-    /// (multiple parents), switch to a reachability check from c2.
-    pub fn schedule_subtree_death(&mut self, root: NodeId) {
-        let mut children: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-        for (i, n) in self.nodes.iter().enumerate() {
+    /// Build the live undirected adjacency used for cascade reachability.
+    /// Parent edges always count; cross edges only count once fully drawn.
+    /// Dead / dying nodes are excluded entirely.
+    fn live_adjacency(&self) -> HashMap<NodeId, Vec<NodeId>> {
+        let mut adj: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        let traversable = |id: NodeId| -> bool {
+            let n = &self.nodes[id];
+            !matches!(n.state, State::Dead) && n.dying_in == 0
+        };
+        for (id, n) in self.nodes.iter().enumerate() {
+            if !traversable(id) {
+                continue;
+            }
             if let Some(p) = n.parent {
-                children.entry(p).or_default().push(i);
+                if traversable(p) {
+                    adj.entry(id).or_default().push(p);
+                    adj.entry(p).or_default().push(id);
+                }
             }
         }
+        for link in &self.links {
+            if link.kind != LinkKind::Cross {
+                continue;
+            }
+            if (link.drawn as usize) < link.path.len() {
+                continue;
+            }
+            if !traversable(link.a) || !traversable(link.b) {
+                continue;
+            }
+            adj.entry(link.a).or_default().push(link.b);
+            adj.entry(link.b).or_default().push(link.a);
+        }
+        adj
+    }
+
+    fn bfs_reachable(
+        &self,
+        start: NodeId,
+        adj: &HashMap<NodeId, Vec<NodeId>>,
+        forbidden: Option<NodeId>,
+    ) -> HashSet<NodeId> {
+        let mut seen: HashSet<NodeId> = HashSet::new();
+        if Some(start) == forbidden {
+            return seen;
+        }
+        let mut queue: VecDeque<NodeId> = VecDeque::new();
+        queue.push_back(start);
+        seen.insert(start);
+        while let Some(id) = queue.pop_front() {
+            if let Some(ns) = adj.get(&id) {
+                for &m in ns {
+                    if Some(m) == forbidden {
+                        continue;
+                    }
+                    if seen.insert(m) {
+                        queue.push_back(m);
+                    }
+                }
+            }
+        }
+        seen
+    }
+
+    /// Compute which nodes should die when `root` is lost, and their
+    /// BFS distance from `root` for cascade ordering. Uses a reachability
+    /// diff over parent + fully-drawn cross edges, so nodes with a live
+    /// alternate route to C2 survive.
+    fn compute_cascade(&self, root: NodeId) -> Vec<(NodeId, u8)> {
+        let adj = self.live_adjacency();
+        let reach_with = self.bfs_reachable(self.c2, &adj, None);
+        let reach_without = self.bfs_reachable(self.c2, &adj, Some(root));
+        let doomed: HashSet<NodeId> = reach_with
+            .difference(&reach_without)
+            .copied()
+            .collect();
+        if doomed.is_empty() {
+            return Vec::new();
+        }
+        let mut dist: HashMap<NodeId, u8> = HashMap::new();
         let mut queue: VecDeque<(NodeId, u8)> = VecDeque::new();
         queue.push_back((root, 0));
+        dist.insert(root, 0);
+        while let Some((id, d)) = queue.pop_front() {
+            if let Some(ns) = adj.get(&id) {
+                for &m in ns {
+                    if !doomed.contains(&m) || dist.contains_key(&m) {
+                        continue;
+                    }
+                    let nd = d.saturating_add(1);
+                    dist.insert(m, nd);
+                    queue.push_back((m, nd));
+                }
+            }
+        }
+        dist.into_iter().collect()
+    }
+
+    /// Stagger death through every node that loses its route to C2 when
+    /// `root` is severed. Visible as a red wave radiating outward from the
+    /// pwned node; cross-linked cousins survive.
+    pub fn schedule_subtree_death(&mut self, root: NodeId) {
+        let cascade = self.compute_cascade(root);
         let mut touched = 0u32;
-        while let Some((id, distance)) = queue.pop_front() {
-            // 2 ticks per hop, plus a 3-tick lead so the flash is visible.
+        for (id, distance) in cascade {
             let delay = distance.saturating_mul(2).saturating_add(3);
             if self.nodes[id].dying_in == 0 || self.nodes[id].dying_in > delay {
                 self.nodes[id].dying_in = delay.max(1);
                 touched += 1;
-            }
-            if let Some(cs) = children.get(&id) {
-                for &c in cs {
-                    queue.push_back((c, distance + 1));
-                }
             }
         }
         if touched > 0 {
@@ -823,6 +998,7 @@ mod tests {
             b: a,
             path: path_ca,
             drawn: len_ca,
+            kind: LinkKind::Parent,
         });
         let path_ab: Vec<(i16, i16)> = (10..=14).map(|x| (x, 10)).collect();
         let len_ab = path_ab.len() as u16;
@@ -831,6 +1007,7 @@ mod tests {
             b,
             path: path_ab,
             drawn: len_ab,
+            kind: LinkKind::Parent,
         });
         // Force the Exfil to fire on tick 0 and then tick enough for the
         // packet to reach C2 and be dropped.
@@ -841,6 +1018,42 @@ mod tests {
             w.advance_packets();
         }
         assert!(w.packets.is_empty());
+    }
+
+    #[test]
+    fn cross_link_saves_reachable_node_from_cascade() {
+        let mut w = World::new(5, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 0.0;
+        // Diamond: c2 -> a, c2 -> c, a -> b (b in branch_id 1), plus cross b↔c.
+        // Kill a. b should die (loses its parent route and isn't cross-linked
+        // to anything alive besides c). c is in branch 2 with cross to b, but
+        // c has its own parent path to C2, so c must survive. b has no direct
+        // parent chain to c after a is gone, so reachability from C2 to b
+        // goes c2→c→(cross)→b — b SHOULD survive via the cross.
+        let a = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((20, 10), Some(w.c2), 0, Role::Relay, 1));
+        let c = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((30, 10), Some(w.c2), 0, Role::Relay, 2));
+        let b = w.nodes.len();
+        w.nodes.push(Node::fresh((25, 12), Some(a), 0, Role::Relay, 1));
+        // Fully-drawn cross link b ↔ c.
+        let cross_path = vec![(25, 12), (30, 10)]; // cells don't matter for logic
+        let len = cross_path.len() as u16;
+        w.links.push(Link {
+            a: b,
+            b: c,
+            path: cross_path,
+            drawn: len,
+            kind: LinkKind::Cross,
+        });
+        let cascade = w.compute_cascade(a);
+        let ids: HashSet<NodeId> = cascade.iter().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&a), "root must be doomed");
+        assert!(!ids.contains(&b), "b should survive via cross link to c");
+        assert!(!ids.contains(&c), "c has its own route to C2");
     }
 
     #[test]

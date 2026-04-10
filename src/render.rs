@@ -5,7 +5,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui::Frame;
 
-use crate::world::{Node, Role, State, World};
+use crate::world::{LinkKind, Node, Role, State, World};
 
 pub fn draw(frame: &mut Frame, world: &World) {
     let chunks = Layout::horizontal([Constraint::Min(40), Constraint::Length(28)])
@@ -54,6 +54,12 @@ impl<'a> Widget for MeshWidget<'a> {
                 || matches!(b.state, State::Pwned { .. })
             {
                 Style::default().fg(Color::Red)
+            } else if link.kind == LinkKind::Cross {
+                // Lateral bridges render in a distinct teal so the topology
+                // is readable — these are survival routes, not tree edges.
+                Style::default()
+                    .fg(Color::Rgb(140, 220, 240))
+                    .add_modifier(Modifier::DIM)
             } else {
                 Style::default().fg(branch_hue(b.branch_id))
             };

@@ -56,6 +56,13 @@ struct Cli {
     /// Multiplier applied to a honeypot's cascade delay for theatrical effect.
     #[arg(long, default_value_t = 3.0)]
     honeypot_cascade_mult: f32,
+    /// Per-tick probability of attempting a lateral bridge between two live
+    /// nodes in different branches (0 disables the feature).
+    #[arg(long, default_value_t = 0.0)]
+    reconnect_rate: f32,
+    /// Maximum Chebyshev distance between reconnect candidates.
+    #[arg(long, default_value_t = 10)]
+    reconnect_radius: i16,
 }
 
 struct TerminalGuard;
@@ -103,6 +110,8 @@ fn main() -> io::Result<()> {
         exfil_packet_period: cli.exfil_packet_period,
         hardened_after_heartbeats: cli.hardened_after,
         honeypot_cascade_mult: cli.honeypot_cascade_mult,
+        reconnect_rate: cli.reconnect_rate,
+        reconnect_radius: cli.reconnect_radius,
         ..Config::default()
     };
     let mut world = World::new(seed, initial_bounds, cfg);
