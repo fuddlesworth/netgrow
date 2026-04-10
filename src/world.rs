@@ -68,6 +68,9 @@ pub enum Role {
     /// Fortified core node with extra pwn-absorbing charges. Spawns only
     /// close to its faction's C2, creating visible fortified zones.
     Tower,
+    /// Rally-point node that boosts nearby nodes' parent-selection weight,
+    /// creating visible spawn clusters. Rendered with an always-on glow.
+    Beacon,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,17 +268,19 @@ pub struct RoleWeights {
     pub honeypot: f32,
     pub defender: f32,
     pub tower: f32,
+    pub beacon: f32,
 }
 
 impl Default for RoleWeights {
     fn default() -> Self {
         Self {
-            relay: 0.60,
+            relay: 0.56,
             scanner: 0.13,
             exfil: 0.10,
             honeypot: 0.04,
             defender: 0.08,
             tower: 0.05,
+            beacon: 0.04,
         }
     }
 }
@@ -361,6 +366,13 @@ pub struct Config {
     /// a multiple of this value, it enters a new era with a name drawn
     /// from ERA_NAMES. Set to 0 to disable.
     pub epoch_period: u64,
+    /// Radius within which an alive Beacon boosts a candidate's
+    /// parent-selection weight during try_spawn.
+    pub beacon_radius: i16,
+    /// Multiplier added to a candidate's parent weight per nearby beacon.
+    /// Default 1.5x means being next to a beacon roughly 2.5x a node's
+    /// chance of being chosen to spawn the next child.
+    pub beacon_weight_mult: f32,
     /// A cascade of this size or larger logs 'THE BIG ONE' as a mythic
     /// event. Tune lower for a smaller mesh or to see it more often.
     pub mythic_big_one_threshold: usize,
@@ -428,6 +440,8 @@ impl Default for Config {
             storm_loss_mult: 2.2,
             tower_spawn_radius: 10,
             tower_pwn_resist: 2,
+            beacon_radius: 6,
+            beacon_weight_mult: 1.5,
             epoch_period: 5000,
             mythic_big_one_threshold: 30,
             c2_count_max: 0,
@@ -955,7 +969,7 @@ impl World {
 
     fn roll_role(&mut self) -> Role {
         let w = &self.cfg.role_weights;
-        let total = w.relay + w.scanner + w.exfil + w.honeypot + w.defender + w.tower;
+        let total = w.relay + w.scanner + w.exfil + w.honeypot + w.defender + w.tower + w.beacon;
         let mut r = self.rng.gen::<f32>() * total.max(f32::EPSILON);
         if r < w.relay {
             return Role::Relay;
@@ -976,7 +990,11 @@ impl World {
         if r < w.defender {
             return Role::Defender;
         }
-        Role::Tower
+        r -= w.defender;
+        if r < w.tower {
+            return Role::Tower;
+        }
+        Role::Beacon
     }
 
     fn alloc_branch_id(&mut self) -> u16 {
@@ -1030,18 +1048,42 @@ impl World {
         let now = self.tick;
         let c2_bias = self.cfg.c2_spawn_bias;
         let c2_set: HashSet<NodeId> = self.c2_nodes.iter().copied().collect();
+        // Collect beacon positions so we can apply a spawn weight
+        // bonus to candidates within beacon_radius.
+        let beacon_positions: Vec<(i16, i16)> = self
+            .nodes
+            .iter()
+            .filter_map(|n| {
+                if matches!(n.state, State::Alive) && n.role == Role::Beacon {
+                    Some(n.pos)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let beacon_radius = self.cfg.beacon_radius;
+        let beacon_mult = self.cfg.beacon_weight_mult;
         let mut candidates: Vec<(NodeId, f32)> = self
             .nodes
             .iter()
             .enumerate()
             .filter_map(|(i, n)| match n.state {
                 State::Alive => {
-                    let weight = if c2_set.contains(&i) {
+                    let mut weight = if c2_set.contains(&i) {
                         c2_bias
                     } else {
                         let age = (now - n.born) as f32;
                         1.0 / (1.0 + age * 0.1)
                     };
+                    // Beacon aura: stack a multiplicative bonus for
+                    // each beacon this candidate sits inside the radius
+                    // of, creating clusters near rally points.
+                    for bpos in &beacon_positions {
+                        let d = (bpos.0 - n.pos.0).abs().max((bpos.1 - n.pos.1).abs());
+                        if d <= beacon_radius {
+                            weight *= beacon_mult;
+                        }
+                    }
                     Some((i, weight))
                 }
                 _ => None,
@@ -1942,8 +1984,11 @@ impl World {
                 if n.infection.is_some() {
                     return None;
                 }
-                if matches!(n.role, Role::Honeypot | Role::Defender | Role::Tower) {
-                    return None; // honeypots hide; defenders and towers stay put
+                if matches!(
+                    n.role,
+                    Role::Honeypot | Role::Defender | Role::Tower | Role::Beacon
+                ) {
+                    return None; // specialized roles stay in their lane
                 }
                 if now.saturating_sub(n.born) < min_age {
                     return None;
@@ -1960,7 +2005,7 @@ impl World {
                 Role::Relay => [Role::Scanner, Role::Exfil, Role::Relay],
                 Role::Scanner => [Role::Relay, Role::Exfil, Role::Scanner],
                 Role::Exfil => [Role::Relay, Role::Scanner, Role::Exfil],
-                Role::Honeypot | Role::Defender | Role::Tower => continue,
+                Role::Honeypot | Role::Defender | Role::Tower | Role::Beacon => continue,
             };
             // Pick uniformly from the first two (the third is the sentinel).
             let new_role = choices[self.rng.gen_range(0..2)];
@@ -1974,6 +2019,7 @@ impl World {
                 Role::Honeypot => "honeypot",
                 Role::Defender => "defender",
                 Role::Tower => "tower",
+                Role::Beacon => "beacon",
             };
             self.log_node(pos, &format!("mutated → {}", name));
         }

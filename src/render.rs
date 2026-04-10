@@ -95,7 +95,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     let right_rows = Layout::vertical([
         Constraint::Length(8), // stats: 6 content rows + border
         Constraint::Length(5), // activity: 3 braille content rows + border
-        Constraint::Length(7), // roles: 5 content rows + border
+        Constraint::Length(8), // roles: 6 content rows + border
         Constraint::Length(inspector_height),
         Constraint::Min(5),
     ])
@@ -510,6 +510,7 @@ fn legend_block() -> Paragraph<'static> {
             cell("▣", th.exfil, "exfil"),
             Some(cell("⊞", th.frame_accent, "tower")),
         ),
+        two(cell("⊚", th.accent, "beacon"), None),
     ];
     Paragraph::new(lines).block(block)
 }
@@ -552,6 +553,7 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
                     Role::Honeypot => "honeypot",
                     Role::Defender => "defender",
                     Role::Tower => "tower",
+                    Role::Beacon => "beacon",
                 }
             };
             lines.push(row("role", role_name.to_string()));
@@ -1142,6 +1144,7 @@ fn infected_glyph(
                 // practice but the match must be exhaustive.
                 Role::Defender => "◇",
                 Role::Tower => "⊞",
+                Role::Beacon => "⊚",
             };
             (base, Style::default().fg(hue).add_modifier(Modifier::DIM))
         }
@@ -1157,6 +1160,7 @@ fn infected_glyph(
                 // practice but the match must be exhaustive.
                 Role::Defender => "◇",
                 Role::Tower => "⊞",
+                Role::Beacon => "⊚",
             };
             let g = if (tick + inf.age as u64).is_multiple_of(3) {
                 "▓"
@@ -1310,6 +1314,12 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                     "⊞",
                     Style::default()
                         .fg(th.frame_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Role::Beacon => (
+                    "⊚",
+                    Style::default()
+                        .fg(th.accent)
                         .add_modifier(Modifier::BOLD),
                 ),
             };

@@ -21,6 +21,7 @@ pub struct FileConfig {
     pub honeypot_weight: Option<f32>,
     pub defender_weight: Option<f32>,
     pub tower_weight: Option<f32>,
+    pub beacon_weight: Option<f32>,
 
     pub scanner_ping_period: Option<u16>,
     pub exfil_packet_period: Option<u16>,

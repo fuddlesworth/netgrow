@@ -66,6 +66,10 @@ struct Cli {
     /// near C2 (within tower_spawn_radius) and absorb extra pwn attempts.
     #[arg(long, default_value_t = 0.05)]
     tower_weight: f32,
+    /// Relative weight of Beacon nodes at spawn. Beacons boost the
+    /// parent-selection weight of nearby nodes, producing spawn clusters.
+    #[arg(long, default_value_t = 0.04)]
+    beacon_weight: f32,
 
     /// Ticks between Scanner pings.
     #[arg(long, default_value_t = 30)]
@@ -253,6 +257,7 @@ fn main() -> io::Result<()> {
     let honeypot_weight = pick_f32("honeypot_weight", cli.honeypot_weight, file.honeypot_weight);
     let defender_weight = pick_f32("defender_weight", cli.defender_weight, file.defender_weight);
     let tower_weight = pick_f32("tower_weight", cli.tower_weight, file.tower_weight);
+    let beacon_weight = pick_f32("beacon_weight", cli.beacon_weight, file.beacon_weight);
     let scanner_ping_period = pick_u16(
         "scanner_ping_period",
         cli.scanner_ping_period,
@@ -318,6 +323,7 @@ fn main() -> io::Result<()> {
             honeypot: honeypot_weight,
             defender: defender_weight,
             tower: tower_weight,
+            beacon: beacon_weight,
         },
         scanner_ping_period,
         exfil_packet_period,
