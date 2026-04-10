@@ -73,7 +73,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
         " netgrow ".to_string()
     };
     let mesh_block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Thick)
         .border_style(Style::default().fg(theme().frame))
         .title(Span::styled(
             mesh_title,
@@ -464,7 +464,7 @@ fn log_block(world: &World) -> Paragraph<'static> {
 
 fn bordered_block(title: &'static str) -> Block<'static> {
     Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Thick)
         .border_style(Style::default().fg(theme().frame))
         .title(Span::styled(
             title,
