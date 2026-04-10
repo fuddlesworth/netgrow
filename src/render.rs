@@ -296,6 +296,12 @@ fn color_log_line(s: &str) -> Line<'static> {
             .add_modifier(Modifier::BOLD)
     } else if s.starts_with("strain") {
         Style::default().fg(Color::Rgb(200, 100, 200))
+    } else if s.contains("cured") {
+        Style::default()
+            .fg(Color::Rgb(120, 240, 200))
+            .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("worm delivered") {
+        Style::default().fg(Color::Rgb(220, 120, 240))
     } else if s.contains("LOST") {
         Style::default()
             .fg(Color::Red)
@@ -383,6 +389,26 @@ impl<'a> Widget for MeshWidget<'a> {
             }
         }
 
+        // 1b. C2 patch waves — expanding cure rings from heartbeat sweeps.
+        for wave in &w.patch_waves {
+            let r = wave.radius;
+            if r <= 0 {
+                continue;
+            }
+            let style = Style::default()
+                .fg(Color::Rgb(120, 240, 200))
+                .add_modifier(Modifier::BOLD);
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs().max(dy.abs()) != r {
+                        continue;
+                    }
+                    let cell = (wave.origin.0 + dx, wave.origin.1 + dy);
+                    put(buf, area, cell, "○", style);
+                }
+            }
+        }
+
         // 2. Scanner ping halos
         for ping in &w.pings {
             let age = w.tick.saturating_sub(ping.born) as i16;
@@ -419,6 +445,23 @@ impl<'a> Widget for MeshWidget<'a> {
                 .fg(Color::Rgb(120, 240, 255))
                 .add_modifier(Modifier::BOLD);
             put(buf, area, cell, glyph, style);
+        }
+
+        // 3b. Virus worms crawling along link paths — distinct magenta squares.
+        for worm in &w.worms {
+            let link = &w.links[worm.link_id];
+            let idx = worm.pos as usize;
+            if idx >= link.path.len() {
+                continue;
+            }
+            let cell = link.path[idx];
+            if cell == w.nodes[link.a].pos || cell == w.nodes[link.b].pos {
+                continue;
+            }
+            let style = Style::default()
+                .fg(strain_hue(worm.strain))
+                .add_modifier(Modifier::BOLD);
+            put(buf, area, cell, "■", style);
         }
 
         // 4. Nodes

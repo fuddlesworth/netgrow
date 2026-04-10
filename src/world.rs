@@ -148,6 +148,22 @@ pub struct Packet {
 }
 
 #[derive(Clone, Debug)]
+pub struct Worm {
+    pub link_id: usize,
+    pub pos: u16,
+    /// True if the worm started at `link.a` and is traveling toward `link.b`;
+    /// false for the reverse. Cross-links are bidirectional so both are valid.
+    pub outbound_from_a: bool,
+    pub strain: u8,
+}
+
+#[derive(Clone, Debug)]
+pub struct PatchWave {
+    pub origin: (i16, i16),
+    pub radius: i16,
+}
+
+#[derive(Clone, Debug)]
 pub struct RoleWeights {
     pub relay: f32,
     pub scanner: f32,
@@ -188,6 +204,8 @@ pub struct Config {
     pub virus_terminal_ticks: u8,
     pub virus_cure_resist: u8,
     pub virus_seed_rate: f32,
+    pub worm_spawn_rate: f32,
+    pub patch_wave_radius: i16,
 }
 
 impl Default for Config {
@@ -213,6 +231,8 @@ impl Default for Config {
             virus_terminal_ticks: 20,
             virus_cure_resist: 3,
             virus_seed_rate: 0.004,
+            worm_spawn_rate: 0.04,
+            patch_wave_radius: 10,
         }
     }
 }
@@ -229,6 +249,8 @@ pub struct World {
     pub cfg: Config,
     pub pings: Vec<Ping>,
     pub packets: Vec<Packet>,
+    pub worms: Vec<Worm>,
+    pub patch_waves: Vec<PatchWave>,
     pub next_branch_id: u16,
 }
 
@@ -307,6 +329,8 @@ impl World {
             cfg,
             pings: Vec::new(),
             packets: Vec::new(),
+            worms: Vec::new(),
+            patch_waves: Vec::new(),
             next_branch_id: 1,
         }
     }
@@ -318,11 +342,14 @@ impl World {
         self.advance_links();
         self.advance_pings();
         self.advance_packets();
+        self.advance_worms();
+        self.advance_patch_waves();
         self.heartbeat();
         self.advance_role_cooldowns();
         self.fire_scanner_pings();
         self.fire_exfil_packets();
         self.advance_infections();
+        self.maybe_spawn_worms();
         self.maybe_seed_infection();
         self.advance_pwned_and_loss();
         self.advance_dying();
@@ -611,6 +638,12 @@ impl World {
         if self.tick > 0 && self.tick.is_multiple_of(self.cfg.heartbeat_period) {
             let threshold = self.cfg.hardened_after_heartbeats;
             let mut newly_hardened: Vec<(i16, i16)> = Vec::new();
+            // Emit a patch wave from C2 alongside the beacon pulse.
+            let c2_pos = self.nodes[self.c2].pos;
+            self.patch_waves.push(PatchWave {
+                origin: c2_pos,
+                radius: 0,
+            });
             for n in self.nodes.iter_mut() {
                 if matches!(n.state, State::Alive) {
                     n.pulse = 2;
@@ -771,6 +804,179 @@ impl World {
             keep.push(pkt);
         }
         self.packets = keep;
+    }
+
+    fn advance_worms(&mut self) {
+        if self.worms.is_empty() {
+            return;
+        }
+        let cure_resist = self.cfg.virus_cure_resist;
+        let c2 = self.c2;
+        let mut keep: Vec<Worm> = Vec::with_capacity(self.worms.len());
+        let mut arrivals: Vec<(NodeId, u8, (i16, i16))> = Vec::new();
+        for mut worm in std::mem::take(&mut self.worms) {
+            let link = &self.links[worm.link_id];
+            // Drop the worm if its carrier link is compromised.
+            let a_node = &self.nodes[link.a];
+            let b_node = &self.nodes[link.b];
+            if matches!(a_node.state, State::Dead)
+                || matches!(b_node.state, State::Dead)
+                || a_node.dying_in > 0
+                || b_node.dying_in > 0
+            {
+                continue;
+            }
+            if worm.outbound_from_a {
+                let next = worm.pos as usize + 1;
+                if next >= link.path.len() {
+                    let target = link.b;
+                    if target != c2
+                        && matches!(self.nodes[target].state, State::Alive)
+                        && self.nodes[target].infection.is_none()
+                    {
+                        arrivals.push((target, worm.strain, self.nodes[target].pos));
+                    }
+                    continue;
+                }
+                worm.pos = next as u16;
+            } else {
+                if worm.pos == 0 {
+                    let target = link.a;
+                    if target != c2
+                        && matches!(self.nodes[target].state, State::Alive)
+                        && self.nodes[target].infection.is_none()
+                    {
+                        arrivals.push((target, worm.strain, self.nodes[target].pos));
+                    }
+                    continue;
+                }
+                worm.pos -= 1;
+            }
+            keep.push(worm);
+        }
+        self.worms = keep;
+        for (target, strain, pos) in arrivals {
+            self.nodes[target].infection = Some(Infection::seeded(strain, cure_resist));
+            let (a, b) = octet_pair(pos);
+            self.push_log(format!("worm delivered strain {} @ 10.0.{}.{}", strain, a, b));
+        }
+    }
+
+    fn maybe_spawn_worms(&mut self) {
+        let rate = self.cfg.worm_spawn_rate;
+        if rate <= 0.0 {
+            return;
+        }
+        // Find active-infected carriers up front.
+        let carriers: Vec<(NodeId, u8)> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                if i == self.c2 || !matches!(n.state, State::Alive) {
+                    return None;
+                }
+                match n.infection {
+                    Some(inf) if matches!(inf.stage, InfectionStage::Active) => {
+                        Some((i, inf.strain))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        for (id, strain) in carriers {
+            if !self.rng.gen_bool(rate as f64) {
+                continue;
+            }
+            // Outgoing links from this node (either direction for Cross).
+            let outgoing: Vec<(usize, bool)> = self
+                .links
+                .iter()
+                .enumerate()
+                .filter_map(|(li, l)| {
+                    if (l.drawn as usize) < l.path.len() {
+                        return None;
+                    }
+                    if l.a == id {
+                        Some((li, true))
+                    } else if l.b == id {
+                        Some((li, false))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if outgoing.is_empty() {
+                continue;
+            }
+            let (link_id, from_a) = outgoing[self.rng.gen_range(0..outgoing.len())];
+            let link = &self.links[link_id];
+            let target = if from_a { link.b } else { link.a };
+            if target == self.c2 {
+                continue;
+            }
+            if !matches!(self.nodes[target].state, State::Alive) {
+                continue;
+            }
+            if self.nodes[target].infection.is_some() {
+                continue;
+            }
+            let pos = if from_a {
+                0
+            } else {
+                link.path.len().saturating_sub(1) as u16
+            };
+            self.worms.push(Worm {
+                link_id,
+                pos,
+                outbound_from_a: from_a,
+                strain,
+            });
+        }
+    }
+
+    fn advance_patch_waves(&mut self) {
+        if self.patch_waves.is_empty() {
+            return;
+        }
+        let max_r = self.cfg.patch_wave_radius;
+        for wave in self.patch_waves.iter_mut() {
+            wave.radius += 1;
+        }
+        // Snapshot wave geometry so we can mutably borrow self.nodes.
+        let geo: Vec<(i16, i16, i16)> = self
+            .patch_waves
+            .iter()
+            .map(|w| (w.origin.0, w.origin.1, w.radius))
+            .collect();
+        let mut cured: Vec<(i16, i16)> = Vec::new();
+        for n in self.nodes.iter_mut() {
+            if n.infection.is_none() {
+                continue;
+            }
+            for &(ox, oy, r) in &geo {
+                let dist = (n.pos.0 - ox).abs().max((n.pos.1 - oy).abs());
+                // Hit by the wave front or the trailing cell (annulus of
+                // width 2) so fast-growing rings don't skip over nodes.
+                if dist == r || dist == r - 1 {
+                    let Some(inf) = n.infection.as_mut() else {
+                        break;
+                    };
+                    if inf.cure_resist <= 1 {
+                        cured.push(n.pos);
+                        n.infection = None;
+                        break;
+                    } else {
+                        inf.cure_resist -= 1;
+                    }
+                }
+            }
+        }
+        self.patch_waves.retain(|w| w.radius <= max_r);
+        for pos in cured {
+            let (a, b) = octet_pair(pos);
+            self.push_log(format!("node 10.0.{}.{} cured", a, b));
+        }
     }
 
     fn advance_infections(&mut self) {
@@ -1441,6 +1647,83 @@ mod tests {
             w.tick((80, 30));
         }
         assert!(w.nodes[w.c2].infection.is_none(), "C2 must stay clean");
+    }
+
+    #[test]
+    fn patch_wave_cures_infected_node_within_radius() {
+        let mut w = World::new(24, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 0.0;
+        w.cfg.virus_seed_rate = 0.0;
+        w.cfg.virus_spread_rate = 0.0;
+        w.cfg.worm_spawn_rate = 0.0;
+        // Infected node with cure_resist=1, three cells from C2.
+        let c2_pos = w.nodes[w.c2].pos;
+        let a = w.nodes.len();
+        w.nodes.push(Node::fresh(
+            (c2_pos.0 + 3, c2_pos.1),
+            Some(w.c2),
+            0,
+            Role::Relay,
+            1,
+        ));
+        w.nodes[a].infection = Some(Infection {
+            strain: 0,
+            stage: InfectionStage::Incubating,
+            age: 0,
+            cure_resist: 1,
+            terminal_ticks: 0,
+        });
+        // Seed a patch wave directly and tick it forward until the front hits.
+        w.patch_waves.push(PatchWave {
+            origin: c2_pos,
+            radius: 0,
+        });
+        for _ in 0..10 {
+            w.advance_patch_waves();
+            if w.nodes[a].infection.is_none() {
+                break;
+            }
+        }
+        assert!(w.nodes[a].infection.is_none(), "patch wave should cure the node");
+    }
+
+    #[test]
+    fn worm_delivered_to_alive_neighbor() {
+        let mut w = World::new(25, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 0.0;
+        w.cfg.virus_seed_rate = 0.0;
+        w.cfg.virus_spread_rate = 0.0;
+        // Build c2 -> a -> b with fully-drawn links.
+        let a = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+        let b = w.nodes.len();
+        w.nodes.push(Node::fresh((14, 10), Some(a), 0, Role::Relay, 1));
+        let path_ab: Vec<(i16, i16)> = (10..=14).map(|x| (x, 10)).collect();
+        let len_ab = path_ab.len() as u16;
+        w.links.push(Link {
+            a,
+            b,
+            path: path_ab,
+            drawn: len_ab,
+            kind: LinkKind::Parent,
+        });
+        // Launch a worm from a → b manually and tick the worm advance step
+        // enough times for it to reach the far end.
+        w.worms.push(Worm {
+            link_id: 0,
+            pos: 0,
+            outbound_from_a: true,
+            strain: 2,
+        });
+        for _ in 0..10 {
+            w.advance_worms();
+        }
+        assert!(w.nodes[b].infection.is_some());
+        assert_eq!(w.nodes[b].infection.unwrap().strain, 2);
+        assert!(w.worms.is_empty());
     }
 
     #[test]
