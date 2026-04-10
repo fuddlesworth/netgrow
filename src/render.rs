@@ -870,6 +870,55 @@ impl<'a> Widget for MeshWidget<'a> {
             put(buf, area, cell, "■", style);
         }
 
+        // 3c. C2 ambient halo — faint braille dots in the 8-cell
+        // neighborhood around each C2, colored by faction hue. Creates
+        // a subtle "area of influence" marker without cluttering the
+        // mesh with full-cell glyphs. Only draws into otherwise-empty
+        // cells so it never overrides a node or link glyph.
+        let occupied_link_cells: std::collections::HashSet<(i16, i16)> = w
+            .links
+            .iter()
+            .flat_map(|l| l.path.iter().copied())
+            .collect();
+        for &c2_id in &w.c2_nodes {
+            let c2 = &w.nodes[c2_id];
+            if !matches!(c2.state, State::Alive) {
+                continue;
+            }
+            let pos = c2.pos;
+            let hue = faction_hue(c2.faction);
+            let style = Style::default().fg(hue).add_modifier(Modifier::DIM);
+            for (dx, dy) in [
+                (-1i16, 0i16),
+                (1, 0),
+                (0, -1),
+                (0, 1),
+                (-1, -1),
+                (1, -1),
+                (-1, 1),
+                (1, 1),
+            ] {
+                let cell = (pos.0 + dx, pos.1 + dy);
+                if w.occupied.contains(&cell) || occupied_link_cells.contains(&cell) {
+                    continue;
+                }
+                // Pick a braille dot that "points" back toward the C2
+                // so the halo reads as light radiating from the center.
+                let glyph = match (dx, dy) {
+                    (1, 0) => "⡀",
+                    (-1, 0) => "⢀",
+                    (0, 1) => "⠁",
+                    (0, -1) => "⡀",
+                    (1, 1) => "⠁",
+                    (-1, 1) => "⠁",
+                    (1, -1) => "⡀",
+                    (-1, -1) => "⡀",
+                    _ => "⠂",
+                };
+                put(buf, area, cell, glyph, style);
+            }
+        }
+
         // 4. Nodes
         for node in &w.nodes {
             let (glyph, style) = node_glyph(node, w.tick);
