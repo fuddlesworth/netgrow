@@ -230,6 +230,27 @@ pub struct Worm {
     pub strain: u8,
 }
 
+/// Transient particle ejected from a cascade root. Sub-cell f32
+/// position + velocity so multiple sparks in one terminal cell can
+/// render as distinct braille dots.
+#[derive(Clone, Debug)]
+pub struct CascadeSpark {
+    pub pos: (f32, f32),
+    pub vel: (f32, f32),
+    pub age: u8,
+    pub life: u8,
+}
+
+/// Expanding shockwave ring drawn at a cascade root. Age increments
+/// once per tick; radius tracks age directly. Cells on the ring get
+/// rendered as bold braille chars.
+#[derive(Clone, Debug)]
+pub struct CascadeShockwave {
+    pub origin: (i16, i16),
+    pub age: u8,
+    pub max_age: u8,
+}
+
 #[derive(Clone, Debug)]
 pub struct PatchWave {
     pub origin: (i16, i16),
@@ -481,6 +502,8 @@ pub struct World {
     pub packets: Vec<Packet>,
     pub worms: Vec<Worm>,
     pub patch_waves: Vec<PatchWave>,
+    pub sparks: Vec<CascadeSpark>,
+    pub shockwaves: Vec<CascadeShockwave>,
     pub next_branch_id: u16,
     /// Tick at which the current network storm ends. 0 if no storm is
     /// active. Storms spike both spawn and loss rates for a short burst.
@@ -747,6 +770,8 @@ impl World {
             packets: Vec::new(),
             worms: Vec::new(),
             patch_waves: Vec::new(),
+            sparks: Vec::new(),
+            shockwaves: Vec::new(),
             next_branch_id: 1,
             storm_until: 0,
             strain_names,
@@ -809,6 +834,8 @@ impl World {
         self.advance_packets();
         self.advance_worms();
         self.advance_patch_waves();
+        self.advance_sparks();
+        self.advance_shockwaves();
 
         // Phase 3: periodic sweeps + per-node upkeep.
         self.heartbeat();
@@ -1353,6 +1380,56 @@ impl World {
             if let Some(s) = self.faction_stats.get_mut(faction as usize) {
                 s.infections_cured += 1;
             }
+        }
+    }
+
+    fn advance_sparks(&mut self) {
+        for s in self.sparks.iter_mut() {
+            s.pos.0 += s.vel.0;
+            s.pos.1 += s.vel.1;
+            // Friction so sparks slow down and cluster near their
+            // final positions instead of flying off forever.
+            s.vel.0 *= 0.86;
+            s.vel.1 *= 0.86;
+            s.age = s.age.saturating_add(1);
+        }
+        self.sparks.retain(|s| s.age < s.life);
+    }
+
+    fn advance_shockwaves(&mut self) {
+        for sw in self.shockwaves.iter_mut() {
+            sw.age = sw.age.saturating_add(1);
+        }
+        self.shockwaves.retain(|sw| sw.age <= sw.max_age);
+    }
+
+    /// Emit a burst of sparks and a shockwave at the cascade root.
+    /// Called from schedule_subtree_death when a cascade actually
+    /// finalized a nonzero number of hosts.
+    fn emit_cascade_effects(&mut self, root_pos: (i16, i16), touched: u32) {
+        // Shockwave: radius scaled to cascade size, capped.
+        let max_age = (touched / 3).clamp(3, 10) as u8;
+        self.shockwaves.push(CascadeShockwave {
+            origin: root_pos,
+            age: 0,
+            max_age,
+        });
+        // Sparks: 8 plus 1 per 5 hosts, capped at 24.
+        let count = (8 + (touched / 5)).min(24);
+        let origin_x = root_pos.0 as f32 + 0.5;
+        let origin_y = root_pos.1 as f32 + 0.5;
+        for _ in 0..count {
+            let angle = self.rng.gen::<f32>() * std::f32::consts::TAU;
+            let speed = 0.6 + self.rng.gen::<f32>() * 0.8;
+            let vx = angle.cos() * speed;
+            let vy = angle.sin() * speed * 0.6; // flatter vertically since cells are ~2x tall
+            let life = 7 + self.rng.gen_range(0..4) as u8;
+            self.sparks.push(CascadeSpark {
+                pos: (origin_x, origin_y),
+                vel: (vx, vy),
+                age: 0,
+                life,
+            });
         }
     }
 
@@ -2409,6 +2486,8 @@ impl World {
             if (touched as usize) >= self.cfg.mythic_big_one_threshold {
                 self.push_log(format!("✦ MYTHIC ✦ THE BIG ONE — {} hosts", touched));
             }
+            let root_pos = self.nodes[root].pos;
+            self.emit_cascade_effects(root_pos, touched);
         }
     }
 

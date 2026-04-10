@@ -871,6 +871,76 @@ impl<'a> Widget for MeshWidget<'a> {
             put(buf, area, node.pos, glyph, style);
         }
 
+        // 4b. Cascade shockwaves and sparks. Shockwaves are a ring of
+        // bold braille blocks radiating from the cascade root; sparks
+        // are sub-cell dots pooling at their current f32 positions so
+        // several sparks in one cell render as distinct dots.
+        for sw in &w.shockwaves {
+            let age = sw.age as i16;
+            if age <= 0 {
+                continue;
+            }
+            let th = theme();
+            let dim = sw.age * 2 >= sw.max_age;
+            let style = if dim {
+                Style::default().fg(th.log_cascade).add_modifier(Modifier::DIM)
+            } else {
+                Style::default()
+                    .fg(th.pwned)
+                    .add_modifier(Modifier::BOLD)
+            };
+            // Thick ring: cells whose Euclidean distance is within
+            // 0.5 of the current radius. Uses ⣿ for weight.
+            let r = age as f32;
+            let r_low = (r - 0.6).max(0.0);
+            let r_high = r + 0.6;
+            let extent = age + 1;
+            for dy in -extent..=extent {
+                for dx in -extent..=extent {
+                    let d = ((dx * dx + dy * dy) as f32).sqrt();
+                    if d >= r_low && d <= r_high {
+                        put(buf, area, (sw.origin.0 + dx, sw.origin.1 + dy), "⣿", style);
+                    }
+                }
+            }
+        }
+        if !w.sparks.is_empty() {
+            let th = theme();
+            // Group sparks by their integer cell and accumulate
+            // braille bits for their sub-cell position.
+            let mut groups: std::collections::HashMap<(i16, i16), u8> =
+                std::collections::HashMap::new();
+            const BITS: [[u8; 4]; 2] = [
+                [0x01, 0x02, 0x04, 0x40],
+                [0x08, 0x10, 0x20, 0x80],
+            ];
+            for spark in &w.sparks {
+                let cx = spark.pos.0.floor() as i16;
+                let cy = spark.pos.1.floor() as i16;
+                let fx = (spark.pos.0 - cx as f32).clamp(0.0, 0.9999);
+                let fy = (spark.pos.1 - cy as f32).clamp(0.0, 0.9999);
+                let dot_col = (fx * 2.0) as usize;
+                let dot_row = (fy * 4.0) as usize;
+                let bit = BITS[dot_col.min(1)][dot_row.min(3)];
+                *groups.entry((cx, cy)).or_insert(0) |= bit;
+            }
+            for (cell, bits) in groups {
+                let ch = char::from_u32(0x2800 + bits as u32).unwrap_or(' ');
+                let glyph = ch.to_string();
+                // Leak the String to get a &'static — acceptable here
+                // because sparks are bounded per frame and we want put()
+                // to accept the glyph. But put() takes &str, so we can
+                // just pass a reference.
+                put(
+                    buf,
+                    area,
+                    cell,
+                    glyph.as_str(),
+                    Style::default().fg(th.log_cascade).add_modifier(Modifier::BOLD),
+                );
+            }
+        }
+
         // 5. Inspector cursor — drawn last so it sits above everything else.
         // We draw a 5-cell crosshair around the cursor: a reverse-video cell
         // at the position plus four bracket marks at the four diagonals so
