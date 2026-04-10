@@ -8,7 +8,7 @@ use ratatui::Frame;
 use crate::theme::theme;
 use crate::util::{braille_area_graph, braille_bar, session_name, sparkline, with_commas};
 use crate::world::{
-    InfectionStage, LinkKind, Node, Role, State, World, WorldStats, HOT_LINK, WARM_LINK,
+    node_ip, InfectionStage, LinkKind, Node, Role, State, World, WorldStats, HOT_LINK, WARM_LINK,
 };
 
 const RIGHT_COL_WIDTH: u16 = 41;
@@ -91,7 +91,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
         mesh_inner,
     );
 
-    let inspector_height: u16 = if ui.cursor.is_some() { 10 } else { 0 };
+    let inspector_height: u16 = if ui.cursor.is_some() { 11 } else { 0 };
     let right_rows = Layout::vertical([
         Constraint::Length(8), // stats: 6 content rows + border
         Constraint::Length(5), // activity: 3 braille content rows + border
@@ -546,6 +546,7 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
             )));
         }
         Some(n) => {
+            lines.push(row("ip", node_ip(pos)));
             let role_name = if n.parent.is_none() {
                 "C2"
             } else {

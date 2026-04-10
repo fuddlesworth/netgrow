@@ -1214,6 +1214,14 @@ fn octet_pair(pos: (i16, i16)) -> (u8, u8) {
     ((pos.0 as u32 & 0xff) as u8, (pos.1 as u32 & 0xff) as u8)
 }
 
+/// Pretty-printed 10.0.X.Y address derived from a mesh cell. Used by
+/// the log lines and inspector panel so every node has a stable,
+/// shareable identifier.
+pub fn node_ip(pos: (i16, i16)) -> String {
+    let (a, b) = octet_pair(pos);
+    format!("10.0.{}.{}", a, b)
+}
+
 impl World {
 
     fn try_spawn(&mut self) {
