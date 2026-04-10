@@ -80,8 +80,8 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
 
     let inspector_height: u16 = if ui.cursor.is_some() { 10 } else { 0 };
     let right_rows = Layout::vertical([
-        Constraint::Length(8),
-        Constraint::Length(11),
+        Constraint::Length(5), // stats: 3 content rows + border
+        Constraint::Length(7), // roles: 5 content rows + border
         Constraint::Length(inspector_height),
         Constraint::Min(5),
     ])
@@ -219,24 +219,36 @@ fn sep() -> Span<'static> {
 fn stats_block(s: &WorldStats) -> Paragraph<'static> {
     let th = theme();
     let block = bordered_block(" stats ");
-    let line = |label: &'static str, value: String, color: Color| {
-        Line::from(vec![
+    let label_style = Style::default().fg(th.stat_label);
+    let cell = move |label: &'static str, value: String, color: Color| -> Vec<Span<'static>> {
+        vec![
+            Span::styled(format!(" {:<8}", label), label_style),
             Span::styled(
-                format!(" {:<8}", label),
-                Style::default().fg(th.stat_label),
+                format!("{:<6}", value),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(value, Style::default().fg(color).add_modifier(Modifier::BOLD)),
-        ])
+        ]
+    };
+    let two = |a: Vec<Span<'static>>, b: Vec<Span<'static>>| {
+        let mut spans = a;
+        spans.extend(b);
+        Line::from(spans)
     };
     let alive_color = th.branch_palette.first().copied().unwrap_or(th.value);
     let branch_color = th.branch_palette.get(1).copied().unwrap_or(th.value);
     let lines = vec![
-        line("alive", format!("{}", s.alive), alive_color),
-        line("pwned", format!("{}", s.pwned), th.pwned),
-        line("dying", format!("{}", s.dying), th.log_cascade),
-        line("dead", format!("{}", s.dead), th.ghost),
-        line("branches", format!("{}", s.branches), branch_color),
-        line("bridges", format!("{}", s.cross_links), th.cross_link),
+        two(
+            cell("alive", format!("{}", s.alive), alive_color),
+            cell("dying", format!("{}", s.dying), th.log_cascade),
+        ),
+        two(
+            cell("pwned", format!("{}", s.pwned), th.pwned),
+            cell("dead", format!("{}", s.dead), th.ghost),
+        ),
+        two(
+            cell("branches", format!("{}", s.branches), branch_color),
+            cell("bridges", format!("{}", s.cross_links), th.cross_link),
+        ),
     ];
     Paragraph::new(lines).block(block)
 }
@@ -244,31 +256,49 @@ fn stats_block(s: &WorldStats) -> Paragraph<'static> {
 fn legend_block() -> Paragraph<'static> {
     let th = theme();
     let block = bordered_block(" roles ");
-    let row = |glyph: &'static str, glyph_color: Color, name: &'static str| {
-        Line::from(vec![
+    let label_style = Style::default().fg(th.label);
+    let cell = move |glyph: &'static str,
+                     glyph_color: Color,
+                     name: &'static str|
+          -> Vec<Span<'static>> {
+        vec![
             Span::raw(" "),
             Span::styled(
                 glyph,
                 Style::default().fg(glyph_color).add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
-            Span::styled(name, Style::default().fg(th.label)),
-        ])
+            Span::styled(format!("{:<13}", name), label_style),
+        ]
+    };
+    let two = |a: Vec<Span<'static>>, b: Option<Vec<Span<'static>>>| {
+        let mut spans = a;
+        if let Some(b) = b {
+            spans.extend(b);
+        }
+        Line::from(spans)
     };
     let relay_color = th.branch_palette.first().copied().unwrap_or(th.value);
-    // Note: honeypots are intentionally absent — they masquerade as relays
-    // (●) until tripped, at which point ◈ flashes for 2 ticks only. Same
-    // reason worms and patch waves aren't here: transient-only glyphs.
+    // Honeypots are intentionally absent — they masquerade as relays (●)
+    // until tripped. Worms and patch waves are also transient-only.
     let lines = vec![
-        row("◆", faction_hue(0), "c2"),
-        row("●", relay_color, "relay"),
-        row("◉", relay_color, "hardened"),
-        row("◎", th.scanner, "scanner"),
-        row("▣", th.exfil, "exfil"),
-        row("◇", th.defender, "defender"),
-        row("▓", strain_hue(0), "infected"),
-        row("✕", th.pwned, "pwned"),
-        row("·", th.ghost, "ghost"),
+        two(
+            cell("◆", faction_hue(0), "c2"),
+            Some(cell("◇", th.defender, "defender")),
+        ),
+        two(
+            cell("●", relay_color, "relay"),
+            Some(cell("▓", strain_hue(0), "infected")),
+        ),
+        two(
+            cell("◉", relay_color, "hardened"),
+            Some(cell("✕", th.pwned, "pwned")),
+        ),
+        two(
+            cell("◎", th.scanner, "scanner"),
+            Some(cell("·", th.ghost, "ghost")),
+        ),
+        two(cell("▣", th.exfil, "exfil"), None),
     ];
     Paragraph::new(lines).block(block)
 }
