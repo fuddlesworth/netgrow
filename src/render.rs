@@ -451,7 +451,13 @@ fn log_block(world: &World) -> Paragraph<'static> {
         .iter()
         .rev()
         .take(64)
-        .map(|s| color_log_line(s))
+        .map(|(s, count)| {
+            if *count > 1 {
+                color_log_line(&format!("{} (×{})", s, count))
+            } else {
+                color_log_line(s)
+            }
+        })
         .collect();
     Paragraph::new(lines).block(block)
 }

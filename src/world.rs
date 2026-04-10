@@ -471,7 +471,11 @@ pub struct World {
     pub rng: ChaCha8Rng,
     pub tick: u64,
     pub occupied: HashSet<(i16, i16)>,
-    pub logs: VecDeque<String>,
+    /// Ring buffer of log lines paired with a repeat counter. When
+    /// `push_log` receives the same message as the most recent entry,
+    /// it increments the counter instead of appending a duplicate, so
+    /// chatty events collapse to 'node X.Y hardened (×3)' in the UI.
+    pub logs: VecDeque<(String, u32)>,
     pub bounds: (i16, i16),
     pub cfg: Config,
     pub packets: Vec<Packet>,
@@ -641,7 +645,7 @@ impl World {
         };
         let mut nodes: Vec<Node> = Vec::with_capacity(count);
         let mut occupied = HashSet::new();
-        let mut logs = VecDeque::new();
+        let mut logs: VecDeque<(String, u32)> = VecDeque::new();
         let mut c2_nodes: Vec<NodeId> = Vec::with_capacity(count);
 
         // Random placement with edge margin + minimum spacing between
@@ -684,7 +688,7 @@ impl World {
             nodes.push(node);
             occupied.insert(pos);
             c2_nodes.push(id);
-            logs.push_back(format!("c2[{}] online @ {},{}", i, pos.0, pos.1));
+            logs.push_back((format!("c2[{}] online @ {},{}", i, pos.0, pos.1), 1));
         }
 
         Self {
@@ -2416,7 +2420,16 @@ impl World {
     }
 
     fn push_log(&mut self, s: String) {
-        self.logs.push_back(s);
+        // If the most recent line is identical, bump its repeat count
+        // instead of appending a duplicate — consecutive identical
+        // events collapse to 'line (×N)' in the rendered log.
+        if let Some((last, count)) = self.logs.back_mut() {
+            if *last == s {
+                *count += 1;
+                return;
+            }
+        }
+        self.logs.push_back((s, 1));
         while self.logs.len() > self.cfg.log_cap {
             self.logs.pop_front();
         }
