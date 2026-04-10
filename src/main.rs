@@ -108,10 +108,11 @@ struct Cli {
     /// branches rooted at C2.
     #[arg(long, default_value_t = 0.05)]
     fork_rate: f32,
-    /// Number of C2 nodes to spawn at the start. 1 = single botnet,
-    /// 2+ = competing factions, each with its own faction color and
-    /// independent reachability cascade.
-    #[arg(long, default_value_t = 2)]
+    /// Minimum number of C2 nodes to spawn at the start. The actual
+    /// count rolls in [c2_count..=c2_count_max] if the max is higher,
+    /// so by default each seed opens with 1-4 competing factions at
+    /// random locations.
+    #[arg(long, default_value_t = 1)]
     c2_count: u8,
     /// Ticks per full day/night cycle. Spawn and loss rates oscillate
     /// across this period, creating visible waves of activity. Set to 0
@@ -121,7 +122,7 @@ struct Cli {
     /// Upper bound on the starting C2 count. If greater than --c2-count,
     /// the seeded RNG picks a random count in that range at world init.
     /// 0 = no randomization, use --c2-count exactly.
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 4)]
     c2_count_max: u8,
     /// Chance that a large cascade births a new C2 from one of its
     /// dead nodes. Set to 0 to disable the rebirth mechanic.

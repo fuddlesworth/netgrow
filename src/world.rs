@@ -639,21 +639,45 @@ impl World {
         } else {
             min as usize
         };
-        let mut nodes = Vec::with_capacity(count);
+        let mut nodes: Vec<Node> = Vec::with_capacity(count);
         let mut occupied = HashSet::new();
         let mut logs = VecDeque::new();
         let mut c2_nodes: Vec<NodeId> = Vec::with_capacity(count);
 
+        // Random placement with edge margin + minimum spacing between
+        // C2s, so no two C2s land directly on top of each other and
+        // none stick to a wall.
+        let margin_x = ((bounds.0 / 10).max(4)).min(bounds.0 / 2 - 1);
+        let margin_y = ((bounds.1 / 6).max(3)).min(bounds.1 / 2 - 1);
+        let min_spacing = (bounds.0.min(bounds.1) / 4).max(10);
+
         for i in 0..count {
-            // Spread C2s evenly across the mesh width on the horizontal
-            // midline. Single-C2 mode lands at the exact center.
-            let pos = if count == 1 {
-                (bounds.0 / 2, bounds.1 / 2)
-            } else {
-                let denom = (count + 1) as i16;
-                let x = bounds.0 * (i as i16 + 1) / denom;
-                (x, bounds.1 / 2)
-            };
+            let mut chosen: Option<(i16, i16)> = None;
+            for _ in 0..64 {
+                let x = rng.gen_range(margin_x..bounds.0 - margin_x);
+                let y = rng.gen_range(margin_y..bounds.1 - margin_y);
+                let cand = (x, y);
+                let too_close = c2_nodes.iter().any(|&id| {
+                    let p: (i16, i16) = nodes[id].pos;
+                    (p.0 - cand.0).abs().max((p.1 - cand.1).abs()) < min_spacing
+                });
+                if !too_close {
+                    chosen = Some(cand);
+                    break;
+                }
+            }
+            // Fallback: if random placement can't find a free slot
+            // within the spacing budget, fall back to evenly-spaced
+            // slots on the midline so the world still constructs.
+            let pos = chosen.unwrap_or_else(|| {
+                if count == 1 {
+                    (bounds.0 / 2, bounds.1 / 2)
+                } else {
+                    let denom = (count + 1) as i16;
+                    let x = bounds.0 * (i as i16 + 1) / denom;
+                    (x, bounds.1 / 2)
+                }
+            });
             let mut node = Node::fresh(pos, None, 0, Role::Relay, 0);
             node.faction = i as u8;
             let id = nodes.len();
@@ -2940,9 +2964,19 @@ mod tests {
         assert_eq!(w.nodes[w.c2_nodes[0]].faction, 0);
         assert_eq!(w.nodes[w.c2_nodes[1]].faction, 1);
         assert_eq!(w.nodes[w.c2_nodes[2]].faction, 2);
-        // Spaced horizontally on the midline.
-        assert_ne!(w.nodes[w.c2_nodes[0]].pos.0, w.nodes[w.c2_nodes[1]].pos.0);
-        assert_eq!(w.nodes[w.c2_nodes[0]].pos.1, w.nodes[w.c2_nodes[1]].pos.1);
+        // Random placement with minimum spacing — every pair must be
+        // at a distinct cell.
+        for i in 0..w.c2_nodes.len() {
+            for j in (i + 1)..w.c2_nodes.len() {
+                assert_ne!(
+                    w.nodes[w.c2_nodes[i]].pos,
+                    w.nodes[w.c2_nodes[j]].pos,
+                    "C2s {} and {} overlap",
+                    i,
+                    j
+                );
+            }
+        }
     }
 
     #[test]
