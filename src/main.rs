@@ -418,9 +418,36 @@ fn main() -> io::Result<()> {
     for step in boot_queue {
         boot_accum.push(step);
         terminal.draw(|f| render::draw_boot(f, &boot_accum))?;
-        std::thread::sleep(Duration::from_millis(70));
+        // Non-blocking pause: event::poll returns early if a key
+        // press arrives so the user can ctrl-c / q out of the splash
+        // instead of sitting through ~1s of locked UI.
+        if event::poll(Duration::from_millis(70))? {
+            if let Event::Key(KeyEvent {
+                code, modifiers, ..
+            }) = event::read()?
+            {
+                match (code, modifiers) {
+                    (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => return Ok(()),
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(()),
+                    _ => {}
+                }
+            }
+        }
     }
-    std::thread::sleep(Duration::from_millis(250));
+    // Final settle — same pollable pause so an early keypress still
+    // aborts the splash rather than stalling.
+    if event::poll(Duration::from_millis(250))? {
+        if let Event::Key(KeyEvent {
+            code, modifiers, ..
+        }) = event::read()?
+        {
+            match (code, modifiers) {
+                (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => return Ok(()),
+                (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(()),
+                _ => {}
+            }
+        }
+    }
 
     let mut tick_ms = tick_ms;
     let mut paused = false;
