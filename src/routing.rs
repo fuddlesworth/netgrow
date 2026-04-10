@@ -45,23 +45,53 @@ fn build_path<R: Rng>(
     let mut pts: Vec<(i16, i16)> = Vec::new();
     pts.push(from);
 
-    if jog && ((from.0 - to.0).abs() + (from.1 - to.1).abs()) >= 4 {
-        // Insert a small perpendicular jog along the first leg.
-        let mid = midpoint(from, pivot);
+    // Insert a small perpendicular "shoulder" jog entirely within the first
+    // leg. The bump must end before the pivot column/row so the second leg
+    // never overlaps a previously visited cell — that overlap was the source
+    // of the renderer's broken corner glyphs.
+    if jog {
         let offset: i16 = if rng.gen_bool(0.5) { 1 } else { -1 };
-        let jog_a = if horizontal_first {
-            (mid.0, mid.1 + offset)
+        if horizontal_first {
+            let leg_min = from.0.min(pivot.0);
+            let leg_max = from.0.max(pivot.0);
+            let leg_len = leg_max - leg_min;
+            if leg_len >= 5 {
+                let q = (leg_len / 4).max(1);
+                let going_right = pivot.0 > from.0;
+                let (x1, x2) = if going_right {
+                    (from.0 + q, pivot.0 - q)
+                } else {
+                    (from.0 - q, pivot.0 + q)
+                };
+                let in_range = if going_right { x2 > x1 } else { x2 < x1 };
+                if in_range {
+                    pts.push((x1, from.1));
+                    pts.push((x1, from.1 + offset));
+                    pts.push((x2, from.1 + offset));
+                    pts.push((x2, from.1));
+                }
+            }
         } else {
-            (mid.0 + offset, mid.1)
-        };
-        let jog_b = if horizontal_first {
-            (pivot.0.min(to.0).max(from.0.min(to.0)), mid.1 + offset)
-        } else {
-            (mid.0 + offset, pivot.1.min(to.1).max(from.1.min(to.1)))
-        };
-        pts.push(mid);
-        pts.push(jog_a);
-        pts.push(jog_b);
+            let leg_min = from.1.min(pivot.1);
+            let leg_max = from.1.max(pivot.1);
+            let leg_len = leg_max - leg_min;
+            if leg_len >= 5 {
+                let q = (leg_len / 4).max(1);
+                let going_down = pivot.1 > from.1;
+                let (y1, y2) = if going_down {
+                    (from.1 + q, pivot.1 - q)
+                } else {
+                    (from.1 - q, pivot.1 + q)
+                };
+                let in_range = if going_down { y2 > y1 } else { y2 < y1 };
+                if in_range {
+                    pts.push((from.0, y1));
+                    pts.push((from.0 + offset, y1));
+                    pts.push((from.0 + offset, y2));
+                    pts.push((from.0, y2));
+                }
+            }
+        }
     }
 
     pts.push(pivot);
@@ -85,10 +115,6 @@ fn build_path<R: Rng>(
     // Dedupe consecutive duplicates.
     out.dedup();
     Some(out)
-}
-
-fn midpoint(a: (i16, i16), b: (i16, i16)) -> (i16, i16) {
-    ((a.0 + b.0) / 2, (a.1 + b.1) / 2)
 }
 
 pub fn step(a: (i16, i16), b: (i16, i16)) -> Box<dyn Iterator<Item = (i16, i16)>> {
@@ -159,6 +185,52 @@ mod tests {
         let p = route_link((2, 2), (8, 6), &occ, (40, 20), &mut rng).unwrap();
         assert_eq!(*p.first().unwrap(), (2, 2));
         assert_eq!(*p.last().unwrap(), (8, 6));
+    }
+
+    #[test]
+    fn jog_path_has_no_duplicate_cells() {
+        // Probe many seeds and many endpoint shapes to catch the regression
+        // where the jog branch produced a back-and-forth path that visited
+        // the same cell twice and broke renderer corner glyphs.
+        for seed in 0..200u64 {
+            let mut rng = ChaCha8Rng::seed_from_u64(seed);
+            let occ = HashSet::new();
+            for &(from, to) in &[
+                ((5, 5), (20, 15)),
+                ((20, 15), (5, 5)),
+                ((10, 10), (10, 25)),
+                ((10, 10), (25, 10)),
+                ((30, 5), (5, 25)),
+                ((5, 5), (25, 7)),
+            ] {
+                if let Some(path) = route_link(from, to, &occ, (60, 40), &mut rng) {
+                    let unique: HashSet<(i16, i16)> = path.iter().copied().collect();
+                    assert_eq!(
+                        unique.len(),
+                        path.len(),
+                        "duplicate cells in path seed={} from={:?} to={:?}: {:?}",
+                        seed,
+                        from,
+                        to,
+                        path
+                    );
+                    // Also verify each step is exactly 1 Chebyshev cell.
+                    for w in path.windows(2) {
+                        let dx = (w[1].0 - w[0].0).abs();
+                        let dy = (w[1].1 - w[0].1).abs();
+                        assert!(
+                            (dx == 1 && dy == 0) || (dx == 0 && dy == 1),
+                            "non-unit step seed={} from={:?} to={:?}: {:?} -> {:?}",
+                            seed,
+                            from,
+                            to,
+                            w[0],
+                            w[1]
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
