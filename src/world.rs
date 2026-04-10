@@ -236,9 +236,9 @@ impl Default for Config {
             virus_incubation_ticks: 30,
             virus_active_ticks: 80,
             virus_terminal_ticks: 20,
-            virus_cure_resist: 3,
+            virus_cure_resist: 4,
             virus_seed_rate: 0.004,
-            worm_spawn_rate: 0.04,
+            worm_spawn_rate: 0.15,
             patch_wave_radius: 10,
             mutate_rate: 0.0008,
             mutate_min_age: 400,
@@ -826,6 +826,10 @@ impl World {
         if self.worms.is_empty() {
             return;
         }
+        // Worms crawl at half the sim rate so each cell is visible long enough
+        // to register. On off-ticks we still run the compromised-link drop
+        // check so dead links clean up promptly.
+        let move_tick = self.tick.is_multiple_of(2);
         let cure_resist = self.cfg.virus_cure_resist;
         let c2 = self.c2;
         let mut keep: Vec<Worm> = Vec::with_capacity(self.worms.len());
@@ -840,6 +844,10 @@ impl World {
                 || a_node.dying_in > 0
                 || b_node.dying_in > 0
             {
+                continue;
+            }
+            if !move_tick {
+                keep.push(worm);
                 continue;
             }
             if worm.outbound_from_a {
@@ -937,17 +945,23 @@ impl World {
             if self.nodes[target].infection.is_some() {
                 continue;
             }
-            let pos = if from_a {
-                0
-            } else {
-                link.path.len().saturating_sub(1) as u16
-            };
+            // Start one cell in from the carrier node so the worm is visible
+            // on its spawn tick (cell 0 / len-1 are the endpoint positions
+            // which the renderer skips to avoid colliding with node glyphs).
+            let len = link.path.len();
+            if len < 2 {
+                continue;
+            }
+            let pos = if from_a { 1 } else { (len - 2) as u16 };
+            let carrier_pos = self.nodes[id].pos;
             self.worms.push(Worm {
                 link_id,
                 pos,
                 outbound_from_a: from_a,
                 strain,
             });
+            let (a, b) = octet_pair(carrier_pos);
+            self.push_log(format!("worm launched from 10.0.{}.{}", a, b));
         }
     }
 

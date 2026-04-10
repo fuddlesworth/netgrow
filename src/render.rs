@@ -302,7 +302,7 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default()
             .fg(Color::Rgb(120, 240, 200))
             .add_modifier(Modifier::BOLD)
-    } else if s.starts_with("worm delivered") {
+    } else if s.starts_with("worm delivered") || s.starts_with("worm launched") {
         Style::default().fg(Color::Rgb(220, 120, 240))
     } else if s.contains("ZERO-DAY") {
         Style::default()
