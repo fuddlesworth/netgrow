@@ -344,6 +344,40 @@ fn main() -> io::Result<()> {
     }
     let mut world = World::new(seed, initial_bounds, cfg);
 
+    // Boot splash: draw the title + an accumulating list of fake boot
+    // steps so startup feels like a tool booting rather than jumping
+    // straight into the mesh. Each step sleeps briefly before the next.
+    let boot_queue: Vec<String> = vec![
+        format!("> initializing rng :: seed {} [ok]", seed),
+        format!(
+            "> session id :: {} [ok]",
+            util::session_name(seed)
+        ),
+        format!("> loading theme :: {} [ok]", theme_name),
+        format!(
+            "> mesh bounds :: {}×{} [ok]",
+            initial_bounds.0, initial_bounds.1
+        ),
+        format!(
+            "> spawning {} c2 {} [ok]",
+            world.c2_nodes.len(),
+            if world.c2_nodes.len() == 1 { "node" } else { "nodes" }
+        ),
+        format!(
+            "> era :: {} [ok]",
+            world.epoch_name()
+        ),
+        "> installing hooks [ok]".to_string(),
+        "> entering main loop [ok]".to_string(),
+    ];
+    let mut boot_accum: Vec<String> = Vec::new();
+    for step in boot_queue {
+        boot_accum.push(step);
+        terminal.draw(|f| render::draw_boot(f, &boot_accum))?;
+        std::thread::sleep(Duration::from_millis(70));
+    }
+    std::thread::sleep(Duration::from_millis(250));
+
     let mut tick_ms = tick_ms;
     let mut paused = false;
     let mut mesh_bounds = initial_bounds;

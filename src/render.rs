@@ -108,6 +108,63 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     frame.render_widget(log_block(world), right_rows[3]);
 }
 
+/// ASCII title card for the boot splash. Compact Unicode block style
+/// that fits in ~36 columns.
+pub const TITLE_ART: &[&str] = &[
+    "█▄░█ █▀▀ ▀█▀ █▀▀ █▀█ █▀█ █░█░█",
+    "█░▀█ ██▄ ░█░ █▄█ █▀▄ █▄█ ▀▄▀▄▀",
+];
+
+/// Render the boot splash: the title art centered near the top plus
+/// an accumulating list of boot lines below it. Drawn once per step
+/// by main.rs during startup, producing a fake "booting" sequence
+/// before the real sim takes over.
+pub fn draw_boot(frame: &mut Frame, boot_lines: &[String]) {
+    let area = frame.area();
+    frame.render_widget(Clear, area);
+    let th = theme();
+
+    let title_width = TITLE_ART.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+    let boot_width = boot_lines
+        .iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0) as u16;
+    let inner_width = title_width.max(boot_width);
+    let content_width = (inner_width + 6).min(area.width.saturating_sub(4));
+    let content_height = (TITLE_ART.len() as u16 + boot_lines.len() as u16 + 5)
+        .min(area.height.saturating_sub(2));
+    let box_area = Rect {
+        x: area.x + (area.width.saturating_sub(content_width)) / 2,
+        y: area.y + (area.height.saturating_sub(content_height)) / 2,
+        width: content_width,
+        height: content_height,
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(th.frame_accent));
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for art in TITLE_ART {
+        lines.push(Line::from(Span::styled(
+            (*art).to_string(),
+            Style::default()
+                .fg(th.frame_accent)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+    lines.push(Line::from(""));
+    for boot in boot_lines {
+        lines.push(Line::from(Span::styled(
+            boot.clone(),
+            Style::default().fg(th.label),
+        )));
+    }
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .alignment(Alignment::Center);
+    frame.render_widget(paragraph, box_area);
+}
+
 /// Render a centered session-summary overlay. `lines` is a pre-built
 /// list of rows to display — the caller in main.rs decides the exact
 /// content so render stays layout-only.
