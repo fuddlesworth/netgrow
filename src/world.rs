@@ -1855,13 +1855,48 @@ impl World {
         let new_faction = strong_idx as u8;
         let weak_c2 = self.c2_nodes[weak_idx];
         self.nodes[weak_c2].state = State::Dead;
+
+        // Snapshot strong-faction alive positions up front so we can
+        // reparent each absorbed node to its nearest strong neighbor.
+        // Without this step the flipped nodes keep their old parent
+        // (the now-dead weak C2), which immediately isolates them
+        // from the strong C2's reachability tree and dooms them.
+        let strong_positions: Vec<(NodeId, (i16, i16))> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| {
+                n.faction == new_faction && matches!(n.state, State::Alive)
+            })
+            .map(|(i, n)| (i, n.pos))
+            .collect();
+
+        // Collect absorbed node ids first (can't flip while borrowing).
+        let absorbed: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| {
+                n.faction as usize == weak_idx && matches!(n.state, State::Alive)
+            })
+            .map(|(i, _)| i)
+            .collect();
+
         let mut flipped = 0u32;
-        for n in self.nodes.iter_mut() {
-            if n.faction as usize == weak_idx && matches!(n.state, State::Alive) {
-                n.faction = new_faction;
-                flipped += 1;
-            }
+        for id in absorbed {
+            let pos = self.nodes[id].pos;
+            // Nearest strong-faction alive node becomes the new parent.
+            // Fall back to the strong C2 if no other strong nodes exist.
+            let new_parent = strong_positions
+                .iter()
+                .min_by_key(|(_, p)| (p.0 - pos.0).abs().max((p.1 - pos.1).abs()))
+                .map(|(pid, _)| *pid)
+                .unwrap_or(self.c2_nodes[strong_idx]);
+            self.nodes[id].faction = new_faction;
+            self.nodes[id].parent = Some(new_parent);
+            flipped += 1;
         }
+
         self.push_log(format!(
             "✦ MYTHIC ✦ ASSIMILATION — F{} absorbed by F{} ({} hosts)",
             weak_idx, strong_idx, flipped
@@ -1973,7 +2008,10 @@ impl World {
                     n.pos.0 == wave.pos
                 };
                 if hit {
-                    n.role_cooldown = n.role_cooldown.saturating_add(stun);
+                    // Cap stun accumulation at DDOS_MAX_STUN so overlapping
+                    // waves can't effectively disable a node forever.
+                    const DDOS_MAX_STUN: u16 = 500;
+                    n.role_cooldown = n.role_cooldown.saturating_add(stun).min(DDOS_MAX_STUN);
                     n.scan_pulse = n.scan_pulse.max(3);
                 }
             }
@@ -2140,13 +2178,24 @@ impl World {
                 keep.push(worm);
                 continue;
             }
+            // Source of the worm is the opposite endpoint from the
+            // target — used to enforce alliance non-aggression below.
+            // Alliance blocks worm crossings between DIFFERENT factions
+            // only. Same-faction worms (where source and target share a
+            // faction) always deliver.
+            let blocked_by_alliance = |w: &World, src: u8, dst: u8| -> bool {
+                src != dst && w.allied(src, dst)
+            };
             if worm.outbound_from_a {
                 let next = worm.pos as usize + 1;
                 if next >= link_len {
                     let target = link_b;
+                    let src = self.nodes[link_a].faction;
+                    let dst = self.nodes[target].faction;
                     if !c2_set.contains(&target)
                         && matches!(self.nodes[target].state, State::Alive)
                         && self.nodes[target].infection.is_none()
+                        && !blocked_by_alliance(self, src, dst)
                     {
                         arrivals.push((target, worm.strain, self.nodes[target].pos));
                     }
@@ -2156,9 +2205,12 @@ impl World {
             } else {
                 if worm.pos == 0 {
                     let target = link_a;
+                    let src = self.nodes[link_b].faction;
+                    let dst = self.nodes[target].faction;
                     if !c2_set.contains(&target)
                         && matches!(self.nodes[target].state, State::Alive)
                         && self.nodes[target].infection.is_none()
+                        && !blocked_by_alliance(self, src, dst)
                     {
                         arrivals.push((target, worm.strain, self.nodes[target].pos));
                     }
@@ -2333,13 +2385,20 @@ impl World {
                     }
                 }
                 InfectionStage::Active => {
-                    if inf.age >= incubation + active_len {
+                    // Ransomware freezes the host indefinitely instead
+                    // of progressing to a terminal crash — the whole
+                    // point of the variant.
+                    if !inf.is_ransom && inf.age >= incubation + active_len {
                         inf.stage = InfectionStage::Terminal;
                         inf.terminal_ticks = terminal_len;
                     }
                 }
                 InfectionStage::Terminal => {
-                    if inf.terminal_ticks <= 1 {
+                    if inf.is_ransom {
+                        // Defensive: if a ransom infection somehow
+                        // landed in Terminal, freeze it back to Active.
+                        inf.stage = InfectionStage::Active;
+                    } else if inf.terminal_ticks <= 1 {
                         to_pwn.push(id);
                     } else {
                         inf.terminal_ticks -= 1;
@@ -2861,13 +2920,28 @@ impl World {
 
     /// Compute which nodes should die when `root` is lost, and their
     /// BFS distance from `root` for cascade ordering. Uses a reachability
-    /// diff anchored on the root's own faction's C2 — nodes in other
-    /// factions are unaffected by this cascade, and cross-faction
-    /// cross-links are filtered out by maybe_reconnect's same-faction
-    /// constraint so the adjacency naturally stays within faction.
+    /// diff anchored on the root's own faction's C2. Adjacency is
+    /// filtered to the root's faction so cross-faction bridges (which
+    /// maybe_reconnect can now create via cross_faction_bridge_chance)
+    /// don't let a cascade leak across borders.
     fn compute_cascade(&self, root: NodeId) -> Vec<(NodeId, u8)> {
-        let adj = self.live_adjacency();
-        let faction = self.nodes[root].faction as usize;
+        let root_faction = self.nodes[root].faction;
+        let full_adj = self.live_adjacency();
+        // Same-faction-only view: drop edges where either endpoint
+        // belongs to a different faction.
+        let mut adj: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        for (id, neighbors) in full_adj.iter() {
+            if self.nodes[*id].faction != root_faction {
+                continue;
+            }
+            let filtered: Vec<NodeId> = neighbors
+                .iter()
+                .copied()
+                .filter(|&m| self.nodes[m].faction == root_faction)
+                .collect();
+            adj.insert(*id, filtered);
+        }
+        let faction = root_faction as usize;
         let anchor = self
             .c2_nodes
             .get(faction)
