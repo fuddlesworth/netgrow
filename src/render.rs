@@ -138,6 +138,13 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED),
         ));
     }
+    if world.cfg.epoch_period > 0 {
+        spans.push(sep());
+        spans.push(Span::styled(
+            format!("◇ {}", world.epoch_name()),
+            Style::default().fg(th.frame_accent),
+        ));
+    }
     spans.push(sep());
     spans.push(stat_span("nodes", format!("{}", stats.alive + stats.pwned)));
     if stats.factions > 1 {
@@ -506,6 +513,10 @@ fn color_log_line(s: &str) -> Line<'static> {
             .add_modifier(Modifier::BOLD | Modifier::REVERSED)
     } else if s.starts_with("storm passes") {
         Style::default().fg(th.label).add_modifier(Modifier::BOLD)
+    } else if s.starts_with("── era") {
+        Style::default()
+            .fg(th.frame_accent)
+            .add_modifier(Modifier::BOLD)
     } else if s.contains("packet dropped") {
         Style::default().fg(th.log_cascade)
     } else if s.contains("backdoor") {

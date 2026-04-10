@@ -336,6 +336,10 @@ pub struct Config {
     pub tower_spawn_radius: i16,
     /// Extra pwn-absorbing charges a newly spawned Tower receives.
     pub tower_pwn_resist: u8,
+    /// Length of a single named epoch in ticks. Each time the sim crosses
+    /// a multiple of this value, it enters a new era with a name drawn
+    /// from ERA_NAMES. Set to 0 to disable.
+    pub epoch_period: u64,
 }
 
 impl Default for Config {
@@ -390,9 +394,28 @@ impl Default for Config {
             storm_loss_mult: 2.2,
             tower_spawn_radius: 10,
             tower_pwn_resist: 2,
+            epoch_period: 5000,
         }
     }
 }
+
+/// Named eras the sim cycles through as it ages. Fully ephemeral — no
+/// gameplay effect, just a long-arc narrative marker in the header and
+/// the log so long sessions feel like they're going somewhere.
+pub const ERA_NAMES: &[&str] = &[
+    "Age of Silence",
+    "First Signal",
+    "Rise of the Mesh",
+    "Era of Cascades",
+    "Winter of Quarantine",
+    "The Great Spreading",
+    "Dusk Protocols",
+    "Zero-Day Bloom",
+    "Age of Wires",
+    "Final Handshake",
+    "Echo Chamber",
+    "The Long Drift",
+];
 
 pub struct World {
     pub nodes: Vec<Node>,
@@ -441,6 +464,21 @@ impl World {
     /// True while a network storm is currently active.
     pub fn is_storming(&self) -> bool {
         self.storm_until > self.tick
+    }
+
+    /// Index of the current named era, 0-based. Returns 0 when epoch
+    /// tracking is disabled.
+    pub fn epoch_index(&self) -> usize {
+        let period = self.cfg.epoch_period;
+        if period == 0 {
+            return 0;
+        }
+        (self.tick / period) as usize
+    }
+
+    /// Name of the current era, cycling through ERA_NAMES.
+    pub fn epoch_name(&self) -> &'static str {
+        ERA_NAMES[self.epoch_index() % ERA_NAMES.len()]
     }
 }
 
@@ -567,6 +605,15 @@ impl World {
                 };
                 self.push_log(msg.to_string());
             }
+        }
+
+        // Epoch transition: crossing a multiple of epoch_period enters
+        // a new named era. Pure flavor — no gameplay effect.
+        let epoch_period = self.cfg.epoch_period;
+        if epoch_period > 0 && self.tick > 0 && self.tick.is_multiple_of(epoch_period) {
+            let idx = (self.tick / epoch_period) as usize;
+            let name = ERA_NAMES[idx % ERA_NAMES.len()];
+            self.push_log(format!("── era {}: {}", idx, name));
         }
 
         // Network storm: rare chaotic burst that spikes spawn + loss for
