@@ -29,9 +29,10 @@ pub struct Node {
     pub state: State,
     pub born: u64,
     pub pulse: u8,
-    /// >0 means scheduled to die; render as red ✕ until it hits 0, then flip to Dead.
-    /// Set via schedule_subtree_death with a delay proportional to distance from the
-    /// pwned root, producing a visible red ripple through the subtree.
+    /// Nonzero means scheduled to die; render as red ✕ until it hits 0, then
+    /// flip to Dead. Set via schedule_subtree_death with a delay proportional
+    /// to distance from the pwned root, producing a visible red ripple through
+    /// the subtree.
     pub dying_in: u8,
     pub role: Role,
     pub hardened: bool,
@@ -42,6 +43,9 @@ pub struct Node {
     pub last_ping_tick: u64,
     pub honey_tripped: bool,
     pub honey_reveal: u8,
+    /// Nonzero means a pwn attempt was just absorbed; renders as a bright
+    /// shield glyph for a few ticks so the viewer sees the save happen.
+    pub shield_flash: u8,
 }
 
 impl Node {
@@ -62,6 +66,7 @@ impl Node {
             last_ping_tick: 0,
             honey_tripped: false,
             honey_reveal: 0,
+            shield_flash: 0,
         }
     }
 }
@@ -148,7 +153,7 @@ impl Default for Config {
             role_weights: RoleWeights::default(),
             scanner_ping_period: 30,
             exfil_packet_period: 25,
-            hardened_after_heartbeats: 4,
+            hardened_after_heartbeats: 10,
             honeypot_cascade_mult: 3.0,
             reconnect_rate: 0.0,
             reconnect_radius: 10,
@@ -370,6 +375,27 @@ impl World {
         id
     }
 
+    /// Map each node to the index of its inbound parent link, if any.
+    /// Cross-links are deliberately skipped — packets ride parent chains
+    /// only, and cascade reachability has its own adjacency builder.
+    fn build_inbound_links(&self) -> HashMap<NodeId, usize> {
+        let mut inbound: HashMap<NodeId, usize> = HashMap::new();
+        for (li, link) in self.links.iter().enumerate() {
+            if link.kind == LinkKind::Parent {
+                inbound.insert(link.b, li);
+            }
+        }
+        inbound
+    }
+}
+
+/// Truncate a mesh position to a pair of IP-like octets for log lines.
+fn octet_pair(pos: (i16, i16)) -> (u8, u8) {
+    ((pos.0 as u32 & 0xff) as u8, (pos.1 as u32 & 0xff) as u8)
+}
+
+impl World {
+
     fn try_spawn(&mut self) {
         if self.nodes.len() >= self.cfg.max_nodes {
             return;
@@ -415,14 +441,12 @@ impl World {
         let dir = {
             let parent = &self.nodes[parent_id];
             let ping_window = self.cfg.scanner_ping_period as u64 / 2;
-            if parent.role == Role::Scanner
-                && parent.last_ping_dir.is_some()
-                && self.tick.saturating_sub(parent.last_ping_tick) < ping_window
-            {
-                let (dx, dy) = parent.last_ping_dir.unwrap();
-                (dx as i16, dy as i16)
-            } else {
-                DIRS[self.rng.gen_range(0..DIRS.len())]
+            let recent_ping = self.tick.saturating_sub(parent.last_ping_tick) < ping_window;
+            match parent.last_ping_dir {
+                Some((dx, dy)) if parent.role == Role::Scanner && recent_ping => {
+                    (dx as i16, dy as i16)
+                }
+                _ => DIRS[self.rng.gen_range(0..DIRS.len())],
             }
         };
         let cand = (parent_pos.0 + dir.0 * dist, parent_pos.1 + dir.1 * dist);
@@ -499,7 +523,7 @@ impl World {
     }
 
     fn advance_links(&mut self) {
-        let step_amount: u16 = if self.tick % 2 == 0 { 1 } else { 2 };
+        let step_amount: u16 = if self.tick.is_multiple_of(2) { 1 } else { 2 };
         for link in self.links.iter_mut() {
             let total = link.path.len() as u16;
             if link.drawn >= total {
@@ -522,15 +546,13 @@ impl World {
     }
 
     fn heartbeat(&mut self) {
-        if self.tick > 0 && self.tick % self.cfg.heartbeat_period == 0 {
+        if self.tick > 0 && self.tick.is_multiple_of(self.cfg.heartbeat_period) {
             let threshold = self.cfg.hardened_after_heartbeats;
             let mut newly_hardened: Vec<(i16, i16)> = Vec::new();
             for n in self.nodes.iter_mut() {
                 if matches!(n.state, State::Alive) {
                     n.pulse = 2;
-                    if n.heartbeats < 255 {
-                        n.heartbeats += 1;
-                    }
+                    n.heartbeats = n.heartbeats.saturating_add(1);
                     if !n.hardened && n.heartbeats >= threshold {
                         n.hardened = true;
                         newly_hardened.push(n.pos);
@@ -539,8 +561,7 @@ impl World {
             }
             self.push_log(format!("beacon sweep @ t={}", self.tick));
             for pos in newly_hardened {
-                let a = (pos.0 as u32 & 0xff) as u8;
-                let b = (pos.1 as u32 & 0xff) as u8;
+                let (a, b) = octet_pair(pos);
                 self.push_log(format!("node 10.0.{}.{} hardened", a, b));
             }
         } else {
@@ -559,6 +580,9 @@ impl World {
             }
             if n.honey_reveal > 0 {
                 n.honey_reveal -= 1;
+            }
+            if n.shield_flash > 0 {
+                n.shield_flash -= 1;
             }
         }
     }
@@ -606,15 +630,7 @@ impl World {
 
     fn fire_exfil_packets(&mut self) {
         let period = self.cfg.exfil_packet_period;
-        // Index inbound link per node (parent → this node). Packets only ride
-        // parent chains home, never cross-links — keeps exfil routing simple
-        // and prevents loops.
-        let mut inbound: HashMap<NodeId, usize> = HashMap::new();
-        for (li, link) in self.links.iter().enumerate() {
-            if link.kind == LinkKind::Parent {
-                inbound.insert(link.b, li);
-            }
-        }
+        let inbound = self.build_inbound_links();
         let exfil_ids: Vec<NodeId> = self
             .nodes
             .iter()
@@ -650,13 +666,7 @@ impl World {
         if self.packets.is_empty() {
             return;
         }
-        // Build inbound index for parent-hops (parent links only).
-        let mut inbound: HashMap<NodeId, usize> = HashMap::new();
-        for (li, link) in self.links.iter().enumerate() {
-            if link.kind == LinkKind::Parent {
-                inbound.insert(link.b, li);
-            }
-        }
+        let inbound = self.build_inbound_links();
 
         let mut keep: Vec<Packet> = Vec::with_capacity(self.packets.len());
         for mut pkt in std::mem::take(&mut self.packets) {
@@ -713,13 +723,13 @@ impl World {
             if self.nodes[id].role == Role::Honeypot && self.nodes[id].honey_tripped {
                 if let Some(parent) = self.nodes[id].parent {
                     if parent != self.c2 {
-                        self.schedule_subtree_death_scaled(parent, self.cfg.honeypot_cascade_mult);
+                        self.schedule_subtree_death(parent, self.cfg.honeypot_cascade_mult);
                         continue;
                     }
                 }
-                self.schedule_subtree_death_scaled(id, self.cfg.honeypot_cascade_mult);
+                self.schedule_subtree_death(id, self.cfg.honeypot_cascade_mult);
             } else {
-                self.schedule_subtree_death(id);
+                self.schedule_subtree_death(id, 1.0);
             }
         }
 
@@ -740,14 +750,13 @@ impl World {
             if !alive_ids.is_empty() {
                 let victim = alive_ids[self.rng.gen_range(0..alive_ids.len())];
                 let node = &mut self.nodes[victim];
-                let pos = node.pos;
-                let a = (pos.0 as u32 & 0xff) as u8;
-                let b = (pos.1 as u32 & 0xff) as u8;
+                let (a, b) = octet_pair(node.pos);
 
                 if node.hardened {
                     // Reinforcement: consume the shield instead of pwning.
                     node.hardened = false;
                     node.heartbeats = 0;
+                    node.shield_flash = 6;
                     self.push_log(format!("node 10.0.{}.{} shielded", a, b));
                 } else if node.role == Role::Honeypot {
                     node.honey_tripped = true;
@@ -763,24 +772,6 @@ impl World {
                     self.push_log(format!("node 10.0.{}.{} LOST", a, b));
                 }
             }
-        }
-    }
-
-    /// Like schedule_subtree_death but each hop's delay is multiplied by `mult`,
-    /// stretching the red wave out for a more theatrical kill (honeypot trap).
-    pub fn schedule_subtree_death_scaled(&mut self, root: NodeId, mult: f32) {
-        let cascade = self.compute_cascade(root);
-        let mut touched = 0u32;
-        for (id, distance) in cascade {
-            let base = distance.saturating_mul(2).saturating_add(3) as f32;
-            let delay = (base * mult).round().clamp(1.0, 255.0) as u8;
-            if self.nodes[id].dying_in == 0 || self.nodes[id].dying_in > delay {
-                self.nodes[id].dying_in = delay;
-                touched += 1;
-            }
-        }
-        if touched > 0 {
-            self.push_log(format!("HONEYPOT cascade: {} hosts burning", touched));
         }
     }
 
@@ -884,19 +875,23 @@ impl World {
 
     /// Stagger death through every node that loses its route to C2 when
     /// `root` is severed. Visible as a red wave radiating outward from the
-    /// pwned node; cross-linked cousins survive.
-    pub fn schedule_subtree_death(&mut self, root: NodeId) {
+    /// pwned node; cross-linked cousins survive. `mult` stretches the per-hop
+    /// delay for theatrical effect — pass 1.0 for a normal cascade, higher
+    /// values for a slower honeypot-style reveal.
+    pub fn schedule_subtree_death(&mut self, root: NodeId, mult: f32) {
         let cascade = self.compute_cascade(root);
         let mut touched = 0u32;
         for (id, distance) in cascade {
-            let delay = distance.saturating_mul(2).saturating_add(3);
+            let base = distance.saturating_mul(2).saturating_add(3) as f32;
+            let delay = (base * mult).round().clamp(1.0, 255.0) as u8;
             if self.nodes[id].dying_in == 0 || self.nodes[id].dying_in > delay {
-                self.nodes[id].dying_in = delay.max(1);
+                self.nodes[id].dying_in = delay;
                 touched += 1;
             }
         }
         if touched > 0 {
-            self.push_log(format!("cascade: {} hosts burning", touched));
+            let label = if mult > 1.5 { "HONEYPOT cascade" } else { "cascade" };
+            self.push_log(format!("{}: {} hosts burning", label, touched));
         }
     }
 
@@ -972,7 +967,7 @@ mod tests {
         w.nodes.push(Node::fresh((12, 10), Some(a), 0, Role::Relay, 1));
         let c = w.nodes.len();
         w.nodes.push(Node::fresh((14, 10), Some(b), 0, Role::Relay, 1));
-        w.schedule_subtree_death(a);
+        w.schedule_subtree_death(a, 1.0);
         // All three descendants should be flagged dying but not yet Dead.
         assert!(w.nodes[a].dying_in > 0);
         assert!(w.nodes[b].dying_in > 0);
@@ -1093,6 +1088,68 @@ mod tests {
         assert!(ids.contains(&a), "root must be doomed");
         assert!(!ids.contains(&b), "b should survive via cross link to c");
         assert!(!ids.contains(&c), "c has its own route to C2");
+    }
+
+    #[test]
+    fn shield_flash_is_set_when_hardened_node_is_hit() {
+        let mut w = World::new(9, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 1.0;
+        let id = w.nodes.len();
+        let mut n = Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1);
+        n.hardened = true;
+        w.nodes.push(n);
+        w.advance_pwned_and_loss();
+        assert!(matches!(w.nodes[id].state, State::Alive));
+        assert!(!w.nodes[id].hardened);
+        assert!(w.nodes[id].shield_flash > 0, "shield flash should be set");
+        // The flash should drain over subsequent ticks.
+        w.cfg.p_loss = 0.0; // don't hit it again
+        for _ in 0..10 {
+            w.tick((80, 30));
+        }
+        assert_eq!(w.nodes[id].shield_flash, 0);
+    }
+
+    #[test]
+    fn reconnect_creates_cross_link_between_branches() {
+        let mut w = World::new(13, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 0.0;
+        w.cfg.reconnect_rate = 1.0;
+        w.cfg.reconnect_radius = 20;
+        // Two alive nodes in different branches, no existing bridge.
+        w.nodes
+            .push(Node::fresh((20, 10), Some(w.c2), 0, Role::Relay, 1));
+        w.nodes
+            .push(Node::fresh((25, 12), Some(w.c2), 0, Role::Relay, 2));
+        let before = w.links.iter().filter(|l| l.kind == LinkKind::Cross).count();
+        w.maybe_reconnect();
+        let after = w.links.iter().filter(|l| l.kind == LinkKind::Cross).count();
+        assert_eq!(after, before + 1, "should have formed exactly one cross link");
+        // Second call should not create a duplicate between the same pair.
+        w.maybe_reconnect();
+        let cross_count = w.links.iter().filter(|l| l.kind == LinkKind::Cross).count();
+        assert_eq!(cross_count, after, "must not duplicate existing bridge");
+    }
+
+    #[test]
+    fn reconnect_refuses_same_branch() {
+        let mut w = World::new(17, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 0.0;
+        w.cfg.reconnect_rate = 1.0;
+        w.cfg.reconnect_radius = 20;
+        // Both nodes in the same branch — should NOT form a cross link.
+        w.nodes
+            .push(Node::fresh((20, 10), Some(w.c2), 0, Role::Relay, 1));
+        w.nodes
+            .push(Node::fresh((25, 12), Some(w.c2), 0, Role::Relay, 1));
+        for _ in 0..20 {
+            w.maybe_reconnect();
+        }
+        let cross = w.links.iter().filter(|l| l.kind == LinkKind::Cross).count();
+        assert_eq!(cross, 0);
     }
 
     #[test]

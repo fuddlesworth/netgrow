@@ -488,7 +488,7 @@ fn branch_hue(branch_id: u16) -> Color {
 
 fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
     if node.dying_in > 0 && !matches!(node.state, State::Dead) {
-        let st = if (tick + node.dying_in as u64) % 2 == 0 {
+        let st = if (tick + node.dying_in as u64).is_multiple_of(2) {
             Style::default()
                 .fg(Color::Red)
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED)
@@ -516,6 +516,20 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD | Modifier::REVERSED),
                 );
+            }
+            if node.shield_flash > 0 {
+                // Alternate between a bright shield ring and a reversed flash
+                // so the save is obvious even to a casual glance at the mesh.
+                let st = if (tick + node.shield_flash as u64).is_multiple_of(2) {
+                    Style::default()
+                        .fg(Color::Rgb(140, 220, 255))
+                        .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                } else {
+                    Style::default()
+                        .fg(Color::Rgb(200, 240, 255))
+                        .add_modifier(Modifier::BOLD)
+                };
+                return ("⊕", st);
             }
             let hue = branch_hue(node.branch_id);
             let pulse_boost = node.pulse > 0;
@@ -553,7 +567,7 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
             }
         }
         State::Pwned { .. } => {
-            let st = if tick % 2 == 0 {
+            let st = if tick.is_multiple_of(2) {
                 Style::default()
                     .fg(Color::Red)
                     .add_modifier(Modifier::BOLD)
