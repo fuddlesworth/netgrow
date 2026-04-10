@@ -437,6 +437,14 @@ pub struct Config {
     /// faction bridge forms, worms can travel between factions,
     /// enabling viral warfare.
     pub cross_faction_bridge_chance: f32,
+    /// Ticks between assimilation checks.
+    pub assimilation_period: u64,
+    /// Below this many alive nodes, a faction becomes a candidate for
+    /// assimilation.
+    pub assimilation_threshold: usize,
+    /// A candidate faction is absorbed only when another faction has
+    /// at least this many alive nodes.
+    pub assimilation_dominance: usize,
     /// Length of a single named epoch in ticks. Each time the sim crosses
     /// a multiple of this value, it enters a new era with a name drawn
     /// from ERA_NAMES. Set to 0 to disable.
@@ -528,6 +536,9 @@ impl Default for Config {
             tower_pwn_resist: 2,
             ransom_chance: 0.15,
             cross_faction_bridge_chance: 0.2,
+            assimilation_period: 400,
+            assimilation_threshold: 4,
+            assimilation_dominance: 25,
             proxy_radius: 8,
             beacon_radius: 6,
             beacon_weight_mult: 1.5,
@@ -930,6 +941,7 @@ impl World {
         self.advance_ddos_waves();
         self.maybe_wormhole();
         self.advance_wormholes();
+        self.maybe_assimilate();
 
         // Sample faction alive counts for the header sparkline.
         if self.tick.is_multiple_of(FACTION_SAMPLE_PERIOD) {
@@ -1631,6 +1643,70 @@ impl World {
             link.load = link.load.saturating_sub(1);
             link.breach_ttl = link.breach_ttl.saturating_sub(1);
         }
+    }
+
+    /// Faction extinction mechanic. When a faction drops below
+    /// assimilation_threshold alive nodes and another faction has at
+    /// least assimilation_dominance alive nodes, the weak faction's
+    /// remaining nodes flip to the strongest faction's color and its
+    /// C2 is marked dead — visible as a dramatic color swap + mythic
+    /// log line.
+    fn maybe_assimilate(&mut self) {
+        let period = self.cfg.assimilation_period;
+        if period == 0 || self.tick == 0 || !self.tick.is_multiple_of(period) {
+            return;
+        }
+        if self.c2_nodes.len() < 2 {
+            return;
+        }
+        // Count alive per faction.
+        let mut counts = vec![0usize; self.faction_stats.len()];
+        for n in &self.nodes {
+            if matches!(n.state, State::Alive) {
+                if let Some(slot) = counts.get_mut(n.faction as usize) {
+                    *slot += 1;
+                }
+            }
+        }
+        let weak_threshold = self.cfg.assimilation_threshold;
+        let strong_threshold = self.cfg.assimilation_dominance;
+        // Find the strongest faction that meets the dominance bar.
+        let mut strongest: Option<(usize, usize)> = None;
+        for (i, &c) in counts.iter().enumerate() {
+            if c >= strong_threshold
+                && strongest.map(|(_, sc)| c > sc).unwrap_or(true)
+            {
+                strongest = Some((i, c));
+            }
+        }
+        let Some((strong_idx, _)) = strongest else {
+            return;
+        };
+        // Find a weak faction that isn't the strong one.
+        let weak_idx = counts
+            .iter()
+            .enumerate()
+            .find(|(i, &c)| *i != strong_idx && c > 0 && c <= weak_threshold)
+            .map(|(i, _)| i);
+        let Some(weak_idx) = weak_idx else {
+            return;
+        };
+        // Flip all the weak faction's alive nodes to the strong
+        // faction. The weak faction's C2 gets marked dead.
+        let new_faction = strong_idx as u8;
+        let weak_c2 = self.c2_nodes[weak_idx];
+        self.nodes[weak_c2].state = State::Dead;
+        let mut flipped = 0u32;
+        for n in self.nodes.iter_mut() {
+            if n.faction as usize == weak_idx && matches!(n.state, State::Alive) {
+                n.faction = new_faction;
+                flipped += 1;
+            }
+        }
+        self.push_log(format!(
+            "✦ MYTHIC ✦ ASSIMILATION — F{} absorbed by F{} ({} hosts)",
+            weak_idx, strong_idx, flipped
+        ));
     }
 
     fn maybe_wormhole(&mut self) {

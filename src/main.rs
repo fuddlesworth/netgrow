@@ -117,6 +117,9 @@ struct Cli {
     /// via worms crossing the border.
     #[arg(long, default_value_t = 0.2)]
     cross_faction_bridge_chance: f32,
+    /// Ticks between assimilation checks. See assimilation_threshold.
+    #[arg(long, default_value_t = 400)]
+    assimilation_period: u64,
     /// Disable the entire virus layer (overrides spread/seed/worm rates).
     #[arg(long, default_value_t = false)]
     disable_virus: bool,
@@ -312,6 +315,11 @@ fn main() -> io::Result<()> {
         cli.cross_faction_bridge_chance,
         file.cross_faction_bridge_chance,
     );
+    let assimilation_period = pick_u64(
+        "assimilation_period",
+        cli.assimilation_period,
+        file.assimilation_period,
+    );
     let disable_virus = pick_bool("disable_virus", cli.disable_virus, file.disable_virus);
     let c2_spawn_bias = pick_f32("c2_spawn_bias", cli.c2_spawn_bias, file.c2_spawn_bias);
     let fork_rate = pick_f32("fork_rate", cli.fork_rate, file.fork_rate);
@@ -363,6 +371,7 @@ fn main() -> io::Result<()> {
         zero_day_chance,
         ransom_chance,
         cross_faction_bridge_chance,
+        assimilation_period,
         c2_spawn_bias,
         fork_rate,
         c2_count,
