@@ -343,6 +343,16 @@ pub struct Config {
     /// A cascade of this size or larger logs 'THE BIG ONE' as a mythic
     /// event. Tune lower for a smaller mesh or to see it more often.
     pub mythic_big_one_threshold: usize,
+    /// If greater than `c2_count`, World::new rolls a random starting
+    /// C2 count in `c2_count..=c2_count_max` instead of the fixed
+    /// value. Lets each seed produce a differently-shaped opening.
+    pub c2_count_max: u8,
+    /// Minimum size of a cascade batch that can trigger a rebirth
+    /// roll. Below this, cascades never resurrect anything.
+    pub resurrection_threshold: u8,
+    /// Chance that a qualifying cascade batch births a new C2 from
+    /// one of its ashes.
+    pub resurrection_chance: f32,
 }
 
 impl Default for Config {
@@ -399,6 +409,9 @@ impl Default for Config {
             tower_pwn_resist: 2,
             epoch_period: 5000,
             mythic_big_one_threshold: 30,
+            c2_count_max: 0,
+            resurrection_threshold: 12,
+            resurrection_chance: 0.35,
         }
     }
 }
@@ -618,7 +631,14 @@ impl World {
             }
             arr
         };
-        let count = cfg.c2_count.max(1) as usize;
+        // Randomize the opening C2 count if the config asks for it.
+        let min = cfg.c2_count.max(1);
+        let max = cfg.c2_count_max.max(min);
+        let count = if max > min {
+            rng.gen_range(min..=max) as usize
+        } else {
+            min as usize
+        };
         let mut nodes = Vec::with_capacity(count);
         let mut occupied = HashSet::new();
         let mut logs = VecDeque::new();
@@ -2247,6 +2267,54 @@ impl World {
         }
     }
 
+    /// When a large cascade just finalized, roll for a "rebirth": one
+    /// of the freshly-dead nodes stands back up as the root of a brand-
+    /// new faction, with its own C2 entry, faction slot, and faction
+    /// stats. The old links and subtree stay dead — it literally rises
+    /// from the ashes, parentless, ready to grow its own colony.
+    fn maybe_resurrect_c2(&mut self, newly_dead: &[NodeId]) {
+        let threshold = self.cfg.resurrection_threshold as usize;
+        if threshold == 0 || newly_dead.len() < threshold {
+            return;
+        }
+        if self.cfg.resurrection_chance <= 0.0
+            || !self.rng.gen_bool(self.cfg.resurrection_chance as f64)
+        {
+            return;
+        }
+        let idx = self.rng.gen_range(0..newly_dead.len());
+        let reborn = newly_dead[idx];
+        let new_faction = self.c2_nodes.len() as u8;
+        let new_branch = self.alloc_branch_id();
+        let pos = self.nodes[reborn].pos;
+        // Reset the node to a fresh C2 state. Old inbound/outbound
+        // links stay as ghost wires on the dead subtree.
+        let node = &mut self.nodes[reborn];
+        node.state = State::Alive;
+        node.dying_in = 0;
+        node.parent = None;
+        node.born = self.tick;
+        node.role = Role::Relay;
+        node.hardened = false;
+        node.heartbeats = 0;
+        node.pulse = 6;
+        node.infection = None;
+        node.faction = new_faction;
+        node.branch_id = new_branch;
+        node.pwn_resist = 0;
+        node.shield_flash = 0;
+        node.mutated_flash = 0;
+        node.scan_pulse = 0;
+        // Register the new C2 and faction.
+        self.c2_nodes.push(reborn);
+        self.faction_stats.push(FactionStats::default());
+        let (a, b) = octet_pair(pos);
+        self.push_log(format!(
+            "✦ MYTHIC ✦ REBIRTH — c2[{}] rises @ 10.0.{}.{}",
+            new_faction, a, b
+        ));
+    }
+
     pub fn schedule_subtree_death(&mut self, root: NodeId, mult: f32) {
         let cascade = self.compute_cascade(root);
         let mut touched = 0u32;
@@ -2287,6 +2355,10 @@ impl World {
                 s.lost += 1;
             }
         }
+        // When a big batch of nodes dies in one breath, one of them may
+        // rise again as the root of a new faction — a new C2 born from
+        // the ashes of the fallen subtree.
+        self.maybe_resurrect_c2(&newly_dead);
         // Free cells of links that now touch a Dead endpoint so territory reopens.
         let dead: HashSet<NodeId> = self
             .nodes
@@ -3048,6 +3120,65 @@ mod tests {
             matches!(w.nodes[tower].state, State::Pwned { .. } | State::Dead),
             "tower should be down after 3 hits"
         );
+    }
+
+    #[test]
+    fn c2_count_randomized_within_range() {
+        // With c2_count=2 and c2_count_max=4, every seed should land
+        // somewhere in 2..=4, but different seeds hit different counts.
+        let mut counts = std::collections::HashSet::new();
+        for seed in 0..50u64 {
+            let cfg = Config {
+                c2_count: 2,
+                c2_count_max: 4,
+                p_spawn: 0.0,
+                ..Config::default()
+            };
+            let w = World::new(seed, (120, 30), cfg);
+            let n = w.c2_nodes.len();
+            assert!((2..=4).contains(&n), "seed {} gave {} c2s", seed, n);
+            counts.insert(n);
+        }
+        // With 50 seeds, we should see at least 2 distinct counts.
+        assert!(counts.len() >= 2, "expected varied counts, got {:?}", counts);
+    }
+
+    #[test]
+    fn large_cascade_can_resurrect_a_new_c2() {
+        let cfg = Config {
+            p_spawn: 0.0,
+            p_loss: 0.0,
+            virus_seed_rate: 0.0,
+            resurrection_threshold: 3,
+            resurrection_chance: 1.0,
+            ..Config::default()
+        };
+        let mut w = World::new(90, (80, 30), cfg);
+        // Manually stage three Alive nodes with dying_in == 1 so they
+        // all die on the next advance_dying tick, triggering the
+        // resurrection roll (threshold=3, chance=1.0 = guaranteed).
+        for i in 0..3 {
+            let id = w.nodes.len();
+            let mut n = Node::fresh((10 + i, 10), Some(w.c2()), 0, Role::Relay, 1);
+            n.faction = 0;
+            n.dying_in = 1;
+            w.nodes.push(n);
+            let _ = id;
+        }
+        let before = w.c2_nodes.len();
+        w.advance_dying();
+        let after = w.c2_nodes.len();
+        assert_eq!(
+            after,
+            before + 1,
+            "expected a rebirth to add one C2; before={} after={}",
+            before,
+            after
+        );
+        // The resurrected C2 should be parentless and alive.
+        let new_c2 = *w.c2_nodes.last().unwrap();
+        assert!(matches!(w.nodes[new_c2].state, State::Alive));
+        assert!(w.nodes[new_c2].parent.is_none());
     }
 
     #[test]

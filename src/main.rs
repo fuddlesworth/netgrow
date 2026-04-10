@@ -118,6 +118,15 @@ struct Cli {
     /// to disable the effect entirely.
     #[arg(long, default_value_t = 600)]
     day_night_period: u64,
+    /// Upper bound on the starting C2 count. If greater than --c2-count,
+    /// the seeded RNG picks a random count in that range at world init.
+    /// 0 = no randomization, use --c2-count exactly.
+    #[arg(long, default_value_t = 0)]
+    c2_count_max: u8,
+    /// Chance that a large cascade births a new C2 from one of its
+    /// dead nodes. Set to 0 to disable the rebirth mechanic.
+    #[arg(long, default_value_t = 0.35)]
+    resurrection_chance: f32,
 }
 
 struct TerminalGuard;
@@ -271,6 +280,12 @@ fn main() -> io::Result<()> {
         cli.day_night_period,
         file.day_night_period,
     );
+    let c2_count_max = pick_u8("c2_count_max", cli.c2_count_max, file.c2_count_max);
+    let resurrection_chance = pick_f32(
+        "resurrection_chance",
+        cli.resurrection_chance,
+        file.resurrection_chance,
+    );
 
     let seed = cli.seed.or(file.seed).unwrap_or_else(rand::random);
     eprintln!("netgrow seed = {}", seed);
@@ -305,6 +320,8 @@ fn main() -> io::Result<()> {
         c2_spawn_bias,
         fork_rate,
         c2_count,
+        c2_count_max,
+        resurrection_chance,
         day_night_period,
         ..Config::default()
     };
