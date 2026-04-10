@@ -6,7 +6,9 @@ use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
 use ratatui::Frame;
 
 use crate::theme::theme;
-use crate::world::{InfectionStage, LinkKind, Node, Role, State, World, WorldStats};
+use crate::world::{
+    InfectionStage, LinkKind, Node, Role, State, World, WorldStats, HOT_LINK, WARM_LINK,
+};
 
 const RIGHT_COL_WIDTH: u16 = 42;
 const HEADER_HEIGHT: u16 = 1;
@@ -484,6 +486,8 @@ fn color_log_line(s: &str) -> Line<'static> {
             .add_modifier(Modifier::BOLD)
     } else if s.starts_with("day breaks") {
         Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
+    } else if s.contains("packet dropped") {
+        Style::default().fg(th.log_cascade)
     } else {
         Style::default().fg(th.log_default)
     };
@@ -520,6 +524,14 @@ impl<'a> Widget for MeshWidget<'a> {
                 Style::default()
                     .fg(th.cross_link)
                     .add_modifier(Modifier::DIM)
+            } else if link.load >= HOT_LINK {
+                // Saturated — bright cascade color so chokepoints pop.
+                Style::default()
+                    .fg(th.log_cascade)
+                    .add_modifier(Modifier::BOLD)
+            } else if link.load >= WARM_LINK {
+                // Warming up — accent color, no dim.
+                Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(branch_hue(b.branch_id))
             };

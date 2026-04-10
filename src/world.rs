@@ -16,6 +16,17 @@ pub const STRAIN_COUNT: usize = 8;
 /// long enough to see.
 const WORM_STEP_INTERVAL: u64 = 2;
 
+/// Link load threshold for the "warm" render tier: accent color with a
+/// bold modifier. Below this the link uses its normal branch hue.
+pub const WARM_LINK: u8 = 6;
+/// Link load threshold for the "hot" render tier: cascade color. Packets
+/// refuse to hop onto a link whose load has crossed this.
+pub const HOT_LINK: u8 = 16;
+/// How much each in-flight packet adds to its current link's load per tick.
+const PACKET_LOAD_INCREMENT: u8 = 2;
+/// How much each in-flight worm adds to its current link's load per tick.
+const WORM_LOAD_INCREMENT: u8 = 1;
+
 /// Zero-day event weights. Rolls `0.0..1.0`: outbreak below the first
 /// threshold, emergency patch below the second, immune breakthrough above.
 const ZERO_DAY_OUTBREAK_WEIGHT: f32 = 0.6;
@@ -160,6 +171,11 @@ pub struct Link {
     pub path: Vec<(i16, i16)>,
     pub drawn: u16,
     pub kind: LinkKind,
+    /// Accumulated traffic load. Each in-flight packet adds +2 per tick,
+    /// each worm +1. Decays by 1 per tick. The renderer blends into
+    /// hotter colors as load crosses WARM_LINK and HOT_LINK thresholds;
+    /// packets refuse to hop onto a link whose load is above HOT_LINK.
+    pub load: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -486,6 +502,7 @@ impl World {
         self.advance_links();
 
         // Phase 2: traveler motion — anything moving along existing links.
+        self.decay_link_load();
         self.advance_pings();
         self.advance_packets();
         self.advance_worms();
@@ -598,6 +615,7 @@ impl World {
             path,
             drawn: 0,
             kind: LinkKind::Cross,
+            load: 0,
         });
         self.push_log(format!(
             "bridge {}↔{} established",
@@ -780,6 +798,7 @@ impl World {
             path,
             drawn: 0,
             kind: LinkKind::Parent,
+            load: 0,
         });
 
         let h = (cand.0 as u32).wrapping_mul(2654435761) ^ (cand.1 as u32).wrapping_mul(40503);
@@ -1009,6 +1028,14 @@ impl World {
         }
     }
 
+    /// Decay one step of traffic load from every link. Called at the top
+    /// of the motion phase so the add/decay pair stays symmetric.
+    fn decay_link_load(&mut self) {
+        for link in self.links.iter_mut() {
+            link.load = link.load.saturating_sub(1);
+        }
+    }
+
     fn advance_packets(&mut self) {
         if self.packets.is_empty() {
             return;
@@ -1016,12 +1043,16 @@ impl World {
         let inbound = self.build_inbound_links();
 
         let mut keep: Vec<Packet> = Vec::with_capacity(self.packets.len());
+        let mut dropped_positions: Vec<(i16, i16)> = Vec::new();
         for mut pkt in std::mem::take(&mut self.packets) {
-            let link = &self.links[pkt.link_id];
-            let a_state = self.nodes[link.a].state;
-            let b_state = self.nodes[link.b].state;
-            let a_dying = self.nodes[link.a].dying_in > 0;
-            let b_dying = self.nodes[link.b].dying_in > 0;
+            let (link_a, link_b) = {
+                let link = &self.links[pkt.link_id];
+                (link.a, link.b)
+            };
+            let a_state = self.nodes[link_a].state;
+            let b_state = self.nodes[link_b].state;
+            let a_dying = self.nodes[link_a].dying_in > 0;
+            let b_dying = self.nodes[link_b].dying_in > 0;
             if matches!(a_state, State::Dead)
                 || matches!(b_state, State::Dead)
                 || a_dying
@@ -1029,16 +1060,24 @@ impl World {
             {
                 continue; // drop packet; route is compromised
             }
+            // Each in-flight packet heats up its current link.
+            self.links[pkt.link_id].load =
+                self.links[pkt.link_id].load.saturating_add(PACKET_LOAD_INCREMENT);
             if pkt.pos == 0 {
                 // Reached the parent end of this link. Hop to the parent's
                 // own inbound link, or drop if parent is C2.
-                let parent_id = link.a;
+                let parent_id = link_a;
                 if self.is_c2(parent_id) {
                     continue; // delivered
                 }
                 if let Some(&next_link) = inbound.get(&parent_id) {
                     let next = &self.links[next_link];
                     if next.path.is_empty() {
+                        continue;
+                    }
+                    if next.load >= HOT_LINK {
+                        // Congested downstream leg — drop the packet.
+                        dropped_positions.push(self.nodes[parent_id].pos);
                         continue;
                     }
                     pkt.link_id = next_link;
@@ -1051,6 +1090,9 @@ impl World {
             keep.push(pkt);
         }
         self.packets = keep;
+        for pos in dropped_positions {
+            self.log_node(pos, "packet dropped: congestion");
+        }
     }
 
     fn advance_worms(&mut self) {
@@ -1066,10 +1108,13 @@ impl World {
         let mut keep: Vec<Worm> = Vec::with_capacity(self.worms.len());
         let mut arrivals: Vec<(NodeId, u8, (i16, i16))> = Vec::new();
         for mut worm in std::mem::take(&mut self.worms) {
-            let link = &self.links[worm.link_id];
+            let (link_a, link_b, link_len) = {
+                let link = &self.links[worm.link_id];
+                (link.a, link.b, link.path.len())
+            };
             // Drop the worm if its carrier link is compromised.
-            let a_node = &self.nodes[link.a];
-            let b_node = &self.nodes[link.b];
+            let a_node = &self.nodes[link_a];
+            let b_node = &self.nodes[link_b];
             if matches!(a_node.state, State::Dead)
                 || matches!(b_node.state, State::Dead)
                 || a_node.dying_in > 0
@@ -1077,14 +1122,17 @@ impl World {
             {
                 continue;
             }
+            // Each in-flight worm contributes to its carrier link's load.
+            self.links[worm.link_id].load =
+                self.links[worm.link_id].load.saturating_add(WORM_LOAD_INCREMENT);
             if !move_tick {
                 keep.push(worm);
                 continue;
             }
             if worm.outbound_from_a {
                 let next = worm.pos as usize + 1;
-                if next >= link.path.len() {
-                    let target = link.b;
+                if next >= link_len {
+                    let target = link_b;
                     if !c2_set.contains(&target)
                         && matches!(self.nodes[target].state, State::Alive)
                         && self.nodes[target].infection.is_none()
@@ -1096,7 +1144,7 @@ impl World {
                 worm.pos = next as u16;
             } else {
                 if worm.pos == 0 {
-                    let target = link.a;
+                    let target = link_a;
                     if !c2_set.contains(&target)
                         && matches!(self.nodes[target].state, State::Alive)
                         && self.nodes[target].infection.is_none()
@@ -1932,6 +1980,7 @@ mod tests {
             path: path_ca,
             drawn: len_ca,
             kind: LinkKind::Parent,
+            load: 0,
         });
         let path_ab: Vec<(i16, i16)> = (10..=14).map(|x| (x, 10)).collect();
         let len_ab = path_ab.len() as u16;
@@ -1941,6 +1990,7 @@ mod tests {
             path: path_ab,
             drawn: len_ab,
             kind: LinkKind::Parent,
+            load: 0,
         });
         // Force the Exfil to fire on tick 0 and then tick enough for the
         // packet to reach C2 and be dropped.
@@ -1981,6 +2031,7 @@ mod tests {
             path: cross_path,
             drawn: len,
             kind: LinkKind::Cross,
+            load: 0,
         });
         let cascade = w.compute_cascade(a);
         let ids: HashSet<NodeId> = cascade.iter().map(|(id, _)| *id).collect();
@@ -2164,6 +2215,7 @@ mod tests {
             path: path_ab,
             drawn: len_ab,
             kind: LinkKind::Parent,
+            load: 0,
         });
         // Launch a worm from a → b manually and tick the worm advance step
         // enough times for it to reach the far end.
@@ -2426,6 +2478,49 @@ mod tests {
         assert!(w.is_night(), "still night at period end");
         w.tick = 100;
         assert!(!w.is_night(), "day at next period start");
+    }
+
+    #[test]
+    fn link_load_accumulates_and_decays() {
+        let cfg = Config {
+            p_spawn: 0.0,
+            p_loss: 0.0,
+            virus_seed_rate: 0.0,
+            ..Config::default()
+        };
+        let mut w = World::new(60, (80, 30), cfg);
+        let a = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
+        let b = w.nodes.len();
+        w.nodes.push(Node::fresh((14, 10), Some(a), 0, Role::Exfil, 1));
+        let path: Vec<(i16, i16)> = (10..=14).map(|x| (x, 10)).collect();
+        let len = path.len() as u16;
+        w.links.push(Link {
+            a,
+            b,
+            path,
+            drawn: len,
+            kind: LinkKind::Parent,
+            load: 0,
+        });
+        // Park a packet on the link and tick the motion phase a few times.
+        w.packets.push(Packet {
+            link_id: 0,
+            pos: len - 1,
+        });
+        for _ in 0..5 {
+            w.decay_link_load();
+            w.advance_packets();
+        }
+        assert!(w.links[0].load > 0, "load should accumulate from in-flight packet");
+
+        // Stop feeding packets; load decays back to zero.
+        w.packets.clear();
+        for _ in 0..20 {
+            w.decay_link_load();
+        }
+        assert_eq!(w.links[0].load, 0, "load should decay to zero");
     }
 
     #[test]
