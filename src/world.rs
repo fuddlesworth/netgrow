@@ -27,6 +27,11 @@ const PACKET_LOAD_INCREMENT: u8 = 2;
 /// How much each in-flight worm adds to its current link's load per tick.
 const WORM_LOAD_INCREMENT: u8 = 1;
 
+/// Duration in ticks of a scanner's ping pulse. While scan_pulse is
+/// nonzero the scanner's node and all its adjacent links render in a
+/// bright scanner-color style.
+const SCANNER_PULSE_TICKS: u8 = 5;
+
 /// Zero-day event weights. Rolls `0.0..1.0`: outbreak below the first
 /// threshold, emergency patch below the second, immune breakthrough above.
 const ZERO_DAY_OUTBREAK_WEIGHT: f32 = 0.6;
@@ -113,6 +118,11 @@ pub struct Node {
     pub infection: Option<Infection>,
     /// Nonzero means the node just mutated its role — flashes pink.
     pub mutated_flash: u8,
+    /// Nonzero while a Scanner's ping pulse is active. The render pass
+    /// uses this to brighten the scanner node itself and every link
+    /// adjacent to it, creating a visible "surveying" pulse that rolls
+    /// through the local topology instead of phantom dots in empty space.
+    pub scan_pulse: u8,
     /// Which C2 this node belongs to (index into `World.c2_nodes`).
     /// Inherited from parent at spawn; first-hop C2 children take their
     /// C2's index. Used to keep cascade reachability and cross-link
@@ -150,6 +160,7 @@ impl Node {
             shield_flash: 0,
             infection: None,
             mutated_flash: 0,
+            scan_pulse: 0,
             faction: 0,
         }
     }
@@ -176,17 +187,6 @@ pub struct Link {
     /// hotter colors as load crosses WARM_LINK and HOT_LINK thresholds;
     /// packets refuse to hop onto a link whose load is above HOT_LINK.
     pub load: u8,
-}
-
-#[derive(Clone, Debug)]
-pub struct Ping {
-    pub origin: (i16, i16),
-    /// Unit direction vector (one of the 8 cardinals/diagonals). The
-    /// renderer expands the ping into a beam of cells along this vector
-    /// each tick, so each ping is a short directional sweep rather than
-    /// an omnidirectional halo.
-    pub dir: (i16, i16),
-    pub born: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -357,7 +357,6 @@ pub struct World {
     pub logs: VecDeque<String>,
     pub bounds: (i16, i16),
     pub cfg: Config,
-    pub pings: Vec<Ping>,
     pub packets: Vec<Packet>,
     pub worms: Vec<Worm>,
     pub patch_waves: Vec<PatchWave>,
@@ -485,7 +484,6 @@ impl World {
             logs,
             bounds,
             cfg,
-            pings: Vec::new(),
             packets: Vec::new(),
             worms: Vec::new(),
             patch_waves: Vec::new(),
@@ -518,7 +516,6 @@ impl World {
 
         // Phase 2: traveler motion — anything moving along existing links.
         self.decay_link_load();
-        self.advance_pings();
         self.advance_packets();
         self.advance_worms();
         self.advance_patch_waves();
@@ -910,14 +907,15 @@ impl World {
             if n.mutated_flash > 0 {
                 n.mutated_flash -= 1;
             }
+            if n.scan_pulse > 0 {
+                n.scan_pulse -= 1;
+            }
         }
     }
 
     fn fire_scanner_pings(&mut self) {
         let period = self.cfg.scanner_ping_period;
         let now = self.tick;
-        let mut new_pings: Vec<Ping> = Vec::new();
-        // Pick directions up front so we don't alias the rng borrow.
         let scanner_ids: Vec<NodeId> = self
             .nodes
             .iter()
@@ -935,27 +933,19 @@ impl World {
             })
             .collect();
         for id in scanner_ids {
+            // Pick a direction so the spawn bias in try_spawn still favors
+            // growth along the scanner's last sweep. Pulled out of the
+            // mut borrow below to avoid aliasing.
             let dir_idx = self.rng.gen_range(0..DIRS.len());
             let (dx, dy) = DIRS[dir_idx];
             let n = &mut self.nodes[id];
             n.role_cooldown = period;
-            n.last_ping_dir = Some((dx as i8, dy as i8));
             n.last_ping_tick = now;
-            new_pings.push(Ping {
-                origin: n.pos,
-                dir: (dx, dy),
-                born: now,
-            });
-        }
-        self.pings.extend(new_pings);
-    }
-
-    fn advance_pings(&mut self) {
-        let now = self.tick;
-        self.pings.retain(|p| now.saturating_sub(p.born) < 4);
-        if self.pings.len() > 64 {
-            let drop = self.pings.len() - 64;
-            self.pings.drain(0..drop);
+            n.last_ping_dir = Some((dx as i8, dy as i8));
+            // Light up the scanner itself and its adjacent links for a few
+            // ticks. The render pass reads scan_pulse to brighten the node
+            // and every link touching it.
+            n.scan_pulse = SCANNER_PULSE_TICKS;
         }
     }
 

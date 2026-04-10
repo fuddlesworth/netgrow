@@ -514,6 +514,10 @@ impl<'a> Widget for MeshWidget<'a> {
             let dying = a.dying_in > 0 || b.dying_in > 0;
             let dead = matches!(a.state, State::Dead) || matches!(b.state, State::Dead);
             let th = theme();
+            // A scanner that's currently pulsing lights up every link that
+            // touches it — adjacent wires flash with the scanner color for
+            // a few ticks, rolling outward through the local topology.
+            let scan_pulse = a.scan_pulse.max(b.scan_pulse);
             let style = if dying {
                 Style::default()
                     .fg(th.pwned)
@@ -524,6 +528,10 @@ impl<'a> Widget for MeshWidget<'a> {
                 || matches!(b.state, State::Pwned { .. })
             {
                 Style::default().fg(th.pwned)
+            } else if scan_pulse > 0 {
+                Style::default()
+                    .fg(th.scanner)
+                    .add_modifier(Modifier::BOLD)
             } else if link.kind == LinkKind::Cross {
                 Style::default()
                     .fg(th.cross_link)
@@ -583,38 +591,8 @@ impl<'a> Widget for MeshWidget<'a> {
             }
         }
 
-        // 2. Scanner ping beams — a directional sweep that expands one
-        // cell per tick along the scanner's chosen vector, with a fading
-        // trail behind the head. The head uses the scanner color bold,
-        // trail cells use a dimmed variant with a distinct glyph so the
-        // beam doesn't blur into the rest of the mesh.
-        for ping in &w.pings {
-            let age = w.tick.saturating_sub(ping.born) as i16;
-            if age > 3 {
-                continue;
-            }
-            let (dx, dy) = ping.dir;
-            if dx == 0 && dy == 0 {
-                continue;
-            }
-            let th = theme();
-            let head_style = Style::default()
-                .fg(th.scanner)
-                .add_modifier(Modifier::BOLD);
-            let trail_style = Style::default()
-                .fg(th.scanner)
-                .add_modifier(Modifier::DIM);
-            let head_radius = age + 1;
-            for r in 1..=head_radius {
-                let cell = (ping.origin.0 + dx * r, ping.origin.1 + dy * r);
-                let is_head = r == head_radius;
-                if is_head {
-                    put(buf, area, cell, "○", head_style);
-                } else {
-                    put(buf, area, cell, "∙", trail_style);
-                }
-            }
-        }
+        // Scanner pings are rendered by reinterpreting link / node styles
+        // in their normal passes — no extra glyphs drawn here.
 
         // 3. Exfil packets
         for pkt in &w.packets {
@@ -917,12 +895,15 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                         ("●", Style::default().fg(hue))
                     }
                 }
-                Role::Scanner => (
-                    "◎",
-                    Style::default()
-                        .fg(th.scanner)
-                        .add_modifier(if node.hardened { Modifier::BOLD } else { Modifier::empty() }),
-                ),
+                Role::Scanner => {
+                    // While pulsing, bold + reversed gives a visible flash
+                    // that matches the surrounding link glow.
+                    let mut m = if node.hardened { Modifier::BOLD } else { Modifier::empty() };
+                    if node.scan_pulse > 0 {
+                        m |= Modifier::BOLD | Modifier::REVERSED;
+                    }
+                    ("◎", Style::default().fg(th.scanner).add_modifier(m))
+                }
                 Role::Exfil => (
                     "▣",
                     Style::default()
