@@ -1207,6 +1207,20 @@ fn infected_glyph(
     inf: &crate::world::Infection,
     tick: u64,
 ) -> (&'static str, Style) {
+    // Ransomware override — render as a padlock-ish block in the
+    // pwned color regardless of stage.
+    if inf.is_ransom {
+        let style = if tick.is_multiple_of(4) {
+            Style::default()
+                .fg(theme().pwned)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default()
+                .fg(theme().pwned)
+                .add_modifier(Modifier::BOLD)
+        };
+        return ("⬟", style);
+    }
     let hue = strain_hue(inf.strain);
     match inf.stage {
         InfectionStage::Incubating => {

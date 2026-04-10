@@ -100,6 +100,10 @@ pub struct Infection {
     #[allow(dead_code)]
     pub cure_resist: u8,
     pub terminal_ticks: u8,
+    /// Ransomware variant: freezes the host instead of killing it at
+    /// Terminal stage, and is immune to patch waves — only defender
+    /// pulses can clear it.
+    pub is_ransom: bool,
 }
 
 impl Infection {
@@ -110,6 +114,18 @@ impl Infection {
             age: 0,
             cure_resist,
             terminal_ticks: 0,
+            is_ransom: false,
+        }
+    }
+
+    pub fn seeded_ransom(strain: u8, cure_resist: u8) -> Self {
+        Self {
+            strain,
+            stage: InfectionStage::Incubating,
+            age: 0,
+            cure_resist,
+            terminal_ticks: 0,
+            is_ransom: true,
         }
     }
 }
@@ -413,6 +429,9 @@ pub struct Config {
     pub tower_spawn_radius: i16,
     /// Extra pwn-absorbing charges a newly spawned Tower receives.
     pub tower_pwn_resist: u8,
+    /// Chance that a newly seeded or injected infection is a ransomware
+    /// variant — immune to patch waves, only cleared by defender pulses.
+    pub ransom_chance: f32,
     /// Length of a single named epoch in ticks. Each time the sim crosses
     /// a multiple of this value, it enters a new era with a name drawn
     /// from ERA_NAMES. Set to 0 to disable.
@@ -502,6 +521,7 @@ impl Default for Config {
             wormhole_life_ticks: 20,
             tower_spawn_radius: 10,
             tower_pwn_resist: 2,
+            ransom_chance: 0.15,
             proxy_radius: 8,
             beacon_radius: 6,
             beacon_weight_mult: 1.5,
@@ -2008,6 +2028,11 @@ impl World {
                     let Some(inf) = n.infection.as_mut() else {
                         break;
                     };
+                    // Ransomware is immune to patch waves; only
+                    // defender pulses can clear it.
+                    if inf.is_ransom {
+                        break;
+                    }
                     if inf.cure_resist <= 1 {
                         cured.push((n.pos, n.faction));
                         n.infection = None;
@@ -2185,11 +2210,18 @@ impl World {
         let id = candidates[self.rng.gen_range(0..candidates.len())];
         let strain = self.rng.gen_range(0..STRAIN_COUNT as u8);
         let cure_resist = self.cfg.virus_cure_resist;
-        self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
+        let is_ransom = self.cfg.ransom_chance > 0.0
+            && self.rng.gen_bool(self.cfg.ransom_chance as f64);
+        self.nodes[id].infection = Some(if is_ransom {
+            Infection::seeded_ransom(strain, cure_resist)
+        } else {
+            Infection::seeded(strain, cure_resist)
+        });
         let pos = self.nodes[id].pos;
         let (a, b) = octet_pair(pos);
         let name = self.strain_name(strain);
-        self.push_log(format!("{} detected at 10.0.{}.{}", name, a, b));
+        let label = if is_ransom { "ransom" } else { "detected" };
+        self.push_log(format!("{} {} at 10.0.{}.{}", name, label, a, b));
     }
 
     fn maybe_mutate(&mut self) {
@@ -3088,6 +3120,7 @@ mod tests {
             age: w.cfg.virus_incubation_ticks,
             cure_resist: 3,
             terminal_ticks: 0,
+            is_ransom: false,
         });
         // Run a few ticks: spread probability is 1.0 so b should catch it fast.
         for _ in 0..5 {
@@ -3114,6 +3147,7 @@ mod tests {
             age: w.cfg.virus_incubation_ticks,
             cure_resist: 3,
             terminal_ticks: 0,
+            is_ransom: false,
         });
         for _ in 0..20 {
             w.tick((80, 30));
@@ -3145,6 +3179,7 @@ mod tests {
             age: 0,
             cure_resist: 1,
             terminal_ticks: 0,
+            is_ransom: false,
         });
         // Seed a patch wave directly and tick it forward until the front hits.
         w.patch_waves.push(PatchWave {
@@ -3216,6 +3251,7 @@ mod tests {
             age: 200,
             cure_resist: 3,
             terminal_ticks: 1,
+            is_ransom: false,
         });
         // One tick drains terminal_ticks and flips to Pwned.
         w.tick((80, 30));
@@ -3321,6 +3357,7 @@ mod tests {
             age: w.cfg.virus_incubation_ticks,
             cure_resist: 4,
             terminal_ticks: 0,
+            is_ransom: false,
         });
         for _ in 0..20 {
             w.tick((80, 30));
@@ -3350,6 +3387,7 @@ mod tests {
             age: w.cfg.virus_incubation_ticks,
             cure_resist: 1,
             terminal_ticks: 0,
+            is_ransom: false,
         });
         w.fire_defender_pulses();
         assert!(w.nodes[victim].infection.is_none(), "defender should clear infection in radius");
@@ -3374,6 +3412,7 @@ mod tests {
             age: w.cfg.virus_incubation_ticks,
             cure_resist: 4,
             terminal_ticks: 0,
+            is_ransom: false,
         });
         for _ in 0..20 {
             w.tick((80, 30));

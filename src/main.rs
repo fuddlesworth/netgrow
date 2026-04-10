@@ -108,6 +108,10 @@ struct Cli {
     /// Chance that a zero-day event fires when its period elapses.
     #[arg(long, default_value_t = 0.4)]
     zero_day_chance: f32,
+    /// Chance that a newly seeded infection is a ransomware variant.
+    /// Ransomware is immune to patch waves; only defender pulses clear it.
+    #[arg(long, default_value_t = 0.15)]
+    ransom_chance: f32,
     /// Disable the entire virus layer (overrides spread/seed/worm rates).
     #[arg(long, default_value_t = false)]
     disable_virus: bool,
@@ -297,6 +301,7 @@ fn main() -> io::Result<()> {
     );
     let mutate_rate = pick_f32("mutate_rate", cli.mutate_rate, file.mutate_rate);
     let zero_day_chance = pick_f32("zero_day_chance", cli.zero_day_chance, file.zero_day_chance);
+    let ransom_chance = pick_f32("ransom_chance", cli.ransom_chance, file.ransom_chance);
     let disable_virus = pick_bool("disable_virus", cli.disable_virus, file.disable_virus);
     let c2_spawn_bias = pick_f32("c2_spawn_bias", cli.c2_spawn_bias, file.c2_spawn_bias);
     let fork_rate = pick_f32("fork_rate", cli.fork_rate, file.fork_rate);
@@ -346,6 +351,7 @@ fn main() -> io::Result<()> {
         virus_spread_rate,
         mutate_rate,
         zero_day_chance,
+        ransom_chance,
         c2_spawn_bias,
         fork_rate,
         c2_count,

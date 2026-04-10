@@ -36,6 +36,7 @@ pub struct FileConfig {
     pub virus_spread_rate: Option<f32>,
     pub mutate_rate: Option<f32>,
     pub zero_day_chance: Option<f32>,
+    pub ransom_chance: Option<f32>,
     pub disable_virus: Option<bool>,
 
     pub c2_spawn_bias: Option<f32>,
