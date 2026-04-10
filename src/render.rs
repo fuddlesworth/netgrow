@@ -630,25 +630,11 @@ impl<'a> Widget for MeshWidget<'a> {
             }
         }
 
-        // 1b. C2 patch waves — expanding cure rings from heartbeat sweeps.
-        for wave in &w.patch_waves {
-            let r = wave.radius;
-            if r <= 0 {
-                continue;
-            }
-            let style = Style::default()
-                .fg(theme().patch_wave)
-                .add_modifier(Modifier::BOLD);
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    if dx.abs().max(dy.abs()) != r {
-                        continue;
-                    }
-                    let cell = (wave.origin.0 + dx, wave.origin.1 + dy);
-                    put(buf, area, cell, "○", style);
-                }
-            }
-        }
+        // Patch wave expansion happens silently in the sim layer —
+        // advance_patch_waves still propagates cures outward from each
+        // C2, but we no longer draw the ○ rings in empty space. The
+        // cure itself is visible as the infected node's glyph reverting
+        // and a 'cured' line in the log.
 
         // Scanner pings are rendered by reinterpreting link / node styles
         // in their normal passes — no extra glyphs drawn here.
