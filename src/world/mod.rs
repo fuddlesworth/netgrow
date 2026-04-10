@@ -3241,9 +3241,8 @@ impl World {
     }
 }
 
-// Tests live in a sibling file so world.rs stays focused on the
-// simulation core. See `src/world_tests.rs`.
+// Unit tests live in the sibling file src/world/tests.rs, picked
+// up automatically by Rust's module resolution.
 #[cfg(test)]
-#[path = "world_tests.rs"]
 mod tests;
 
