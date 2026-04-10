@@ -280,6 +280,14 @@ pub struct Config {
     pub night_spawn_mult: f32,
     /// Multiplier applied to p_loss during the night half of the cycle.
     pub night_loss_mult: f32,
+    /// Chebyshev radius searched for honeypot backdoor targets. When a
+    /// honeypot trips, it reveals up to `honeypot_backdoor_max` new
+    /// cross-links to nearby same-faction / different-branch neighbors
+    /// before cascading.
+    pub honeypot_backdoor_radius: i16,
+    /// Maximum number of backdoor cross-links a single honeypot trip
+    /// may reveal.
+    pub honeypot_backdoor_max: u8,
 }
 
 impl Default for Config {
@@ -325,6 +333,8 @@ impl Default for Config {
             day_night_period: 600,
             night_spawn_mult: 1.6,
             night_loss_mult: 1.5,
+            honeypot_backdoor_radius: 14,
+            honeypot_backdoor_max: 3,
         }
     }
 }
@@ -1644,6 +1654,10 @@ impl World {
         for id in to_schedule {
             // Honeypot triggers an oversized cascade that also eats its parent.
             if self.nodes[id].role == Role::Honeypot && self.nodes[id].honey_tripped {
+                // Reveal backdoor cross-links before cascading so the
+                // shortcuts are visible for a few ticks before the death
+                // wave propagates outward from them.
+                self.reveal_honeypot_backdoors(id);
                 if let Some(parent) = self.nodes[id].parent {
                     if !self.is_c2(parent) {
                         self.schedule_subtree_death(parent, self.cfg.honeypot_cascade_mult);
@@ -1816,6 +1830,96 @@ impl World {
     /// pwned node; cross-linked cousins survive. `mult` stretches the per-hop
     /// delay for theatrical effect — pass 1.0 for a normal cascade, higher
     /// values for a slower honeypot-style reveal.
+    /// When a honeypot trips, reveal up to `honeypot_backdoor_max` new
+    /// cross-links to nearby same-faction neighbors in different branches.
+    /// The new links animate in normally (drawn: 0) so the viewer sees
+    /// them reach outward before the cascade wave catches up.
+    fn reveal_honeypot_backdoors(&mut self, honey_id: NodeId) {
+        let max = self.cfg.honeypot_backdoor_max;
+        if max == 0 {
+            return;
+        }
+        let radius = self.cfg.honeypot_backdoor_radius;
+        let a_pos = self.nodes[honey_id].pos;
+        let a_branch = self.nodes[honey_id].branch_id;
+        let a_faction = self.nodes[honey_id].faction;
+
+        // Collect nearby eligible targets.
+        let mut candidates: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                if i == honey_id {
+                    return None;
+                }
+                if !matches!(n.state, State::Alive) || n.dying_in > 0 {
+                    return None;
+                }
+                if n.faction != a_faction || n.branch_id == a_branch {
+                    return None;
+                }
+                if self.is_c2(i) {
+                    return None;
+                }
+                let dp = n.pos;
+                let dist = (dp.0 - a_pos.0).abs().max((dp.1 - a_pos.1).abs());
+                if dist > radius {
+                    return None;
+                }
+                // Skip if a cross-link between honey and this node exists.
+                let already = self.links.iter().any(|l| {
+                    l.kind == LinkKind::Cross
+                        && ((l.a == honey_id && l.b == i) || (l.a == i && l.b == honey_id))
+                });
+                if already {
+                    return None;
+                }
+                Some(i)
+            })
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        candidates.shuffle(&mut self.rng);
+        let count = self.rng.gen_range(1..=(max as usize));
+        let take = count.min(candidates.len());
+
+        // Routing wants the occupied set minus the two endpoints so it
+        // doesn't reject the start/end cells. Same pattern the spawn
+        // routing uses.
+        let mut occ = self.occupied.clone();
+        occ.remove(&a_pos);
+
+        let bounds = self.bounds;
+        let mut revealed = 0u32;
+        for &b in candidates.iter().take(take) {
+            let b_pos = self.nodes[b].pos;
+            occ.remove(&b_pos);
+            let path = routing::route_link(a_pos, b_pos, &occ, bounds, &mut self.rng);
+            occ.insert(b_pos);
+            if let Some(path) = path {
+                self.links.push(Link {
+                    a: honey_id,
+                    b,
+                    path,
+                    drawn: 0,
+                    kind: LinkKind::Cross,
+                    load: 0,
+                });
+                revealed += 1;
+                self.log_node(b_pos, "backdoor revealed");
+            }
+        }
+        if revealed > 0 {
+            let (oa, ob) = octet_pair(a_pos);
+            self.push_log(format!(
+                "HONEYPOT 10.0.{}.{} — {} backdoors opened",
+                oa, ob, revealed
+            ));
+        }
+    }
+
     pub fn schedule_subtree_death(&mut self, root: NodeId, mult: f32) {
         let cascade = self.compute_cascade(root);
         let mut touched = 0u32;
@@ -2521,6 +2625,58 @@ mod tests {
             w.decay_link_load();
         }
         assert_eq!(w.links[0].load, 0, "load should decay to zero");
+    }
+
+    #[test]
+    fn honeypot_trip_reveals_backdoor_links() {
+        let cfg = Config {
+            p_spawn: 0.0,
+            p_loss: 0.0,
+            virus_seed_rate: 0.0,
+            honeypot_backdoor_max: 3,
+            honeypot_backdoor_radius: 20,
+            ..Config::default()
+        };
+        let mut w = World::new(70, (80, 30), cfg);
+        // Honeypot in its own branch, plus three alive neighbors in
+        // separate branches within the backdoor radius.
+        let honey = w.nodes.len();
+        let mut h = Node::fresh((20, 10), Some(w.c2()), 0, Role::Honeypot, 1);
+        h.faction = 0;
+        w.nodes.push(h);
+        for (i, pos) in [(25, 10), (18, 15), (22, 12)].iter().enumerate() {
+            let mut n = Node::fresh(*pos, Some(w.c2()), 0, Role::Relay, 2 + i as u16);
+            n.faction = 0;
+            w.nodes.push(n);
+        }
+        let before = w
+            .links
+            .iter()
+            .filter(|l| l.kind == LinkKind::Cross)
+            .count();
+        w.reveal_honeypot_backdoors(honey);
+        let after = w
+            .links
+            .iter()
+            .filter(|l| l.kind == LinkKind::Cross)
+            .count();
+        assert!(
+            after > before,
+            "expected at least one backdoor cross-link to be added; before={} after={}",
+            before,
+            after
+        );
+        // All new cross-links should originate from the honeypot.
+        let from_honey = w
+            .links
+            .iter()
+            .filter(|l| l.kind == LinkKind::Cross && l.a == honey)
+            .count();
+        assert_eq!(
+            from_honey,
+            after - before,
+            "all revealed backdoors should anchor on the honeypot"
+        );
     }
 
     #[test]
