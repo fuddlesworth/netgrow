@@ -495,6 +495,10 @@ pub struct World {
     /// True once the 'PANDEMIC' mythic event has fired this run. Used
     /// to make sure it only lands once even if the condition persists.
     pub mythic_pandemic_seen: bool,
+    /// Rolling window of total alive-node counts sampled on the same
+    /// cadence as faction history. Feeds the btop-style braille area
+    /// graph in the right column's 'activity' panel.
+    pub activity_history: VecDeque<u32>,
 }
 
 impl World {
@@ -510,11 +514,14 @@ impl World {
     }
 
     /// Push one sample of each faction's alive-node count into its
-    /// history ring. Bounded to FACTION_HISTORY_LEN.
+    /// history ring, plus one sample of the total alive count into
+    /// the activity history window.
     fn sample_faction_history(&mut self) {
         let mut counts = vec![0u32; self.faction_stats.len()];
+        let mut total: u32 = 0;
         for n in &self.nodes {
             if matches!(n.state, State::Alive) {
+                total += 1;
                 if let Some(slot) = counts.get_mut(n.faction as usize) {
                     *slot += 1;
                 }
@@ -525,6 +532,10 @@ impl World {
             while stats.history.len() > FACTION_HISTORY_LEN {
                 stats.history.pop_front();
             }
+        }
+        self.activity_history.push_back(total);
+        while self.activity_history.len() > ACTIVITY_HISTORY_LEN {
+            self.activity_history.pop_front();
         }
     }
 
@@ -586,6 +597,10 @@ pub struct FactionStats {
 
 /// Number of samples kept in each faction's alive-count history.
 pub const FACTION_HISTORY_LEN: usize = 8;
+/// Number of samples kept in the global activity history window.
+/// Larger than per-faction because the activity panel is a wider
+/// braille graph.
+pub const ACTIVITY_HISTORY_LEN: usize = 64;
 /// Tick interval between FactionStats.history samples.
 const FACTION_SAMPLE_PERIOD: u64 = 50;
 
@@ -737,6 +752,7 @@ impl World {
             strain_names,
             faction_stats: vec![FactionStats::default(); count],
             mythic_pandemic_seen: false,
+            activity_history: VecDeque::with_capacity(ACTIVITY_HISTORY_LEN),
         }
     }
 

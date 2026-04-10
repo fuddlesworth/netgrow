@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 use ratatui::Frame;
 
 use crate::theme::theme;
-use crate::util::{session_name, sparkline, with_commas};
+use crate::util::{braille_area_graph, session_name, sparkline, with_commas};
 use crate::world::{
     InfectionStage, LinkKind, Node, Role, State, World, WorldStats, HOT_LINK, WARM_LINK,
 };
@@ -94,6 +94,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     let inspector_height: u16 = if ui.cursor.is_some() { 10 } else { 0 };
     let right_rows = Layout::vertical([
         Constraint::Length(5), // stats: 3 content rows + border
+        Constraint::Length(5), // activity: 3 braille content rows + border
         Constraint::Length(7), // roles: 5 content rows + border
         Constraint::Length(inspector_height),
         Constraint::Min(5),
@@ -101,11 +102,42 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     .split(right_col);
 
     frame.render_widget(stats_block(&stats), right_rows[0]);
-    frame.render_widget(legend_block(), right_rows[1]);
+    frame.render_widget(activity_block(world, right_rows[1].width), right_rows[1]);
+    frame.render_widget(legend_block(), right_rows[2]);
     if let Some(pos) = ui.cursor {
-        frame.render_widget(inspector_block(world, pos), right_rows[2]);
+        frame.render_widget(inspector_block(world, pos), right_rows[3]);
     }
-    frame.render_widget(log_block(world), right_rows[3]);
+    frame.render_widget(log_block(world), right_rows[4]);
+}
+
+fn activity_block(world: &World, panel_width: u16) -> Paragraph<'static> {
+    let th = theme();
+    let block = bordered_block(" activity ");
+    // Inner width = panel minus two border cells.
+    let inner_cells = panel_width.saturating_sub(2) as usize;
+    let graph_cells = inner_cells.saturating_sub(0);
+    let graph_height = 3usize;
+    let samples: Vec<u32> = world.activity_history.iter().copied().collect();
+    let rows = braille_area_graph(&samples, graph_cells, graph_height);
+    // Gradient: top row dimmer, bottom row normal, matches a subtle
+    // "peaks fade into the sky" look.
+    let lines: Vec<Line<'static>> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let style = if i == 0 {
+                Style::default()
+                    .fg(th.frame_accent)
+                    .add_modifier(Modifier::DIM)
+            } else {
+                Style::default()
+                    .fg(th.frame_accent)
+                    .add_modifier(Modifier::BOLD)
+            };
+            Line::from(Span::styled(s, style))
+        })
+        .collect();
+    Paragraph::new(lines).block(block)
 }
 
 /// ASCII title card for the boot splash. Compact Unicode block style
