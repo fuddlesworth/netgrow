@@ -514,10 +514,6 @@ impl<'a> Widget for MeshWidget<'a> {
             let dying = a.dying_in > 0 || b.dying_in > 0;
             let dead = matches!(a.state, State::Dead) || matches!(b.state, State::Dead);
             let th = theme();
-            // A scanner that's currently pulsing lights up every link that
-            // touches it — adjacent wires flash with the scanner color for
-            // a few ticks, rolling outward through the local topology.
-            let scan_pulse = a.scan_pulse.max(b.scan_pulse);
             let style = if dying {
                 Style::default()
                     .fg(th.pwned)
@@ -528,18 +524,6 @@ impl<'a> Widget for MeshWidget<'a> {
                 || matches!(b.state, State::Pwned { .. })
             {
                 Style::default().fg(th.pwned)
-            } else if scan_pulse > 0 {
-                // Flicker on tick parity between a REVERSED accent block
-                // and a bold accent glyph so the pulse is visibly strobing.
-                if w.tick.is_multiple_of(2) {
-                    Style::default()
-                        .fg(th.accent)
-                        .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-                } else {
-                    Style::default()
-                        .fg(th.accent)
-                        .add_modifier(Modifier::BOLD)
-                }
             } else if link.kind == LinkKind::Cross {
                 Style::default()
                     .fg(th.cross_link)
@@ -905,19 +889,14 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                 }
                 Role::Scanner => {
                     if node.scan_pulse > 0 {
-                        // Flash the scanner in the accent color to match the
-                        // link pulse — strobes between reversed block and
-                        // bold glyph so it's hard to miss.
-                        let style = if tick.is_multiple_of(2) {
+                        // Reversed cell for the pulse duration — a single
+                        // localized blink, no strobing, no link flashing.
+                        (
+                            "◎",
                             Style::default()
-                                .fg(th.accent)
-                                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
-                        } else {
-                            Style::default()
-                                .fg(th.accent)
-                                .add_modifier(Modifier::BOLD)
-                        };
-                        ("◎", style)
+                                .fg(th.scanner)
+                                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                        )
                     } else {
                         let m = if node.hardened {
                             Modifier::BOLD
