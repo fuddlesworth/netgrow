@@ -689,7 +689,7 @@ fn color_log_line(s: &str) -> Line<'static> {
             .add_modifier(Modifier::BOLD)
     } else if s.starts_with("day breaks") {
         Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
-    } else if s.contains("STORM") {
+    } else if s.contains("STORM") || s.contains("DDOS") {
         Style::default()
             .fg(th.pwned)
             .add_modifier(Modifier::BOLD | Modifier::REVERSED)
@@ -947,6 +947,24 @@ impl<'a> Widget for MeshWidget<'a> {
         for node in &w.nodes {
             let (glyph, style) = node_glyph(node, w.tick);
             put(buf, area, node.pos, glyph, style);
+        }
+
+        // 4a. DDoS wave front — a line of bold braille blocks across
+        // the full row or column where the wave currently sits.
+        for wave in &w.ddos_waves {
+            let th = theme();
+            let style = Style::default()
+                .fg(th.pwned)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED);
+            if wave.horizontal {
+                for x in 0..area.width as i16 {
+                    put(buf, area, (x, wave.pos), "⣿", style);
+                }
+            } else {
+                for y in 0..area.height as i16 {
+                    put(buf, area, (wave.pos, y), "⣿", style);
+                }
+            }
         }
 
         // 4b. Cascade shockwaves and sparks. Shockwaves are a ring of

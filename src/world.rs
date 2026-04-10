@@ -241,6 +241,21 @@ pub struct Worm {
     pub strain: u8,
 }
 
+/// Rare sweeping event — a line of "hostile traffic" that moves across
+/// the mesh from one edge to the opposite edge, spiking role cooldowns
+/// on any node it passes over.
+#[derive(Clone, Debug)]
+pub struct DdosWave {
+    /// Current position of the wave front (x or y, depending on orientation).
+    pub pos: i16,
+    /// If true, the wave is a horizontal line moving vertically; else
+    /// a vertical line moving horizontally.
+    pub horizontal: bool,
+    /// +1 or -1, determines which way the front advances.
+    pub direction: i16,
+    pub age: u16,
+}
+
 /// Transient particle ejected from a cascade root. Sub-cell f32
 /// position + velocity so multiple sparks in one terminal cell can
 /// render as distinct braille dots.
@@ -368,6 +383,15 @@ pub struct Config {
     pub storm_spawn_mult: f32,
     /// Multiplier applied to p_loss while a storm is active.
     pub storm_loss_mult: f32,
+    /// Ticks between DDoS wave rolls. A DDoS wave sweeps across the
+    /// mesh from a random edge to the opposite one, temporarily
+    /// spiking role cooldowns on any node it passes over.
+    pub ddos_period: u64,
+    /// Probability a DDoS wave fires when `ddos_period` elapses.
+    pub ddos_chance: f32,
+    /// Number of ticks added to role_cooldown on any node the wave
+    /// sweeps across.
+    pub ddos_stun_ticks: u16,
     /// Maximum Chebyshev distance from any C2 at which a Tower may
     /// spawn. Spawns rolling a Tower role beyond this distance fall
     /// back to Relay, so fortified cores stay near their faction hub.
@@ -455,6 +479,9 @@ impl Default for Config {
             storm_duration: 150,
             storm_spawn_mult: 2.2,
             storm_loss_mult: 2.2,
+            ddos_period: 1200,
+            ddos_chance: 0.4,
+            ddos_stun_ticks: 60,
             tower_spawn_radius: 10,
             tower_pwn_resist: 2,
             proxy_radius: 8,
@@ -536,6 +563,7 @@ pub struct World {
     pub patch_waves: Vec<PatchWave>,
     pub sparks: Vec<CascadeSpark>,
     pub shockwaves: Vec<CascadeShockwave>,
+    pub ddos_waves: Vec<DdosWave>,
     pub next_branch_id: u16,
     /// Tick at which the current network storm ends. 0 if no storm is
     /// active. Storms spike both spawn and loss rates for a short burst.
@@ -804,6 +832,7 @@ impl World {
             patch_waves: Vec::new(),
             sparks: Vec::new(),
             shockwaves: Vec::new(),
+            ddos_waves: Vec::new(),
             next_branch_id: 1,
             storm_until: 0,
             strain_names,
@@ -851,6 +880,8 @@ impl World {
         // a short window. Logged at start and end so the phase reads
         // clearly in the log.
         self.maybe_storm();
+        self.maybe_ddos();
+        self.advance_ddos_waves();
 
         // Sample faction alive counts for the header sparkline.
         if self.tick.is_multiple_of(FACTION_SAMPLE_PERIOD) {
@@ -1537,6 +1568,73 @@ impl World {
             link.load = link.load.saturating_sub(1);
             link.breach_ttl = link.breach_ttl.saturating_sub(1);
         }
+    }
+
+    fn maybe_ddos(&mut self) {
+        let period = self.cfg.ddos_period;
+        if period == 0 || self.cfg.ddos_chance <= 0.0 || self.tick == 0 {
+            return;
+        }
+        if !self.tick.is_multiple_of(period) {
+            return;
+        }
+        if !self.rng.gen_bool(self.cfg.ddos_chance as f64) {
+            return;
+        }
+        // Pick a random edge to originate from and sweep toward the
+        // opposite side.
+        let edge = self.rng.gen_range(0..4u8);
+        let (horizontal, pos, direction) = match edge {
+            0 => (true, 0, 1),                    // top, moving down
+            1 => (true, self.bounds.1 - 1, -1),   // bottom, moving up
+            2 => (false, 0, 1),                   // left, moving right
+            _ => (false, self.bounds.0 - 1, -1),  // right, moving left
+        };
+        self.ddos_waves.push(DdosWave {
+            pos,
+            horizontal,
+            direction,
+            age: 0,
+        });
+        self.push_log("⚡ DDOS wave inbound".to_string());
+    }
+
+    fn advance_ddos_waves(&mut self) {
+        if self.ddos_waves.is_empty() {
+            return;
+        }
+        let stun = self.cfg.ddos_stun_ticks;
+        let bounds = self.bounds;
+        let mut keep: Vec<DdosWave> = Vec::with_capacity(self.ddos_waves.len());
+        for mut wave in std::mem::take(&mut self.ddos_waves) {
+            // Apply stun to any alive node whose position coincides
+            // with the current wave line.
+            for n in self.nodes.iter_mut() {
+                if !matches!(n.state, State::Alive) {
+                    continue;
+                }
+                let hit = if wave.horizontal {
+                    n.pos.1 == wave.pos
+                } else {
+                    n.pos.0 == wave.pos
+                };
+                if hit {
+                    n.role_cooldown = n.role_cooldown.saturating_add(stun);
+                    n.scan_pulse = n.scan_pulse.max(3);
+                }
+            }
+            wave.age = wave.age.saturating_add(1);
+            wave.pos += wave.direction;
+            let in_bounds = if wave.horizontal {
+                (0..bounds.1).contains(&wave.pos)
+            } else {
+                (0..bounds.0).contains(&wave.pos)
+            };
+            if in_bounds {
+                keep.push(wave);
+            }
+        }
+        self.ddos_waves = keep;
     }
 
     /// Roll for a network storm. Storms spike both spawn and loss rates
