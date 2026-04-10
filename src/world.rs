@@ -257,6 +257,16 @@ pub struct Worm {
     pub strain: u8,
 }
 
+/// Two factions temporarily at peace. During the alliance, border
+/// skirmishes between them are suppressed and cross-faction bridge
+/// rolls between them don't fire. Purely a period of non-aggression.
+#[derive(Clone, Copy, Debug)]
+pub struct Alliance {
+    pub a: u8,
+    pub b: u8,
+    pub expires_tick: u64,
+}
+
 /// Rare visual-only event: a dashed braille line flickering briefly
 /// between two random alive mesh cells. Pure flavor, no effect on
 /// routing or reachability.
@@ -454,6 +464,10 @@ pub struct Config {
     /// Per-border-node chance of losing shielding / taking a hit on
     /// each skirmish tick.
     pub border_skirmish_chance: f32,
+    /// Ticks between alliance rolls.
+    pub alliance_period: u64,
+    pub alliance_chance: f32,
+    pub alliance_duration: u64,
     /// Length of a single named epoch in ticks. Each time the sim crosses
     /// a multiple of this value, it enters a new era with a name drawn
     /// from ERA_NAMES. Set to 0 to disable.
@@ -551,6 +565,9 @@ impl Default for Config {
             border_skirmish_period: 80,
             border_skirmish_radius: 3,
             border_skirmish_chance: 0.05,
+            alliance_period: 600,
+            alliance_chance: 0.3,
+            alliance_duration: 500,
             proxy_radius: 8,
             beacon_radius: 6,
             beacon_weight_mult: 1.5,
@@ -632,6 +649,7 @@ pub struct World {
     pub shockwaves: Vec<CascadeShockwave>,
     pub ddos_waves: Vec<DdosWave>,
     pub wormholes: Vec<Wormhole>,
+    pub alliances: Vec<Alliance>,
     pub next_branch_id: u16,
     /// Tick at which the current network storm ends. 0 if no storm is
     /// active. Storms spike both spawn and loss rates for a short burst.
@@ -703,6 +721,18 @@ impl World {
     /// True while a network storm is currently active.
     pub fn is_storming(&self) -> bool {
         self.storm_until > self.tick
+    }
+
+    /// True if factions `a` and `b` currently have a non-aggression
+    /// alliance in effect.
+    pub fn allied(&self, a: u8, b: u8) -> bool {
+        if a == b {
+            return true;
+        }
+        self.alliances.iter().any(|al| {
+            al.expires_tick > self.tick
+                && ((al.a == a && al.b == b) || (al.a == b && al.b == a))
+        })
     }
 
     /// Index of the current named era, 0-based. Returns 0 when epoch
@@ -902,6 +932,7 @@ impl World {
             shockwaves: Vec::new(),
             ddos_waves: Vec::new(),
             wormholes: Vec::new(),
+            alliances: Vec::new(),
             next_branch_id: 1,
             storm_until: 0,
             strain_names,
@@ -954,6 +985,7 @@ impl World {
         self.maybe_wormhole();
         self.advance_wormholes();
         self.maybe_assimilate();
+        self.maybe_alliance();
         self.maybe_border_skirmish();
 
         // Sample faction alive counts for the header sparkline.
@@ -1030,6 +1062,8 @@ impl World {
         let a_faction = self.nodes[a].faction;
         let radius = self.cfg.reconnect_radius;
         // Roll once per attempt: is this a cross-faction bridge?
+        // Allied factions stay peaceful — their bridges form normally
+        // within same-faction only.
         let allow_cross_faction = self.cfg.cross_faction_bridge_chance > 0.0
             && self.rng.gen_bool(self.cfg.cross_faction_bridge_chance as f64);
         let mut candidates: Vec<NodeId> = alive
@@ -1044,9 +1078,14 @@ impl World {
                 }
                 // Same-faction by default; cross-faction when the roll
                 // allows and we explicitly want a different faction.
+                // Allied factions stay peaceful — don't cross-bridge
+                // during an alliance.
                 let same_faction = self.nodes[b].faction == a_faction;
                 if allow_cross_faction {
                     if same_faction {
+                        return false;
+                    }
+                    if self.allied(a_faction, self.nodes[b].faction) {
                         return false;
                     }
                 } else if !same_faction {
@@ -1658,6 +1697,43 @@ impl World {
         }
     }
 
+    fn maybe_alliance(&mut self) {
+        // Expire any done alliances first.
+        let now = self.tick;
+        let prev_len = self.alliances.len();
+        self.alliances.retain(|al| al.expires_tick > now);
+        if self.alliances.len() < prev_len {
+            self.push_log("alliance dissolved".to_string());
+        }
+        let period = self.cfg.alliance_period;
+        if period == 0 || now == 0 || !now.is_multiple_of(period) {
+            return;
+        }
+        if self.c2_nodes.len() < 2 {
+            return;
+        }
+        if !self.rng.gen_bool(self.cfg.alliance_chance as f64) {
+            return;
+        }
+        // Pick two distinct faction ids.
+        let n = self.c2_nodes.len() as u8;
+        let a = self.rng.gen_range(0..n);
+        let mut b = self.rng.gen_range(0..n);
+        while b == a && n > 1 {
+            b = self.rng.gen_range(0..n);
+        }
+        if a == b {
+            return;
+        }
+        // Skip if already allied.
+        if self.allied(a, b) {
+            return;
+        }
+        let expires_tick = now + self.cfg.alliance_duration;
+        self.alliances.push(Alliance { a, b, expires_tick });
+        self.push_log(format!("alliance F{} ↔ F{} signed", a, b));
+    }
+
     /// Border skirmishes: periodic low-probability hits on nodes that
     /// sit near an enemy-faction neighbor. Visible as scattered
     /// shielded/LOST lines at faction frontiers during long runs.
@@ -1692,7 +1768,9 @@ impl World {
         let mut victims: Vec<NodeId> = Vec::new();
         for &(id, pos, faction) in &positions {
             let near_enemy = positions.iter().any(|&(_, p, f)| {
-                f != faction && (p.0 - pos.0).abs().max((p.1 - pos.1).abs()) <= radius
+                f != faction
+                    && !self.allied(f, faction)
+                    && (p.0 - pos.0).abs().max((p.1 - pos.1).abs()) <= radius
             });
             if !near_enemy {
                 continue;

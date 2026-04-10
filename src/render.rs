@@ -679,6 +679,12 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default()
             .fg(th.frame_accent)
             .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("alliance") {
+        Style::default()
+            .fg(th.log_cured)
+            .add_modifier(Modifier::BOLD)
+    } else if s.contains("skirmish") {
+        Style::default().fg(th.log_cascade)
     } else if s.starts_with("handshake") {
         Style::default().fg(th.log_handshake)
     } else if s.starts_with("beacon") {
