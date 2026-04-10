@@ -1101,7 +1101,7 @@ impl World {
         }
         self.packets = keep;
         for pos in dropped_positions {
-            self.log_node(pos, "packet dropped: congestion");
+            self.log_node(pos, "pkt drop (hot)");
         }
     }
 
@@ -1565,7 +1565,7 @@ impl World {
             self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
         }
         self.push_log(format!(
-            "ZERO-DAY: strain {} outbreak — {} hosts infected",
+            "ZERO-DAY: strain {} outbreak ({})",
             strain, take
         ));
     }
@@ -1581,7 +1581,7 @@ impl World {
             }
         }
         self.push_log(format!(
-            "ZERO-DAY: emergency patch deployed — {} hosts cleared",
+            "ZERO-DAY: emergency patch ({} cleared)",
             cleared
         ));
     }
@@ -1597,7 +1597,7 @@ impl World {
             }
         }
         self.push_log(format!(
-            "ZERO-DAY: immune breakthrough — {} strains entrenched",
+            "ZERO-DAY: immune boost ({})",
             boosted
         ));
     }
@@ -1914,7 +1914,7 @@ impl World {
         if revealed > 0 {
             let (oa, ob) = octet_pair(a_pos);
             self.push_log(format!(
-                "HONEYPOT 10.0.{}.{} — {} backdoors opened",
+                "HONEYPOT 10.0.{}.{}: {} backdoors",
                 oa, ob, revealed
             ));
         }

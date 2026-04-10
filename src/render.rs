@@ -10,7 +10,7 @@ use crate::world::{
     InfectionStage, LinkKind, Node, Role, State, World, WorldStats, HOT_LINK, WARM_LINK,
 };
 
-const RIGHT_COL_WIDTH: u16 = 42;
+const RIGHT_COL_WIDTH: u16 = 46;
 const HEADER_HEIGHT: u16 = 1;
 const FOOTER_HEIGHT: u16 = 1;
 
