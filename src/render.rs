@@ -2,7 +2,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 use ratatui::Frame;
 
 use crate::theme::theme;
@@ -106,6 +106,54 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
         frame.render_widget(inspector_block(world, pos), right_rows[2]);
     }
     frame.render_widget(log_block(world), right_rows[3]);
+}
+
+/// Render a centered session-summary overlay. `lines` is a pre-built
+/// list of rows to display — the caller in main.rs decides the exact
+/// content so render stays layout-only.
+pub fn draw_summary(frame: &mut Frame, lines: &[String]) {
+    let area = frame.area();
+    // Clear the whole screen first so leftover chrome from the last
+    // tick doesn't bleed through.
+    frame.render_widget(Clear, area);
+    let th = theme();
+
+    let content_width = 56u16.min(area.width.saturating_sub(4));
+    let content_height = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
+    let box_area = Rect {
+        x: area.x + (area.width.saturating_sub(content_width)) / 2,
+        y: area.y + (area.height.saturating_sub(content_height)) / 2,
+        width: content_width,
+        height: content_height,
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Thick)
+        .border_style(Style::default().fg(th.frame_accent))
+        .title(Span::styled(
+            " session summary ",
+            Style::default()
+                .fg(th.frame_accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let text: Vec<Line<'static>> = lines
+        .iter()
+        .map(|l| {
+            // Section headers (indented, uppercase tokens) get an
+            // accent color; everything else uses the normal label.
+            if l.ends_with(':') {
+                Line::from(Span::styled(
+                    l.clone(),
+                    Style::default()
+                        .fg(th.frame_accent)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(Span::styled(l.clone(), Style::default().fg(th.label)))
+            }
+        })
+        .collect();
+    let paragraph = Paragraph::new(text).block(block);
+    frame.render_widget(paragraph, box_area);
 }
 
 fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'static> {

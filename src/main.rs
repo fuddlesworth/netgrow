@@ -431,18 +431,46 @@ fn main() -> io::Result<()> {
         mesh_bounds = render::mesh_bounds(terminal.size()?);
     }
 
-    // Drop the terminal guard before printing the session summary so
-    // the alternate screen exits and the text lands in the user's
-    // normal scrollback. `_guard` going out of scope here handles that.
-    drop(_guard);
-    eprintln!("\nnetgrow session summary  seed={}", seed);
-    eprintln!("ticks  {}", world.tick);
-    eprintln!("era    {}", world.epoch_name());
+    // Build a summary screen and draw it inside the alternate screen
+    // so the user gets a clean screenshot-worthy readout on exit.
+    // Everything is pre-formatted here so render stays layout-only.
+    let mut summary: Vec<String> = Vec::new();
+    summary.push(format!("session  {}", util::session_name(seed)));
+    summary.push(format!("seed     {}", seed));
+    summary.push(format!("ticks    {}", util::with_commas(world.tick)));
+    summary.push(format!("era      {}", world.epoch_name()));
+    summary.push(format!("theme    {}", theme_name));
+    summary.push(String::new());
+    summary.push("factions:".to_string());
     for (i, fs) in world.faction_stats.iter().enumerate() {
-        eprintln!(
-            "F{}  score {:+}  spawned {}  lost {}  traps {}  cured {}",
+        summary.push(format!(
+            "  F{}  score {:+}  spawn {}  lost {}  traps {}  cured {}",
             i, fs.score(), fs.spawned, fs.lost, fs.honeys_tripped, fs.infections_cured
-        );
+        ));
+    }
+    summary.push(String::new());
+    summary.push("config:".to_string());
+    summary.push(format!("  c2_count       {}..{}", c2_count, c2_count_max));
+    summary.push(format!("  spawn_rate     {}", spawn_rate));
+    summary.push(format!("  loss_rate      {}", loss_rate));
+    summary.push(format!(
+        "  virus_spread   {}",
+        if disable_virus { "disabled".to_string() } else { virus_spread_rate.to_string() }
+    ));
+    summary.push(format!("  day_night      {}", day_night_period));
+    summary.push(String::new());
+    summary.push("press any key to exit".to_string());
+
+    terminal.draw(|f| render::draw_summary(f, &summary))?;
+
+    // Wait for any key press before exiting so the user can read the
+    // summary on-screen.
+    loop {
+        if let Ok(true) = event::poll(Duration::from_millis(100)) {
+            if let Ok(Event::Key(_)) = event::read() {
+                break;
+            }
+        }
     }
 
     Ok(())
