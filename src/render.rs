@@ -409,7 +409,7 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
                     InfectionStage::Active => "active",
                     InfectionStage::Terminal => "terminal",
                 };
-                tags.push(format!("strain {} {}", inf.strain, stage));
+                tags.push(format!("{} {}", world.strain_name(inf.strain), stage));
             }
             let tag_text = if tags.is_empty() {
                 "—".to_string()
@@ -462,7 +462,7 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default().fg(th.log_strain).add_modifier(Modifier::BOLD)
     } else if s.contains("symptomatic") {
         Style::default().fg(th.log_worm).add_modifier(Modifier::BOLD)
-    } else if s.starts_with("strain") {
+    } else if s.contains(" detected at ") {
         Style::default().fg(th.log_strain)
     } else if s.contains("cured") || s.contains("patched") {
         Style::default().fg(th.log_cured).add_modifier(Modifier::BOLD)

@@ -399,6 +399,33 @@ impl Default for Config {
     }
 }
 
+/// Pool of ominous names the sim draws from when assigning display
+/// names to its STRAIN_COUNT virus strains at world start. Every run
+/// picks 8 distinct names from this pool so the strains feel like
+/// named threats instead of numbered enumerants.
+pub const STRAIN_NAME_POOL: &[&str] = &[
+    "Cerberus",
+    "Hydra",
+    "Phantom",
+    "Wraith",
+    "Basilisk",
+    "Cobra",
+    "Kraken",
+    "Chimera",
+    "Gorgon",
+    "Banshee",
+    "Lich",
+    "Nyx",
+    "Eris",
+    "Hecate",
+    "Tartarus",
+    "Styx",
+    "Omen",
+    "Pandora",
+    "Morrigan",
+    "Azrael",
+];
+
 /// Named eras the sim cycles through as it ages. Fully ephemeral — no
 /// gameplay effect, just a long-arc narrative marker in the header and
 /// the log so long sessions feel like they're going somewhere.
@@ -437,6 +464,10 @@ pub struct World {
     /// Tick at which the current network storm ends. 0 if no storm is
     /// active. Storms spike both spawn and loss rates for a short burst.
     pub storm_until: u64,
+    /// Display name per strain id. Selected once at World::new from
+    /// STRAIN_NAME_POOL using the seeded RNG, so a fixed seed always
+    /// produces the same strain identities.
+    pub strain_names: [&'static str; STRAIN_COUNT],
 }
 
 impl World {
@@ -544,7 +575,18 @@ impl World {
     }
 
     pub fn new(seed: u64, bounds: (i16, i16), cfg: Config) -> Self {
-        let rng = ChaCha8Rng::seed_from_u64(seed);
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        // Pick STRAIN_COUNT distinct names from the pool. Done up front
+        // so the rest of the constructor can consume the same rng.
+        let strain_names = {
+            let mut pool: Vec<&'static str> = STRAIN_NAME_POOL.to_vec();
+            pool.shuffle(&mut rng);
+            let mut arr: [&'static str; STRAIN_COUNT] = ["?"; STRAIN_COUNT];
+            for (slot, name) in arr.iter_mut().zip(pool.into_iter()) {
+                *slot = name;
+            }
+            arr
+        };
         let count = cfg.c2_count.max(1) as usize;
         let mut nodes = Vec::with_capacity(count);
         let mut occupied = HashSet::new();
@@ -585,7 +627,14 @@ impl World {
             patch_waves: Vec::new(),
             next_branch_id: 1,
             storm_until: 0,
+            strain_names,
         }
+    }
+
+    /// Display name for a strain id, wrapping into the name pool if the
+    /// id is out of bounds.
+    pub fn strain_name(&self, strain: u8) -> &'static str {
+        self.strain_names[(strain as usize) % STRAIN_COUNT]
     }
 
     pub fn tick(&mut self, bounds: (i16, i16)) {
@@ -1362,7 +1411,8 @@ impl World {
         for (target, strain, pos) in arrivals {
             self.nodes[target].infection = Some(Infection::seeded(strain, cure_resist));
             let (a, b) = octet_pair(pos);
-            self.push_log(format!("worm delivered strain {} @ 10.0.{}.{}", strain, a, b));
+            let name = self.strain_name(strain);
+            self.push_log(format!("worm delivered {} @ 10.0.{}.{}", name, a, b));
         }
     }
 
@@ -1633,8 +1683,10 @@ impl World {
         let strain = self.rng.gen_range(0..STRAIN_COUNT as u8);
         let cure_resist = self.cfg.virus_cure_resist;
         self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
-        let (a, b) = octet_pair(self.nodes[id].pos);
-        self.push_log(format!("strain {} detected at 10.0.{}.{}", strain, a, b));
+        let pos = self.nodes[id].pos;
+        let (a, b) = octet_pair(pos);
+        let name = self.strain_name(strain);
+        self.push_log(format!("{} detected at 10.0.{}.{}", name, a, b));
     }
 
     fn maybe_mutate(&mut self) {
@@ -1756,10 +1808,8 @@ impl World {
         for &id in candidates.iter().take(take) {
             self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
         }
-        self.push_log(format!(
-            "ZERO-DAY: strain {} outbreak ({})",
-            strain, take
-        ));
+        let name = self.strain_name(strain);
+        self.push_log(format!("ZERO-DAY: {} outbreak ({})", name, take));
     }
 
     fn zero_day_emergency_patch(&mut self) {
@@ -1826,8 +1876,10 @@ impl World {
         let strain = self.rng.gen_range(0..STRAIN_COUNT as u8);
         let cure_resist = self.cfg.virus_cure_resist;
         self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
-        let (a, b) = octet_pair(self.nodes[id].pos);
-        self.push_log(format!("INJECTED strain {} @ 10.0.{}.{}", strain, a, b));
+        let pos = self.nodes[id].pos;
+        let (a, b) = octet_pair(pos);
+        let name = self.strain_name(strain);
+        self.push_log(format!("INJECTED {} @ 10.0.{}.{}", name, a, b));
         Some(id)
     }
 
