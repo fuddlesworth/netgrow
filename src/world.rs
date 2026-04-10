@@ -509,6 +509,25 @@ impl World {
         self.c2_nodes.contains(&id)
     }
 
+    /// Push one sample of each faction's alive-node count into its
+    /// history ring. Bounded to FACTION_HISTORY_LEN.
+    fn sample_faction_history(&mut self) {
+        let mut counts = vec![0u32; self.faction_stats.len()];
+        for n in &self.nodes {
+            if matches!(n.state, State::Alive) {
+                if let Some(slot) = counts.get_mut(n.faction as usize) {
+                    *slot += 1;
+                }
+            }
+        }
+        for (stats, count) in self.faction_stats.iter_mut().zip(counts.into_iter()) {
+            stats.history.push_back(count);
+            while stats.history.len() > FACTION_HISTORY_LEN {
+                stats.history.pop_front();
+            }
+        }
+    }
+
     /// True during the night half of the day/night cycle. When the period
     /// is zero the cycle is disabled and this always returns false.
     pub fn is_night(&self) -> bool {
@@ -553,13 +572,22 @@ const DIRS: [(i16, i16); 8] = [
 
 /// Running tally of notable events per faction. Used for the header
 /// prestige readout and the end-of-run summary.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct FactionStats {
     pub spawned: u32,
     pub lost: u32,
     pub honeys_tripped: u32,
     pub infections_cured: u32,
+    /// Recent alive-node count samples, bounded to FACTION_HISTORY_LEN.
+    /// Sampled on a slow cadence so the header sparkline reads as a
+    /// smooth trend rather than a jittering count.
+    pub history: std::collections::VecDeque<u32>,
 }
+
+/// Number of samples kept in each faction's alive-count history.
+pub const FACTION_HISTORY_LEN: usize = 8;
+/// Tick interval between FactionStats.history samples.
+const FACTION_SAMPLE_PERIOD: u64 = 50;
 
 impl FactionStats {
     /// Composite "prestige" score. Positive for growth, negative for
@@ -750,6 +778,11 @@ impl World {
         // a short window. Logged at start and end so the phase reads
         // clearly in the log.
         self.maybe_storm();
+
+        // Sample faction alive counts for the header sparkline.
+        if self.tick.is_multiple_of(FACTION_SAMPLE_PERIOD) {
+            self.sample_faction_history();
+        }
 
         // Phase 1: growth — add new nodes and extend link animations.
         self.try_spawn();

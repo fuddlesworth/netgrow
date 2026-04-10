@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
 use ratatui::Frame;
 
 use crate::theme::theme;
-use crate::util::{session_name, with_commas};
+use crate::util::{session_name, sparkline, with_commas};
 use crate::world::{
     InfectionStage, LinkKind, Node, Role, State, World, WorldStats, HOT_LINK, WARM_LINK,
 };
@@ -154,18 +154,23 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
     spans.push(stat_span("nodes", format!("{}", stats.alive + stats.pwned)));
     if stats.factions > 1 {
         spans.push(sep());
-        // Prestige readout: compact per-faction score, colored by faction
-        // hue. Skips factions with no stats so idle hue slots stay quiet.
+        // Prestige readout: compact per-faction score plus an 8-sample
+        // sparkline showing recent alive-count trend, all colored by
+        // faction hue.
         for (i, fs) in world.faction_stats.iter().enumerate() {
             if i > 0 {
                 spans.push(Span::raw(" "));
             }
+            let hue = faction_hue(i as u8);
             spans.push(Span::styled(
                 format!("F{}:{:+}", i, fs.score()),
-                Style::default()
-                    .fg(faction_hue(i as u8))
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(hue).add_modifier(Modifier::BOLD),
             ));
+            let samples: Vec<u32> = fs.history.iter().copied().collect();
+            let spark = sparkline(&samples);
+            if !spark.is_empty() {
+                spans.push(Span::styled(spark, Style::default().fg(hue)));
+            }
         }
     }
     spans.push(sep());
