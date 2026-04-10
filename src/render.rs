@@ -619,22 +619,55 @@ impl<'a> Widget for MeshWidget<'a> {
         // Scanner pings are rendered by reinterpreting link / node styles
         // in their normal passes — no extra glyphs drawn here.
 
-        // 3. Exfil packets
+        // 3. Exfil packets with fading contrails. The head is a bright
+        // bold arrow; the next 1-2 cells behind it (toward the child end
+        // the packet just came from, i.e. higher path indices) fade out
+        // so the viewer sees direction and speed at a glance.
         for pkt in &w.packets {
             let link = &w.links[pkt.link_id];
             let idx = pkt.pos as usize;
             if idx >= link.path.len() {
                 continue;
             }
-            let cell = link.path[idx];
-            if cell == w.nodes[link.a].pos || cell == w.nodes[link.b].pos {
-                continue;
+            let a_pos = w.nodes[link.a].pos;
+            let b_pos = w.nodes[link.b].pos;
+            // Head — bright.
+            let head_cell = link.path[idx];
+            if head_cell != a_pos && head_cell != b_pos {
+                let glyph = packet_glyph(link, idx);
+                put(
+                    buf,
+                    area,
+                    head_cell,
+                    glyph,
+                    Style::default()
+                        .fg(theme().packet)
+                        .add_modifier(Modifier::BOLD),
+                );
             }
-            let glyph = packet_glyph(link, idx);
-            let style = Style::default()
-                .fg(theme().packet)
-                .add_modifier(Modifier::BOLD);
-            put(buf, area, cell, glyph, style);
+            // Tail — two cells behind the head, dimmer with each step.
+            for step in 1..=2usize {
+                let tail_idx = idx + step;
+                if tail_idx >= link.path.len() {
+                    break;
+                }
+                let cell = link.path[tail_idx];
+                if cell == a_pos || cell == b_pos {
+                    continue;
+                }
+                let modifier = if step == 1 {
+                    Modifier::empty()
+                } else {
+                    Modifier::DIM
+                };
+                put(
+                    buf,
+                    area,
+                    cell,
+                    "∙",
+                    Style::default().fg(theme().packet).add_modifier(modifier),
+                );
+            }
         }
 
         // 3b. Virus worms crawling along link paths — distinct magenta squares.
