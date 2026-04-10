@@ -432,6 +432,11 @@ pub struct Config {
     /// Chance that a newly seeded or injected infection is a ransomware
     /// variant — immune to patch waves, only cleared by defender pulses.
     pub ransom_chance: f32,
+    /// Chance that a reconnect pick may bridge two DIFFERENT factions
+    /// instead of the default same-faction-only rule. When a cross-
+    /// faction bridge forms, worms can travel between factions,
+    /// enabling viral warfare.
+    pub cross_faction_bridge_chance: f32,
     /// Length of a single named epoch in ticks. Each time the sim crosses
     /// a multiple of this value, it enters a new era with a name drawn
     /// from ERA_NAMES. Set to 0 to disable.
@@ -522,6 +527,7 @@ impl Default for Config {
             tower_spawn_radius: 10,
             tower_pwn_resist: 2,
             ransom_chance: 0.15,
+            cross_faction_bridge_chance: 0.2,
             proxy_radius: 8,
             beacon_radius: 6,
             beacon_weight_mult: 1.5,
@@ -998,6 +1004,9 @@ impl World {
         let a_branch = self.nodes[a].branch_id;
         let a_faction = self.nodes[a].faction;
         let radius = self.cfg.reconnect_radius;
+        // Roll once per attempt: is this a cross-faction bridge?
+        let allow_cross_faction = self.cfg.cross_faction_bridge_chance > 0.0
+            && self.rng.gen_bool(self.cfg.cross_faction_bridge_chance as f64);
         let mut candidates: Vec<NodeId> = alive
             .iter()
             .copied()
@@ -1008,9 +1017,14 @@ impl World {
                 if self.nodes[b].branch_id == a_branch {
                     return false;
                 }
-                // Cross-links stay within faction so cascades and reachability
-                // remain faction-isolated.
-                if self.nodes[b].faction != a_faction {
+                // Same-faction by default; cross-faction when the roll
+                // allows and we explicitly want a different faction.
+                let same_faction = self.nodes[b].faction == a_faction;
+                if allow_cross_faction {
+                    if same_faction {
+                        return false;
+                    }
+                } else if !same_faction {
                     return false;
                 }
                 let dp = self.nodes[b].pos;
@@ -1052,10 +1066,17 @@ impl World {
             load: 0,
             breach_ttl: 0,
         });
-        self.push_log(format!(
-            "bridge {}↔{} established",
-            self.nodes[a].branch_id, self.nodes[b].branch_id
-        ));
+        if self.nodes[a].faction != self.nodes[b].faction {
+            self.push_log(format!(
+                "bridge F{}↔F{} CROSS-FACTION",
+                self.nodes[a].faction, self.nodes[b].faction
+            ));
+        } else {
+            self.push_log(format!(
+                "bridge {}↔{} established",
+                self.nodes[a].branch_id, self.nodes[b].branch_id
+            ));
+        }
     }
 
     fn roll_role(&mut self) -> Role {
