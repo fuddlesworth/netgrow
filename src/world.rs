@@ -445,6 +445,15 @@ pub struct Config {
     /// A candidate faction is absorbed only when another faction has
     /// at least this many alive nodes.
     pub assimilation_dominance: usize,
+    /// Ticks between border-skirmish checks. A skirmish resolves
+    /// p_loss-style attacks at faction frontiers, so touching enemy
+    /// territory is costly.
+    pub border_skirmish_period: u64,
+    /// Chebyshev radius considered "at the border" for skirmishes.
+    pub border_skirmish_radius: i16,
+    /// Per-border-node chance of losing shielding / taking a hit on
+    /// each skirmish tick.
+    pub border_skirmish_chance: f32,
     /// Length of a single named epoch in ticks. Each time the sim crosses
     /// a multiple of this value, it enters a new era with a name drawn
     /// from ERA_NAMES. Set to 0 to disable.
@@ -539,6 +548,9 @@ impl Default for Config {
             assimilation_period: 400,
             assimilation_threshold: 4,
             assimilation_dominance: 25,
+            border_skirmish_period: 80,
+            border_skirmish_radius: 3,
+            border_skirmish_chance: 0.05,
             proxy_radius: 8,
             beacon_radius: 6,
             beacon_weight_mult: 1.5,
@@ -942,6 +954,7 @@ impl World {
         self.maybe_wormhole();
         self.advance_wormholes();
         self.maybe_assimilate();
+        self.maybe_border_skirmish();
 
         // Sample faction alive counts for the header sparkline.
         if self.tick.is_multiple_of(FACTION_SAMPLE_PERIOD) {
@@ -1642,6 +1655,66 @@ impl World {
         for link in self.links.iter_mut() {
             link.load = link.load.saturating_sub(1);
             link.breach_ttl = link.breach_ttl.saturating_sub(1);
+        }
+    }
+
+    /// Border skirmishes: periodic low-probability hits on nodes that
+    /// sit near an enemy-faction neighbor. Visible as scattered
+    /// shielded/LOST lines at faction frontiers during long runs.
+    fn maybe_border_skirmish(&mut self) {
+        let period = self.cfg.border_skirmish_period;
+        if period == 0 || self.tick == 0 || !self.tick.is_multiple_of(period) {
+            return;
+        }
+        if self.c2_nodes.len() < 2 {
+            return;
+        }
+        let radius = self.cfg.border_skirmish_radius;
+        let chance = self.cfg.border_skirmish_chance;
+        if chance <= 0.0 {
+            return;
+        }
+        // Build a snapshot of faction positions so we can scan without
+        // aliasing self.
+        let positions: Vec<(NodeId, (i16, i16), u8)> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                if matches!(n.state, State::Alive) && !self.is_c2(i) {
+                    Some((i, n.pos, n.faction))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let pwned_flash = self.cfg.pwned_flash_ticks;
+        let mut victims: Vec<NodeId> = Vec::new();
+        for &(id, pos, faction) in &positions {
+            let near_enemy = positions.iter().any(|&(_, p, f)| {
+                f != faction && (p.0 - pos.0).abs().max((p.1 - pos.1).abs()) <= radius
+            });
+            if !near_enemy {
+                continue;
+            }
+            if self.rng.gen_bool(chance as f64) {
+                victims.push(id);
+            }
+        }
+        for id in victims {
+            let pos = self.nodes[id].pos;
+            let node = &mut self.nodes[id];
+            if node.hardened {
+                node.hardened = false;
+                node.heartbeats = 0;
+                node.shield_flash = 6;
+                self.log_node(pos, "skirmish shielded");
+            } else {
+                node.state = State::Pwned {
+                    ticks_left: pwned_flash,
+                };
+                self.log_node(pos, "skirmish LOST");
+            }
         }
     }
 
