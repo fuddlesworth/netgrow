@@ -66,11 +66,11 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     let right_col = cols[1];
 
     // Mesh border title carries the current era name so the epoch
-    // feature surfaces in the chrome.
+    // feature surfaces in the chrome. Brand stays in the header.
     let mesh_title = if world.cfg.epoch_period > 0 {
-        format!(" netgrow · {} ", world.epoch_name())
+        format!(" {} ", world.epoch_name())
     } else {
-        " netgrow ".to_string()
+        " mesh ".to_string()
     };
     let mesh_block = Block::bordered()
         .border_type(BorderType::Thick)
@@ -289,11 +289,11 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
     // Era indicator moved to the mesh border title — see MeshWidget.
     spans.push(sep());
     spans.push(stat_span("nodes", format!("{}", stats.alive + stats.pwned)));
-    if stats.factions > 1 {
+    // Prestige readout: always-on, so single-faction runs still show
+    // their one C2 and the reader can count how many C2s are alive.
+    // Each entry is score + 8-sample trend sparkline, colored by hue.
+    if !world.faction_stats.is_empty() {
         spans.push(sep());
-        // Prestige readout: compact per-faction score plus an 8-sample
-        // sparkline showing recent alive-count trend, all colored by
-        // faction hue.
         for (i, fs) in world.faction_stats.iter().enumerate() {
             if i > 0 {
                 spans.push(Span::raw(" "));
