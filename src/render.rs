@@ -6,6 +6,7 @@ use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
 use ratatui::Frame;
 
 use crate::theme::theme;
+use crate::util::{session_name, with_commas};
 use crate::world::{
     InfectionStage, LinkKind, Node, Role, State, World, WorldStats, HOT_LINK, WARM_LINK,
 };
@@ -19,6 +20,9 @@ pub struct UiState {
     pub paused: bool,
     pub tick_ms: u64,
     pub seed: u64,
+    /// Short name of the theme currently in effect. Used by the footer
+    /// indicator; defaults to "cyberpunk" when no theme is loaded.
+    pub theme_name: &'static str,
     /// When `Some`, draws an inspector cursor highlight at the given mesh
     /// cell and shows an inspector panel with the node's details.
     pub cursor: Option<(i16, i16)>,
@@ -61,11 +65,18 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     let mesh_frame = cols[0];
     let right_col = cols[1];
 
+    // Mesh border title carries the current era name so the epoch
+    // feature surfaces in the chrome.
+    let mesh_title = if world.cfg.epoch_period > 0 {
+        format!(" netgrow · {} ", world.epoch_name())
+    } else {
+        " netgrow ".to_string()
+    };
     let mesh_block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme().frame))
         .title(Span::styled(
-            " netgrow ",
+            mesh_title,
             Style::default()
                 .fg(theme().frame_accent)
                 .add_modifier(Modifier::BOLD),
@@ -109,7 +120,7 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
     ));
     spans.push(Span::raw(" "));
     spans.push(Span::styled(
-        format!("t={}", world.tick),
+        format!("t={}", with_commas(world.tick)),
         Style::default().fg(th.label),
     ));
     if world.cfg.day_night_period > 0 {
@@ -138,13 +149,7 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED),
         ));
     }
-    if world.cfg.epoch_period > 0 {
-        spans.push(sep());
-        spans.push(Span::styled(
-            format!("◇ {}", world.epoch_name()),
-            Style::default().fg(th.frame_accent),
-        ));
-    }
+    // Era indicator moved to the mesh border title — see MeshWidget.
     spans.push(sep());
     spans.push(stat_span("nodes", format!("{}", stats.alive + stats.pwned)));
     if stats.factions > 1 {
@@ -199,7 +204,7 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
     }
     spans.push(sep());
     spans.push(Span::styled(
-        format!("seed {}", ui.seed),
+        format!("seed {}", session_name(ui.seed)),
         Style::default().fg(th.ghost),
     ));
     if ui.paused {
@@ -244,6 +249,11 @@ fn footer_bar(ui: UiState) -> Paragraph<'static> {
         Span::raw(" "),
         Span::styled(
             format!("{}ms/tick", ui.tick_ms),
+            Style::default().fg(th.ghost),
+        ),
+        Span::styled("  ·  ", Style::default().fg(th.ghost)),
+        Span::styled(
+            format!("theme {}", ui.theme_name),
             Style::default().fg(th.ghost),
         ),
     ];

@@ -2,6 +2,7 @@ mod config;
 mod render;
 mod routing;
 mod theme;
+mod util;
 mod world;
 
 use std::io::{self, stdout, Stdout};
@@ -194,6 +195,15 @@ fn main() -> io::Result<()> {
     // against that file's directory; relative paths from the CLI resolve
     // against the current working directory.
     let theme_request = cli.theme.as_deref().or(file.theme.as_deref());
+    let theme_name: &'static str = match theme_request {
+        Some("gruvbox") => "gruvbox",
+        Some("nord") => "nord",
+        Some("dracula") => "dracula",
+        Some("catppuccin" | "catppuccin-mocha" | "mocha") => "catppuccin",
+        Some("solarized" | "solarized-dark") => "solarized",
+        Some(_) => "custom",
+        None => "cyberpunk",
+    };
     if let Some(req) = theme_request {
         let base_dir = if cli.theme.is_some() {
             std::env::current_dir().ok()
@@ -394,6 +404,7 @@ fn main() -> io::Result<()> {
                 paused,
                 tick_ms,
                 seed,
+                theme_name,
                 cursor,
             };
             terminal.draw(|f| {
@@ -410,6 +421,7 @@ fn main() -> io::Result<()> {
             paused,
             tick_ms,
             seed,
+            theme_name,
             cursor,
         };
         terminal.draw(|f| {
