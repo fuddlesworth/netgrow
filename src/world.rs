@@ -32,6 +32,15 @@ const WORM_LOAD_INCREMENT: u8 = 1;
 /// fill, just a quiet lift over the branch hue.
 const SCANNER_PULSE_TICKS: u8 = 8;
 
+/// How many ticks an exploit-chain breach mark stays on a link before
+/// decaying. The chain walks from the pwned node toward C2 and all
+/// traversed links glow for this many ticks, telling the story of
+/// where the attack came from.
+const BREACH_TTL: u8 = 12;
+/// Maximum hops to walk up the parent chain when marking a breach.
+/// Caps both the work done and the visual length of the breach tail.
+const BREACH_MAX_HOPS: usize = 10;
+
 /// Zero-day event weights. Rolls `0.0..1.0`: outbreak below the first
 /// threshold, emergency patch below the second, immune breakthrough above.
 const ZERO_DAY_OUTBREAK_WEIGHT: f32 = 0.6;
@@ -187,6 +196,10 @@ pub struct Link {
     /// hotter colors as load crosses WARM_LINK and HOT_LINK thresholds;
     /// packets refuse to hop onto a link whose load is above HOT_LINK.
     pub load: u8,
+    /// Nonzero while this link is part of a recent exploit chain. Set
+    /// when a pwn event walks up the parent chain from the victim
+    /// toward C2; decays each tick in decay_link_load.
+    pub breach_ttl: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -628,6 +641,7 @@ impl World {
             drawn: 0,
             kind: LinkKind::Cross,
             load: 0,
+            breach_ttl: 0,
         });
         self.push_log(format!(
             "bridge {}↔{} established",
@@ -811,6 +825,7 @@ impl World {
             drawn: 0,
             kind: LinkKind::Parent,
             load: 0,
+            breach_ttl: 0,
         });
 
         let h = (cand.0 as u32).wrapping_mul(2654435761) ^ (cand.1 as u32).wrapping_mul(40503);
@@ -1034,11 +1049,43 @@ impl World {
         }
     }
 
-    /// Decay one step of traffic load from every link. Called at the top
-    /// of the motion phase so the add/decay pair stays symmetric.
+    /// Decay one step of traffic load and breach TTL from every link.
+    /// Called at the top of the motion phase so the add/decay pair stays
+    /// symmetric.
     fn decay_link_load(&mut self) {
         for link in self.links.iter_mut() {
             link.load = link.load.saturating_sub(1);
+            link.breach_ttl = link.breach_ttl.saturating_sub(1);
+        }
+    }
+
+    /// Walk up the parent chain from `victim` toward C2, marking each
+    /// link we traverse as part of an exploit chain breach. The result
+    /// reads as a visible trail of red-tinted wires leading back to C2
+    /// from the fresh kill — the story of how the attack got here.
+    fn breach_chain_up(&mut self, victim: NodeId) {
+        let mut cur = victim;
+        let mut hops = 0;
+        while hops < BREACH_MAX_HOPS {
+            let Some(parent_id) = self.nodes[cur].parent else {
+                break;
+            };
+            // Find the parent-link connecting cur to parent_id.
+            let mut found = None;
+            for (i, l) in self.links.iter().enumerate() {
+                if l.kind == LinkKind::Parent && l.a == parent_id && l.b == cur {
+                    found = Some(i);
+                    break;
+                }
+            }
+            if let Some(link_id) = found {
+                self.links[link_id].breach_ttl = BREACH_TTL;
+            }
+            if self.is_c2(parent_id) {
+                break;
+            }
+            cur = parent_id;
+            hops += 1;
         }
     }
 
@@ -1710,6 +1757,10 @@ impl World {
                         ticks_left: self.cfg.pwned_flash_ticks,
                     };
                     self.log_node(pos, "LOST");
+                    // Trace the exploit chain back toward C2 so the
+                    // path the attacker 'came from' glows red for a
+                    // few ticks before the cascade catches up.
+                    self.breach_chain_up(victim);
                 }
             }
         }
@@ -1902,6 +1953,7 @@ impl World {
                     drawn: 0,
                     kind: LinkKind::Cross,
                     load: 0,
+                    breach_ttl: 0,
                 });
                 revealed += 1;
                 self.log_node(b_pos, "backdoor revealed");
@@ -2081,6 +2133,7 @@ mod tests {
             drawn: len_ca,
             kind: LinkKind::Parent,
             load: 0,
+            breach_ttl: 0,
         });
         let path_ab: Vec<(i16, i16)> = (10..=14).map(|x| (x, 10)).collect();
         let len_ab = path_ab.len() as u16;
@@ -2091,6 +2144,7 @@ mod tests {
             drawn: len_ab,
             kind: LinkKind::Parent,
             load: 0,
+            breach_ttl: 0,
         });
         // Force the Exfil to fire on tick 0 and then tick enough for the
         // packet to reach C2 and be dropped.
@@ -2132,6 +2186,7 @@ mod tests {
             drawn: len,
             kind: LinkKind::Cross,
             load: 0,
+            breach_ttl: 0,
         });
         let cascade = w.compute_cascade(a);
         let ids: HashSet<NodeId> = cascade.iter().map(|(id, _)| *id).collect();
@@ -2316,6 +2371,7 @@ mod tests {
             drawn: len_ab,
             kind: LinkKind::Parent,
             load: 0,
+            breach_ttl: 0,
         });
         // Launch a worm from a → b manually and tick the worm advance step
         // enough times for it to reach the far end.
@@ -2603,6 +2659,7 @@ mod tests {
             drawn: len,
             kind: LinkKind::Parent,
             load: 0,
+            breach_ttl: 0,
         });
         // Park a packet on the link and tick the motion phase a few times.
         w.packets.push(Packet {

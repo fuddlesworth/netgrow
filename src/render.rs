@@ -529,6 +529,14 @@ impl<'a> Widget for MeshWidget<'a> {
                 || matches!(b.state, State::Pwned { .. })
             {
                 Style::default().fg(th.pwned)
+            } else if link.breach_ttl > 0 {
+                // Exploit chain trail — dimmed red leading back to C2
+                // from the fresh kill. DIM keeps it subordinate to
+                // actively-dying links so the eye still reads the live
+                // cascade first.
+                Style::default()
+                    .fg(th.pwned)
+                    .add_modifier(Modifier::DIM)
             } else if scan_pulse > 0 {
                 Style::default()
                     .fg(th.scanner)
