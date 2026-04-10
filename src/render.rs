@@ -220,11 +220,15 @@ fn stats_block(s: &WorldStats) -> Paragraph<'static> {
     let th = theme();
     let block = bordered_block(" stats ");
     let label_style = Style::default().fg(th.stat_label);
+    // Label padding must exceed the longest label ("branches" = 8) so every
+    // row gets at least one space between label and value, otherwise the
+    // longest-label rows render with the value flush against the label and
+    // the second column drifts left.
     let cell = move |label: &'static str, value: String, color: Color| -> Vec<Span<'static>> {
         vec![
-            Span::styled(format!(" {:<8}", label), label_style),
+            Span::styled(format!(" {:<9}", label), label_style),
             Span::styled(
-                format!("{:<6}", value),
+                format!("{:<5}", value),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
         ]
