@@ -15,7 +15,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use crate::world::{Config, World};
+use crate::world::{Config, RoleWeights, World};
 
 #[derive(Parser, Debug)]
 #[command(name = "netgrow", about = "A cyberpunk botnet growing in your terminal")]
@@ -30,6 +30,32 @@ struct Cli {
     loss_rate: f32,
     #[arg(long, default_value_t = 400)]
     max_nodes: usize,
+
+    /// Relative weight of Relay nodes at spawn.
+    #[arg(long, default_value_t = 0.72)]
+    relay_weight: f32,
+    /// Relative weight of Scanner nodes at spawn.
+    #[arg(long, default_value_t = 0.15)]
+    scanner_weight: f32,
+    /// Relative weight of Exfil nodes at spawn.
+    #[arg(long, default_value_t = 0.10)]
+    exfil_weight: f32,
+    /// Relative weight of Honeypot nodes at spawn.
+    #[arg(long, default_value_t = 0.03)]
+    honeypot_weight: f32,
+
+    /// Ticks between Scanner pings.
+    #[arg(long, default_value_t = 30)]
+    scanner_ping_period: u16,
+    /// Ticks between Exfil packet emissions.
+    #[arg(long, default_value_t = 25)]
+    exfil_packet_period: u16,
+    /// Heartbeat survivals required before a node hardens.
+    #[arg(long, default_value_t = 4)]
+    hardened_after: u8,
+    /// Multiplier applied to a honeypot's cascade delay for theatrical effect.
+    #[arg(long, default_value_t = 3.0)]
+    honeypot_cascade_mult: f32,
 }
 
 struct TerminalGuard;
@@ -67,6 +93,16 @@ fn main() -> io::Result<()> {
         p_spawn: cli.spawn_rate,
         p_loss: cli.loss_rate,
         max_nodes: cli.max_nodes,
+        role_weights: RoleWeights {
+            relay: cli.relay_weight,
+            scanner: cli.scanner_weight,
+            exfil: cli.exfil_weight,
+            honeypot: cli.honeypot_weight,
+        },
+        scanner_ping_period: cli.scanner_ping_period,
+        exfil_packet_period: cli.exfil_packet_period,
+        hardened_after_heartbeats: cli.hardened_after,
+        honeypot_cascade_mult: cli.honeypot_cascade_mult,
         ..Config::default()
     };
     let mut world = World::new(seed, initial_bounds, cfg);
