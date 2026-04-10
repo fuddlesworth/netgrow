@@ -81,6 +81,62 @@ pub enum Role {
     Decoy,
 }
 
+impl Role {
+    /// Lowercase display name used by log lines and the cursor
+    /// inspector. Single place to add new role strings.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Role::Relay => "relay",
+            Role::Scanner => "scanner",
+            Role::Exfil => "exfil",
+            Role::Honeypot => "honeypot",
+            Role::Defender => "defender",
+            Role::Tower => "tower",
+            Role::Beacon => "beacon",
+            Role::Proxy => "proxy",
+            Role::Decoy => "decoy",
+        }
+    }
+
+    /// Default render glyph with no state modifiers (no hardened
+    /// override, no infection overlay). Used by infected_glyph and
+    /// anywhere else that needs the plain shape for a role.
+    pub fn base_glyph(&self) -> &'static str {
+        match self {
+            Role::Relay => "●",
+            Role::Scanner => "◎",
+            Role::Exfil => "▣",
+            Role::Honeypot => "●",
+            Role::Defender => "◇",
+            Role::Tower => "⊞",
+            Role::Beacon => "⊚",
+            Role::Proxy => "⊛",
+            Role::Decoy => "▣",
+        }
+    }
+
+    /// Roles that never mutate — either because they hide (Honeypot),
+    /// because their behavior is their identity (Defender, Tower,
+    /// Beacon, Proxy), or because they're camouflage (Decoy).
+    pub fn is_mutation_locked(&self) -> bool {
+        matches!(
+            self,
+            Role::Honeypot
+                | Role::Defender
+                | Role::Tower
+                | Role::Beacon
+                | Role::Proxy
+                | Role::Decoy
+        )
+    }
+
+    /// Roles that can't be infected at all. Honeypots stay hidden;
+    /// defenders are the antibody team. Everything else is fair game.
+    pub fn is_virus_immune(&self) -> bool {
+        matches!(self, Role::Honeypot | Role::Defender)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InfectionStage {
     /// No visible symptoms yet, but still spreads.
@@ -2426,7 +2482,7 @@ impl World {
                 }
                 // Honeypots stay clean so their disguise survives; defenders
                 // are immune by design (they're the antibodies).
-                if n.role == Role::Honeypot || n.role == Role::Defender {
+                if n.role.is_virus_immune() {
                     continue;
                 }
                 let Some(neighbors) = adj.get(&id) else {
@@ -2510,8 +2566,7 @@ impl World {
             .filter_map(|(i, n)| {
                 if !self.is_c2(i)
                     && matches!(n.state, State::Alive)
-                    && n.role != Role::Honeypot
-                    && n.role != Role::Defender
+                    && !n.role.is_virus_immune()
                 {
                     Some(i)
                 } else {
@@ -2561,15 +2616,7 @@ impl World {
                 if n.infection.is_some() {
                     return None;
                 }
-                if matches!(
-                    n.role,
-                    Role::Honeypot
-                        | Role::Defender
-                        | Role::Tower
-                        | Role::Beacon
-                        | Role::Proxy
-                        | Role::Decoy
-                ) {
+                if n.role.is_mutation_locked() {
                     return None; // specialized roles stay in their lane
                 }
                 if now.saturating_sub(n.born) < min_age {
@@ -2599,18 +2646,7 @@ impl World {
             let pos = self.nodes[id].pos;
             self.nodes[id].role = new_role;
             self.nodes[id].mutated_flash = 6;
-            let name = match new_role {
-                Role::Relay => "relay",
-                Role::Scanner => "scanner",
-                Role::Exfil => "exfil",
-                Role::Honeypot => "honeypot",
-                Role::Defender => "defender",
-                Role::Tower => "tower",
-                Role::Beacon => "beacon",
-                Role::Proxy => "proxy",
-                Role::Decoy => "decoy",
-            };
-            self.log_node(pos, &format!("mutated → {}", name));
+            self.log_node(pos, &format!("mutated → {}", new_role.display_name()));
         }
     }
 
@@ -2659,8 +2695,7 @@ impl World {
                 if !self.is_c2(i)
                     && matches!(n.state, State::Alive)
                     && n.infection.is_none()
-                    && n.role != Role::Honeypot
-                    && n.role != Role::Defender
+                    && !n.role.is_virus_immune()
                 {
                     Some(i)
                 } else {
@@ -2730,8 +2765,7 @@ impl World {
                 if !self.is_c2(i)
                     && matches!(n.state, State::Alive)
                     && n.infection.is_none()
-                    && n.role != Role::Honeypot
-                    && n.role != Role::Defender
+                    && !n.role.is_virus_immune()
                 {
                     Some(i)
                 } else {

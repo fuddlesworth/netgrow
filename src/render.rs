@@ -550,17 +550,7 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
             let role_name = if n.parent.is_none() {
                 "C2"
             } else {
-                match n.role {
-                    Role::Relay => "relay",
-                    Role::Scanner => "scanner",
-                    Role::Exfil => "exfil",
-                    Role::Honeypot => "honeypot",
-                    Role::Defender => "defender",
-                    Role::Tower => "tower",
-                    Role::Beacon => "beacon",
-                    Role::Proxy => "proxy",
-                    Role::Decoy => "decoy",
-                }
+                n.role.display_name()
             };
             lines.push(row("role", role_name.to_string()));
             let state_name = match n.state {
@@ -1249,37 +1239,19 @@ fn infected_glyph(
         InfectionStage::Incubating => {
             // Subtle — same glyph family, but the fg tilts toward strain hue
             // and we drop intensity. Hides the infection until symptoms hit.
-            let base = match node.role {
-                Role::Relay if node.hardened => "◉",
-                Role::Relay => "●",
-                Role::Scanner => "◎",
-                Role::Exfil => "▣",
-                Role::Honeypot => "●",
-                // Defenders are immune; this branch shouldn't fire in
-                // practice but the match must be exhaustive.
-                Role::Defender => "◇",
-                Role::Tower => "⊞",
-                Role::Beacon => "⊚",
-                Role::Proxy => "⊛",
-                Role::Decoy => "▣",
+            let base = if matches!(node.role, Role::Relay) && node.hardened {
+                "◉"
+            } else {
+                node.role.base_glyph()
             };
             (base, Style::default().fg(hue).add_modifier(Modifier::DIM))
         }
         InfectionStage::Active => {
             // Flickers between a block and its normal glyph, strain-colored.
-            let base = match node.role {
-                Role::Relay if node.hardened => "◉",
-                Role::Relay => "●",
-                Role::Scanner => "◎",
-                Role::Exfil => "▣",
-                Role::Honeypot => "●",
-                // Defenders are immune; this branch shouldn't fire in
-                // practice but the match must be exhaustive.
-                Role::Defender => "◇",
-                Role::Tower => "⊞",
-                Role::Beacon => "⊚",
-                Role::Proxy => "⊛",
-                Role::Decoy => "▣",
+            let base = if matches!(node.role, Role::Relay) && node.hardened {
+                "◉"
+            } else {
+                node.role.base_glyph()
             };
             let g = if (tick + inf.age as u64).is_multiple_of(3) {
                 "▓"
