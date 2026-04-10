@@ -13,6 +13,10 @@ const FOOTER_HEIGHT: u16 = 1;
 
 const FRAME_COLOR: Color = Color::Rgb(60, 180, 200);
 const FRAME_ACCENT: Color = Color::Rgb(120, 220, 240);
+/// Muted blue-gray used for ghosts, dead links, separators, and other
+/// low-priority text. Explicit RGB instead of GHOST_COLOR because the
+/// ANSI bright-black slot is invisible on common pure-black terminals.
+const GHOST_COLOR: Color = Color::Rgb(95, 105, 130);
 
 #[derive(Clone, Copy)]
 pub struct UiState {
@@ -138,7 +142,7 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
     spans.push(sep());
     spans.push(Span::styled(
         format!("seed {}", ui.seed),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(GHOST_COLOR),
     ));
     if ui.paused {
         spans.push(sep());
@@ -179,7 +183,7 @@ fn footer_bar(ui: UiState) -> Paragraph<'static> {
         Span::raw(" "),
         Span::styled(
             format!("{}ms/tick", ui.tick_ms),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(GHOST_COLOR),
         ),
     ];
     Paragraph::new(Line::from(spans))
@@ -195,7 +199,7 @@ fn stat_span(label: &'static str, value: String) -> Span<'static> {
 }
 
 fn sep() -> Span<'static> {
-    Span::styled(" · ", Style::default().fg(Color::DarkGray))
+    Span::styled(" · ", Style::default().fg(GHOST_COLOR))
 }
 
 fn stats_block(s: &WorldStats) -> Paragraph<'static> {
@@ -210,7 +214,7 @@ fn stats_block(s: &WorldStats) -> Paragraph<'static> {
         line("alive", format!("{}", s.alive), Color::Rgb(120, 220, 140)),
         line("pwned", format!("{}", s.pwned), Color::Red),
         line("dying", format!("{}", s.dying), Color::Rgb(255, 140, 80)),
-        line("dead", format!("{}", s.dead), Color::DarkGray),
+        line("dead", format!("{}", s.dead), GHOST_COLOR),
         line(
             "branches",
             format!("{}", s.branches),
@@ -247,7 +251,7 @@ fn legend_block() -> Paragraph<'static> {
         row("◈", Color::Yellow, "honeypot!"),
         row("▓", Color::Rgb(220, 100, 220), "infected"),
         row("✕", Color::Red, "pwned"),
-        row("·", Color::DarkGray, "ghost"),
+        row("·", GHOST_COLOR, "ghost"),
     ];
     Paragraph::new(lines).block(block)
 }
@@ -364,7 +368,7 @@ impl<'a> Widget for MeshWidget<'a> {
                     .fg(Color::Red)
                     .add_modifier(Modifier::BOLD)
             } else if dead {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(GHOST_COLOR)
             } else if matches!(a.state, State::Pwned { .. })
                 || matches!(b.state, State::Pwned { .. })
             {
@@ -739,7 +743,7 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
             };
             ("✕", st)
         }
-        State::Dead => ("·", Style::default().fg(Color::DarkGray)),
+        State::Dead => ("·", Style::default().fg(GHOST_COLOR)),
     }
 }
 
