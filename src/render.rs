@@ -7,7 +7,7 @@ use ratatui::Frame;
 
 use crate::world::{InfectionStage, LinkKind, Node, Role, State, World, WorldStats};
 
-const RIGHT_COL_WIDTH: u16 = 34;
+const RIGHT_COL_WIDTH: u16 = 42;
 const HEADER_HEIGHT: u16 = 1;
 const FOOTER_HEIGHT: u16 = 1;
 
@@ -253,7 +253,7 @@ fn legend_block() -> Paragraph<'static> {
 }
 
 fn log_block(world: &World) -> Paragraph<'static> {
-    let block = bordered_block(" log ");
+    let block = bordered_block(" logs ");
     let lines: Vec<Line<'static>> = world
         .logs
         .iter()
