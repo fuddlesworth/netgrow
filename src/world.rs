@@ -37,6 +37,9 @@ pub enum Role {
     Scanner,
     Exfil,
     Honeypot,
+    /// Patrols its neighborhood and applies a local cure pulse to nearby
+    /// infected nodes. Immune to infection itself; never mutates.
+    Defender,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,15 +192,17 @@ pub struct RoleWeights {
     pub scanner: f32,
     pub exfil: f32,
     pub honeypot: f32,
+    pub defender: f32,
 }
 
 impl Default for RoleWeights {
     fn default() -> Self {
         Self {
-            relay: 0.72,
-            scanner: 0.15,
-            exfil: 0.1,
-            honeypot: 0.03,
+            relay: 0.65,
+            scanner: 0.13,
+            exfil: 0.10,
+            honeypot: 0.04,
+            defender: 0.08,
         }
     }
 }
@@ -238,6 +243,10 @@ pub struct Config {
     /// of inheriting its parent's branch_id. Lets distinct sub-botnets fork
     /// off existing nodes anywhere in the mesh, not just at C2.
     pub fork_rate: f32,
+    /// Ticks between defender cure pulses.
+    pub defender_pulse_period: u16,
+    /// Chebyshev radius of a defender's local cure pulse.
+    pub defender_radius: i16,
 }
 
 impl Default for Config {
@@ -274,6 +283,8 @@ impl Default for Config {
             zero_day_chance: 0.4,
             c2_spawn_bias: 0.6,
             fork_rate: 0.05,
+            defender_pulse_period: 25,
+            defender_radius: 5,
         }
     }
 }
@@ -399,6 +410,7 @@ impl World {
         // period timers have already been decremented for this tick.
         self.fire_scanner_pings();
         self.fire_exfil_packets();
+        self.fire_defender_pulses();
 
         // Phase 5: infection dynamics — stage progression, spread, seeding,
         // and worm launches from active carriers.
@@ -498,7 +510,7 @@ impl World {
 
     fn roll_role(&mut self) -> Role {
         let w = &self.cfg.role_weights;
-        let total = w.relay + w.scanner + w.exfil + w.honeypot;
+        let total = w.relay + w.scanner + w.exfil + w.honeypot + w.defender;
         let mut r = self.rng.gen::<f32>() * total.max(f32::EPSILON);
         if r < w.relay {
             return Role::Relay;
@@ -511,7 +523,11 @@ impl World {
         if r < w.exfil {
             return Role::Exfil;
         }
-        Role::Honeypot
+        r -= w.exfil;
+        if r < w.honeypot {
+            return Role::Honeypot;
+        }
+        Role::Defender
     }
 
     fn alloc_branch_id(&mut self) -> u16 {
@@ -834,6 +850,56 @@ impl World {
         }
     }
 
+    fn fire_defender_pulses(&mut self) {
+        let period = self.cfg.defender_pulse_period;
+        let radius = self.cfg.defender_radius;
+        // Active defenders ready to pulse this tick.
+        let defenders: Vec<(NodeId, (i16, i16))> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                if matches!(n.state, State::Alive)
+                    && n.role == Role::Defender
+                    && n.role_cooldown == 0
+                {
+                    Some((i, n.pos))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if defenders.is_empty() {
+            return;
+        }
+        let mut cured_positions: Vec<(i16, i16)> = Vec::new();
+        for (id, dpos) in defenders {
+            self.nodes[id].role_cooldown = period;
+            self.nodes[id].pulse = 2;
+            // Scan for infected neighbors within radius and decrement
+            // their cure_resist; clear infections that drop to zero.
+            for n in self.nodes.iter_mut() {
+                let Some(inf) = n.infection.as_mut() else {
+                    continue;
+                };
+                let dx = (n.pos.0 - dpos.0).abs();
+                let dy = (n.pos.1 - dpos.1).abs();
+                if dx.max(dy) > radius {
+                    continue;
+                }
+                if inf.cure_resist <= 1 {
+                    cured_positions.push(n.pos);
+                    n.infection = None;
+                } else {
+                    inf.cure_resist -= 1;
+                }
+            }
+        }
+        for pos in cured_positions {
+            self.log_node(pos, "patched");
+        }
+    }
+
     fn advance_packets(&mut self) {
         if self.packets.is_empty() {
             return;
@@ -1122,10 +1188,9 @@ impl World {
                 if !matches!(n.state, State::Alive) || n.infection.is_some() {
                     continue;
                 }
-                // Honeypots are immune so the infection glyph never reveals
-                // their role. They remain ambush traps until something
-                // external trips them.
-                if n.role == Role::Honeypot {
+                // Honeypots stay clean so their disguise survives; defenders
+                // are immune by design (they're the antibodies).
+                if n.role == Role::Honeypot || n.role == Role::Defender {
                     continue;
                 }
                 let Some(neighbors) = adj.get(&id) else {
@@ -1195,6 +1260,7 @@ impl World {
                 if i != self.c2
                     && matches!(n.state, State::Alive)
                     && n.role != Role::Honeypot
+                    && n.role != Role::Defender
                 {
                     Some(i)
                 } else {
@@ -1235,8 +1301,8 @@ impl World {
                 if n.infection.is_some() {
                     return None;
                 }
-                if n.role == Role::Honeypot {
-                    return None; // honeypots hide; mutation would blow cover
+                if matches!(n.role, Role::Honeypot | Role::Defender) {
+                    return None; // honeypots hide; defenders are locked in
                 }
                 if now.saturating_sub(n.born) < min_age {
                     return None;
@@ -1253,7 +1319,7 @@ impl World {
                 Role::Relay => [Role::Scanner, Role::Exfil, Role::Relay],
                 Role::Scanner => [Role::Relay, Role::Exfil, Role::Scanner],
                 Role::Exfil => [Role::Relay, Role::Scanner, Role::Exfil],
-                Role::Honeypot => continue,
+                Role::Honeypot | Role::Defender => continue,
             };
             // Pick uniformly from the first two (the third is the sentinel).
             let new_role = choices[self.rng.gen_range(0..2)];
@@ -1265,6 +1331,7 @@ impl World {
                 Role::Scanner => "scanner",
                 Role::Exfil => "exfil",
                 Role::Honeypot => "honeypot",
+                Role::Defender => "defender",
             };
             self.log_node(pos, &format!("mutated → {}", name));
         }
@@ -1312,6 +1379,7 @@ impl World {
                     && matches!(n.state, State::Alive)
                     && n.infection.is_none()
                     && n.role != Role::Honeypot
+                    && n.role != Role::Defender
                 {
                     Some(i)
                 } else {
@@ -1384,6 +1452,7 @@ impl World {
                     && matches!(n.state, State::Alive)
                     && n.infection.is_none()
                     && n.role != Role::Honeypot
+                    && n.role != Role::Defender
                 {
                     Some(i)
                 } else {
@@ -2113,6 +2182,59 @@ mod tests {
             w.tick((80, 30));
         }
         assert!(w.nodes[honey].infection.is_none(), "honeypot must stay clean");
+    }
+
+    #[test]
+    fn defender_pulse_cures_nearby_infection() {
+        let mut w = World::new(33, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 0.0;
+        w.cfg.virus_seed_rate = 0.0;
+        w.cfg.virus_spread_rate = 0.0;
+        w.cfg.defender_pulse_period = 1; // fire on every tick
+        w.cfg.defender_radius = 5;
+        w.cfg.virus_cure_resist = 1; // single-pulse cure
+        let defender = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Defender, 1));
+        let victim = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((12, 11), Some(w.c2), 0, Role::Relay, 1));
+        w.nodes[victim].infection = Some(Infection {
+            strain: 0,
+            stage: InfectionStage::Active,
+            age: w.cfg.virus_incubation_ticks,
+            cure_resist: 1,
+            terminal_ticks: 0,
+        });
+        w.fire_defender_pulses();
+        assert!(w.nodes[victim].infection.is_none(), "defender should clear infection in radius");
+    }
+
+    #[test]
+    fn defender_immune_to_infection() {
+        let mut w = World::new(34, (80, 30), Config::default());
+        w.cfg.p_spawn = 0.0;
+        w.cfg.p_loss = 0.0;
+        w.cfg.virus_seed_rate = 0.0;
+        w.cfg.virus_spread_rate = 1.0;
+        let infected = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+        let defender = w.nodes.len();
+        w.nodes
+            .push(Node::fresh((12, 10), Some(infected), 0, Role::Defender, 1));
+        w.nodes[infected].infection = Some(Infection {
+            strain: 0,
+            stage: InfectionStage::Active,
+            age: w.cfg.virus_incubation_ticks,
+            cure_resist: 4,
+            terminal_ticks: 0,
+        });
+        for _ in 0..20 {
+            w.tick((80, 30));
+        }
+        assert!(w.nodes[defender].infection.is_none(), "defender should never get infected");
     }
 
     #[test]

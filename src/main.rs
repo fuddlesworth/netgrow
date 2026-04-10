@@ -42,8 +42,11 @@ struct Cli {
     #[arg(long, default_value_t = 0.10)]
     exfil_weight: f32,
     /// Relative weight of Honeypot nodes at spawn.
-    #[arg(long, default_value_t = 0.03)]
+    #[arg(long, default_value_t = 0.04)]
     honeypot_weight: f32,
+    /// Relative weight of Defender nodes at spawn.
+    #[arg(long, default_value_t = 0.08)]
+    defender_weight: f32,
 
     /// Ticks between Scanner pings.
     #[arg(long, default_value_t = 30)]
@@ -127,6 +130,7 @@ fn main() -> io::Result<()> {
             scanner: cli.scanner_weight,
             exfil: cli.exfil_weight,
             honeypot: cli.honeypot_weight,
+            defender: cli.defender_weight,
         },
         scanner_ping_period: cli.scanner_ping_period,
         exfil_packet_period: cli.exfil_packet_period,

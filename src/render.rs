@@ -87,7 +87,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     let inspector_height: u16 = if ui.cursor.is_some() { 9 } else { 0 };
     let right_rows = Layout::vertical([
         Constraint::Length(8),
-        Constraint::Length(11),
+        Constraint::Length(12),
         Constraint::Length(inspector_height),
         Constraint::Min(5),
     ])
@@ -264,6 +264,7 @@ fn legend_block() -> Paragraph<'static> {
         row("◉", Color::Rgb(120, 220, 140), "hardened"),
         row("◎", Color::Rgb(120, 220, 255), "scanner"),
         row("▣", Color::Rgb(180, 180, 255), "exfil"),
+        row("◇", Color::Rgb(180, 240, 220), "defender"),
         row("◈", Color::Yellow, "honeypot!"),
         row("▓", Color::Rgb(220, 100, 220), "infected"),
         row("✕", Color::Red, "pwned"),
@@ -311,6 +312,7 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
                     Role::Scanner => "scanner",
                     Role::Exfil => "exfil",
                     Role::Honeypot => "honeypot",
+                    Role::Defender => "defender",
                 }
             };
             lines.push(row("role", role_name.to_string()));
@@ -395,7 +397,7 @@ fn color_log_line(s: &str) -> Line<'static> {
             .add_modifier(Modifier::BOLD)
     } else if s.starts_with("strain") {
         Style::default().fg(Color::Rgb(200, 100, 200))
-    } else if s.contains("cured") {
+    } else if s.contains("cured") || s.contains("patched") {
         Style::default()
             .fg(Color::Rgb(120, 240, 200))
             .add_modifier(Modifier::BOLD)
@@ -705,6 +707,9 @@ fn infected_glyph(
                 Role::Scanner => "◎",
                 Role::Exfil => "▣",
                 Role::Honeypot => "●",
+                // Defenders are immune; this branch shouldn't fire in
+                // practice but the match must be exhaustive.
+                Role::Defender => "◇",
             };
             (base, Style::default().fg(hue).add_modifier(Modifier::DIM))
         }
@@ -716,6 +721,9 @@ fn infected_glyph(
                 Role::Scanner => "◎",
                 Role::Exfil => "▣",
                 Role::Honeypot => "●",
+                // Defenders are immune; this branch shouldn't fire in
+                // practice but the match must be exhaustive.
+                Role::Defender => "◇",
             };
             let g = if (tick + inf.age as u64).is_multiple_of(3) {
                 "▓"
@@ -855,6 +863,12 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                         .add_modifier(if node.hardened { Modifier::BOLD } else { Modifier::empty() }),
                 ),
                 Role::Honeypot => ("●", Style::default().fg(hue)),
+                Role::Defender => (
+                    "◇",
+                    Style::default()
+                        .fg(Color::Rgb(180, 240, 220))
+                        .add_modifier(Modifier::BOLD),
+                ),
             };
             if pulse_boost {
                 (
