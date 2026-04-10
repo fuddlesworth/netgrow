@@ -29,8 +29,8 @@ const WORM_LOAD_INCREMENT: u8 = 1;
 
 /// Duration in ticks of a scanner's ping pulse. While scan_pulse is
 /// nonzero the scanner's node and all its adjacent links render in a
-/// bright scanner-color style.
-const SCANNER_PULSE_TICKS: u8 = 5;
+/// bright accent-color style that flickers on even ticks.
+const SCANNER_PULSE_TICKS: u8 = 10;
 
 /// Zero-day event weights. Rolls `0.0..1.0`: outbreak below the first
 /// threshold, emergency patch below the second, immune breakthrough above.

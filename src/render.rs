@@ -529,9 +529,17 @@ impl<'a> Widget for MeshWidget<'a> {
             {
                 Style::default().fg(th.pwned)
             } else if scan_pulse > 0 {
-                Style::default()
-                    .fg(th.scanner)
-                    .add_modifier(Modifier::BOLD)
+                // Flicker on tick parity between a REVERSED accent block
+                // and a bold accent glyph so the pulse is visibly strobing.
+                if w.tick.is_multiple_of(2) {
+                    Style::default()
+                        .fg(th.accent)
+                        .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                } else {
+                    Style::default()
+                        .fg(th.accent)
+                        .add_modifier(Modifier::BOLD)
+                }
             } else if link.kind == LinkKind::Cross {
                 Style::default()
                     .fg(th.cross_link)
@@ -896,13 +904,28 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                     }
                 }
                 Role::Scanner => {
-                    // While pulsing, bold + reversed gives a visible flash
-                    // that matches the surrounding link glow.
-                    let mut m = if node.hardened { Modifier::BOLD } else { Modifier::empty() };
                     if node.scan_pulse > 0 {
-                        m |= Modifier::BOLD | Modifier::REVERSED;
+                        // Flash the scanner in the accent color to match the
+                        // link pulse — strobes between reversed block and
+                        // bold glyph so it's hard to miss.
+                        let style = if tick.is_multiple_of(2) {
+                            Style::default()
+                                .fg(th.accent)
+                                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                        } else {
+                            Style::default()
+                                .fg(th.accent)
+                                .add_modifier(Modifier::BOLD)
+                        };
+                        ("◎", style)
+                    } else {
+                        let m = if node.hardened {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        };
+                        ("◎", Style::default().fg(th.scanner).add_modifier(m))
                     }
-                    ("◎", Style::default().fg(th.scanner).add_modifier(m))
                 }
                 Role::Exfil => (
                     "▣",
