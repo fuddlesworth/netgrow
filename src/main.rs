@@ -90,6 +90,11 @@ struct Cli {
     /// branches rooted at C2.
     #[arg(long, default_value_t = 0.05)]
     fork_rate: f32,
+    /// Number of C2 nodes to spawn at the start. 1 = single botnet,
+    /// 2+ = competing factions, each with its own faction color and
+    /// independent reachability cascade.
+    #[arg(long, default_value_t = 2)]
+    c2_count: u8,
 }
 
 struct TerminalGuard;
@@ -143,6 +148,7 @@ fn main() -> io::Result<()> {
         zero_day_chance: cli.zero_day_chance,
         c2_spawn_bias: cli.c2_spawn_bias,
         fork_rate: cli.fork_rate,
+        c2_count: cli.c2_count,
         ..Config::default()
     };
     if cli.disable_virus {

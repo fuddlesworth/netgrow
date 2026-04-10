@@ -84,7 +84,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
         mesh_inner,
     );
 
-    let inspector_height: u16 = if ui.cursor.is_some() { 9 } else { 0 };
+    let inspector_height: u16 = if ui.cursor.is_some() { 10 } else { 0 };
     let right_rows = Layout::vertical([
         Constraint::Length(8),
         Constraint::Length(12),
@@ -117,6 +117,10 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
     ));
     spans.push(sep());
     spans.push(stat_span("nodes", format!("{}", stats.alive + stats.pwned)));
+    if stats.factions > 1 {
+        spans.push(sep());
+        spans.push(stat_span("factions", format!("{}", stats.factions)));
+    }
     spans.push(sep());
     spans.push(stat_span("branches", format!("{}", stats.branches)));
     spans.push(sep());
@@ -322,6 +326,7 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
                 State::Dead => "dead".to_string(),
             };
             lines.push(row("state", state_name));
+            lines.push(row("faction", format!("{}", n.faction)));
             lines.push(row("branch", format!("{}", n.branch_id)));
             let age = world.tick.saturating_sub(n.born);
             lines.push(row("age", format!("{}t", age)));
@@ -763,6 +768,19 @@ fn strain_hue(strain: u8) -> Color {
     PALETTE[(strain as usize) % STRAIN_COUNT]
 }
 
+/// Color of a C2's faction marker. Distinct enough from the branch palette
+/// and the virus magenta range that competing factions read as factions
+/// rather than blending with their own subtree colors.
+fn faction_hue(faction: u8) -> Color {
+    const FACTION_COLORS: [Color; 4] = [
+        Color::Rgb(80, 220, 240),  // cyan — classic single-C2 color
+        Color::Rgb(255, 160, 60),  // orange
+        Color::Rgb(140, 240, 100), // lime
+        Color::Rgb(180, 140, 240), // lavender
+    ];
+    FACTION_COLORS[(faction as usize) % FACTION_COLORS.len()]
+}
+
 fn branch_hue(branch_id: u16) -> Color {
     // Eight visually distinct hues spread across the wheel. We deliberately
     // avoid pure red (used for cascades), pure cyan (C2), and the magenta /
@@ -799,7 +817,7 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                 return (
                     "◆",
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(faction_hue(node.faction))
                         .add_modifier(Modifier::BOLD),
                 );
             }

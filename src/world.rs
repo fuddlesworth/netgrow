@@ -102,6 +102,11 @@ pub struct Node {
     pub infection: Option<Infection>,
     /// Nonzero means the node just mutated its role — flashes pink.
     pub mutated_flash: u8,
+    /// Which C2 this node belongs to (index into `World.c2_nodes`).
+    /// Inherited from parent at spawn; first-hop C2 children take their
+    /// C2's index. Used to keep cascade reachability and cross-link
+    /// reconnects faction-isolated.
+    pub faction: u8,
 }
 
 impl Node {
@@ -134,6 +139,7 @@ impl Node {
             shield_flash: 0,
             infection: None,
             mutated_flash: 0,
+            faction: 0,
         }
     }
 }
@@ -247,6 +253,9 @@ pub struct Config {
     pub defender_pulse_period: u16,
     /// Chebyshev radius of a defender's local cure pulse.
     pub defender_radius: i16,
+    /// Number of C2 nodes / factions to spawn at the start of the run.
+    /// 1 = classic single botnet; 2+ = competing factions.
+    pub c2_count: u8,
 }
 
 impl Default for Config {
@@ -285,6 +294,10 @@ impl Default for Config {
             fork_rate: 0.05,
             defender_pulse_period: 25,
             defender_radius: 5,
+            // Default 1 keeps single-faction tests and library callers
+            // simple. The CLI defaults to 2 so the released binary feels
+            // like factions are "on".
+            c2_count: 1,
         }
     }
 }
@@ -292,7 +305,10 @@ impl Default for Config {
 pub struct World {
     pub nodes: Vec<Node>,
     pub links: Vec<Link>,
-    pub c2: NodeId,
+    /// Indices into `nodes` of every C2 node. Each is the root of its own
+    /// faction; the first entry doubles as the "primary" C2 used by code
+    /// that only needs a single reference (tests, render conveniences).
+    pub c2_nodes: Vec<NodeId>,
     pub rng: ChaCha8Rng,
     pub tick: u64,
     pub occupied: HashSet<(i16, i16)>,
@@ -304,6 +320,19 @@ pub struct World {
     pub worms: Vec<Worm>,
     pub patch_waves: Vec<PatchWave>,
     pub next_branch_id: u16,
+}
+
+impl World {
+    /// The primary C2 — the first one spawned, used by single-faction code
+    /// paths and tests. Always exists because c2_nodes is non-empty.
+    #[allow(dead_code)]
+    pub fn c2(&self) -> NodeId {
+        self.c2_nodes[0]
+    }
+
+    pub fn is_c2(&self, id: NodeId) -> bool {
+        self.c2_nodes.contains(&id)
+    }
 }
 
 const DIRS: [(i16, i16); 8] = [
@@ -324,6 +353,7 @@ pub struct WorldStats {
     pub dead: usize,
     pub dying: usize,
     pub branches: usize,
+    pub factions: usize,
     pub links: usize,
     pub cross_links: usize,
     pub packets: usize,
@@ -351,6 +381,11 @@ impl World {
             }
         }
         s.branches = branches.len();
+        s.factions = self
+            .c2_nodes
+            .iter()
+            .filter(|&&id| !matches!(self.nodes[id].state, State::Dead))
+            .count();
         s.links = self.links.len();
         s.cross_links = self
             .links
@@ -363,16 +398,35 @@ impl World {
 
     pub fn new(seed: u64, bounds: (i16, i16), cfg: Config) -> Self {
         let rng = ChaCha8Rng::seed_from_u64(seed);
-        let center = (bounds.0 / 2, bounds.1 / 2);
-        let c2_node = Node::fresh(center, None, 0, Role::Relay, 0);
+        let count = cfg.c2_count.max(1) as usize;
+        let mut nodes = Vec::with_capacity(count);
         let mut occupied = HashSet::new();
-        occupied.insert(center);
         let mut logs = VecDeque::new();
-        logs.push_back(format!("c2 online @ {},{}", center.0, center.1));
+        let mut c2_nodes: Vec<NodeId> = Vec::with_capacity(count);
+
+        for i in 0..count {
+            // Spread C2s evenly across the mesh width on the horizontal
+            // midline. Single-C2 mode lands at the exact center.
+            let pos = if count == 1 {
+                (bounds.0 / 2, bounds.1 / 2)
+            } else {
+                let denom = (count + 1) as i16;
+                let x = bounds.0 * (i as i16 + 1) / denom;
+                (x, bounds.1 / 2)
+            };
+            let mut node = Node::fresh(pos, None, 0, Role::Relay, 0);
+            node.faction = i as u8;
+            let id = nodes.len();
+            nodes.push(node);
+            occupied.insert(pos);
+            c2_nodes.push(id);
+            logs.push_back(format!("c2[{}] online @ {},{}", i, pos.0, pos.1));
+        }
+
         Self {
-            nodes: vec![c2_node],
+            nodes,
             links: Vec::new(),
-            c2: 0,
+            c2_nodes,
             rng,
             tick: 0,
             occupied,
@@ -438,7 +492,7 @@ impl World {
             .iter()
             .enumerate()
             .filter_map(|(i, n)| {
-                if i != self.c2
+                if !self.is_c2(i)
                     && matches!(n.state, State::Alive)
                     && n.dying_in == 0
                 {
@@ -454,6 +508,7 @@ impl World {
         let a = alive[self.rng.gen_range(0..alive.len())];
         let a_pos = self.nodes[a].pos;
         let a_branch = self.nodes[a].branch_id;
+        let a_faction = self.nodes[a].faction;
         let radius = self.cfg.reconnect_radius;
         let mut candidates: Vec<NodeId> = alive
             .iter()
@@ -463,6 +518,11 @@ impl World {
                     return false;
                 }
                 if self.nodes[b].branch_id == a_branch {
+                    return false;
+                }
+                // Cross-links stay within faction so cascades and reachability
+                // remain faction-isolated.
+                if self.nodes[b].faction != a_faction {
                     return false;
                 }
                 let dp = self.nodes[b].pos;
@@ -570,15 +630,15 @@ impl World {
         // run — otherwise its age-decayed weight collapses below the frontier
         // and the mesh stops minting new branches after the first ~30 ticks.
         let now = self.tick;
-        let c2 = self.c2;
         let c2_bias = self.cfg.c2_spawn_bias;
+        let c2_set: HashSet<NodeId> = self.c2_nodes.iter().copied().collect();
         let mut candidates: Vec<(NodeId, f32)> = self
             .nodes
             .iter()
             .enumerate()
             .filter_map(|(i, n)| match n.state {
                 State::Alive => {
-                    let weight = if i == c2 {
+                    let weight = if c2_set.contains(&i) {
                         c2_bias
                     } else {
                         let age = (now - n.born) as f32;
@@ -651,11 +711,12 @@ impl World {
             None => return,
         };
 
-        // Branch id: first-hop children of C2 each spawn a fresh branch, and
-        // any other spawn occasionally forks off into its own sub-botnet via
-        // the configurable fork_rate roll. Otherwise the new node inherits
-        // its parent's branch.
-        let forks = parent_id == self.c2
+        // Branch id: first-hop children of any C2 each spawn a fresh branch,
+        // and any other spawn occasionally forks off into its own sub-botnet
+        // via the configurable fork_rate roll. Otherwise the new node
+        // inherits its parent's branch.
+        let parent_is_c2 = self.is_c2(parent_id);
+        let forks = parent_is_c2
             || (self.cfg.fork_rate > 0.0 && self.rng.gen_bool(self.cfg.fork_rate as f64));
         let branch_id = if forks {
             self.alloc_branch_id()
@@ -663,10 +724,12 @@ impl World {
             self.nodes[parent_id].branch_id
         };
         let role = self.roll_role();
+        let faction = self.nodes[parent_id].faction;
 
         let new_id = self.nodes.len();
-        self.nodes
-            .push(Node::fresh(cand, Some(parent_id), self.tick, role, branch_id));
+        let mut node = Node::fresh(cand, Some(parent_id), self.tick, role, branch_id);
+        node.faction = faction;
+        self.nodes.push(node);
         self.occupied.insert(cand);
         self.links.push(Link {
             a: parent_id,
@@ -724,12 +787,15 @@ impl World {
         if self.tick > 0 && self.tick.is_multiple_of(self.cfg.heartbeat_period) {
             let threshold = self.cfg.hardened_after_heartbeats;
             let mut newly_hardened: Vec<(i16, i16)> = Vec::new();
-            // Emit a patch wave from C2 alongside the beacon pulse.
-            let c2_pos = self.nodes[self.c2].pos;
-            self.patch_waves.push(PatchWave {
-                origin: c2_pos,
-                radius: 0,
-            });
+            // Emit a patch wave from each C2 alongside the beacon pulse.
+            let c2_positions: Vec<(i16, i16)> =
+                self.c2_nodes.iter().map(|&id| self.nodes[id].pos).collect();
+            for pos in c2_positions {
+                self.patch_waves.push(PatchWave {
+                    origin: pos,
+                    radius: 0,
+                });
+            }
             for n in self.nodes.iter_mut() {
                 if matches!(n.state, State::Alive) {
                     n.pulse = 2;
@@ -924,7 +990,7 @@ impl World {
                 // Reached the parent end of this link. Hop to the parent's
                 // own inbound link, or drop if parent is C2.
                 let parent_id = link.a;
-                if parent_id == self.c2 {
+                if self.is_c2(parent_id) {
                     continue; // delivered
                 }
                 if let Some(&next_link) = inbound.get(&parent_id) {
@@ -953,7 +1019,7 @@ impl World {
         // check so dead links clean up promptly.
         let move_tick = self.tick.is_multiple_of(WORM_STEP_INTERVAL);
         let cure_resist = self.cfg.virus_cure_resist;
-        let c2 = self.c2;
+        let c2_set: HashSet<NodeId> = self.c2_nodes.iter().copied().collect();
         let mut keep: Vec<Worm> = Vec::with_capacity(self.worms.len());
         let mut arrivals: Vec<(NodeId, u8, (i16, i16))> = Vec::new();
         for mut worm in std::mem::take(&mut self.worms) {
@@ -976,7 +1042,7 @@ impl World {
                 let next = worm.pos as usize + 1;
                 if next >= link.path.len() {
                     let target = link.b;
-                    if target != c2
+                    if !c2_set.contains(&target)
                         && matches!(self.nodes[target].state, State::Alive)
                         && self.nodes[target].infection.is_none()
                     {
@@ -988,7 +1054,7 @@ impl World {
             } else {
                 if worm.pos == 0 {
                     let target = link.a;
-                    if target != c2
+                    if !c2_set.contains(&target)
                         && matches!(self.nodes[target].state, State::Alive)
                         && self.nodes[target].infection.is_none()
                     {
@@ -1019,7 +1085,7 @@ impl World {
             .iter()
             .enumerate()
             .filter_map(|(i, n)| {
-                if i == self.c2 || !matches!(n.state, State::Alive) {
+                if self.is_c2(i) || !matches!(n.state, State::Alive) {
                     return None;
                 }
                 match n.infection {
@@ -1058,7 +1124,7 @@ impl World {
             let (link_id, from_a) = outgoing[self.rng.gen_range(0..outgoing.len())];
             let link = &self.links[link_id];
             let target = if from_a { link.b } else { link.a };
-            if target == self.c2 {
+            if self.is_c2(target) {
                 continue;
             }
             if !matches!(self.nodes[target].state, State::Alive) {
@@ -1177,12 +1243,12 @@ impl World {
         // in the same tick.
         let spread_rate = self.cfg.virus_spread_rate;
         let cure_resist = self.cfg.virus_cure_resist;
-        let c2 = self.c2;
+        let c2_set: HashSet<NodeId> = self.c2_nodes.iter().copied().collect();
         let adj = self.live_adjacency();
         let mut newly_infected: Vec<(NodeId, u8)> = Vec::new();
         if spread_rate > 0.0 {
             for (id, n) in self.nodes.iter().enumerate() {
-                if id == c2 {
+                if c2_set.contains(&id) {
                     continue;
                 }
                 if !matches!(n.state, State::Alive) || n.infection.is_some() {
@@ -1257,7 +1323,7 @@ impl World {
             .iter()
             .enumerate()
             .filter_map(|(i, n)| {
-                if i != self.c2
+                if !self.is_c2(i)
                     && matches!(n.state, State::Alive)
                     && n.role != Role::Honeypot
                     && n.role != Role::Defender
@@ -1292,7 +1358,7 @@ impl World {
             .iter()
             .enumerate()
             .filter_map(|(i, n)| {
-                if i == self.c2 {
+                if self.is_c2(i) {
                     return None;
                 }
                 if !matches!(n.state, State::Alive) {
@@ -1375,7 +1441,7 @@ impl World {
             .iter()
             .enumerate()
             .filter_map(|(i, n)| {
-                if i != self.c2
+                if !self.is_c2(i)
                     && matches!(n.state, State::Alive)
                     && n.infection.is_none()
                     && n.role != Role::Honeypot
@@ -1448,7 +1514,7 @@ impl World {
             .iter()
             .enumerate()
             .filter_map(|(i, n)| {
-                if i != self.c2
+                if !self.is_c2(i)
                     && matches!(n.state, State::Alive)
                     && n.infection.is_none()
                     && n.role != Role::Honeypot
@@ -1488,7 +1554,7 @@ impl World {
             // Honeypot triggers an oversized cascade that also eats its parent.
             if self.nodes[id].role == Role::Honeypot && self.nodes[id].honey_tripped {
                 if let Some(parent) = self.nodes[id].parent {
-                    if parent != self.c2 {
+                    if !self.is_c2(parent) {
                         self.schedule_subtree_death(parent, self.cfg.honeypot_cascade_mult);
                         continue;
                     }
@@ -1506,7 +1572,7 @@ impl World {
                 .iter()
                 .enumerate()
                 .filter_map(|(i, n)| {
-                    if i != self.c2 && matches!(n.state, State::Alive) {
+                    if !self.is_c2(i) && matches!(n.state, State::Alive) {
                         Some(i)
                     } else {
                         None
@@ -1608,12 +1674,20 @@ impl World {
 
     /// Compute which nodes should die when `root` is lost, and their
     /// BFS distance from `root` for cascade ordering. Uses a reachability
-    /// diff over parent + fully-drawn cross edges, so nodes with a live
-    /// alternate route to C2 survive.
+    /// diff anchored on the root's own faction's C2 — nodes in other
+    /// factions are unaffected by this cascade, and cross-faction
+    /// cross-links are filtered out by maybe_reconnect's same-faction
+    /// constraint so the adjacency naturally stays within faction.
     fn compute_cascade(&self, root: NodeId) -> Vec<(NodeId, u8)> {
         let adj = self.live_adjacency();
-        let reach_with = self.bfs_reachable(self.c2, &adj, None);
-        let reach_without = self.bfs_reachable(self.c2, &adj, Some(root));
+        let faction = self.nodes[root].faction as usize;
+        let anchor = self
+            .c2_nodes
+            .get(faction)
+            .copied()
+            .unwrap_or(self.c2_nodes[0]);
+        let reach_with = self.bfs_reachable(anchor, &adj, None);
+        let reach_without = self.bfs_reachable(anchor, &adj, Some(root));
         let doomed: HashSet<NodeId> = reach_with
             .difference(&reach_without)
             .copied()
@@ -1691,10 +1765,12 @@ impl World {
                 }
             })
             .collect();
+        let c2_positions: HashSet<(i16, i16)> =
+            self.c2_nodes.iter().map(|&id| self.nodes[id].pos).collect();
         for link in &self.links {
             if dead.contains(&link.a) || dead.contains(&link.b) {
                 for c in &link.path {
-                    if *c != self.nodes[self.c2].pos {
+                    if !c2_positions.contains(c) {
                         self.occupied.remove(c);
                     }
                 }
@@ -1736,7 +1812,7 @@ mod tests {
         // Manually build a 3-level tree: c2 -> a -> b -> c
         let a = w.nodes.len();
         w.nodes
-            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+            .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
         let b = w.nodes.len();
         w.nodes.push(Node::fresh((12, 10), Some(a), 0, Role::Relay, 1));
         let c = w.nodes.len();
@@ -1754,7 +1830,7 @@ mod tests {
         assert!(matches!(w.nodes[a].state, State::Dead));
         assert!(matches!(w.nodes[b].state, State::Dead));
         assert!(matches!(w.nodes[c].state, State::Dead));
-        assert!(matches!(w.nodes[w.c2].state, State::Alive));
+        assert!(matches!(w.nodes[w.c2()].state, State::Alive));
     }
 
     #[test]
@@ -1762,7 +1838,7 @@ mod tests {
         let mut w = World::new(7, (80, 30), Config::default());
         w.cfg.p_spawn = 0.0;
         let id = w.nodes.len();
-        let mut n = Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1);
+        let mut n = Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1);
         n.hardened = true;
         w.nodes.push(n);
         w.cfg.p_loss = 1.0; // force the victim roll to fire
@@ -1777,7 +1853,7 @@ mod tests {
         // First-hop child gets fresh branch id.
         let a = w.alloc_branch_id();
         w.nodes
-            .push(Node::fresh((30, 10), Some(w.c2), 0, Role::Relay, a));
+            .push(Node::fresh((30, 10), Some(w.c2()), 0, Role::Relay, a));
         let a_id = w.nodes.len() - 1;
         w.nodes
             .push(Node::fresh((32, 10), Some(a_id), 0, Role::Relay, w.nodes[a_id].branch_id));
@@ -1793,16 +1869,16 @@ mod tests {
         // Build chain c2 -> a -> b (exfil)
         let a = w.nodes.len();
         w.nodes
-            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+            .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
         let b = w.nodes.len();
         w.nodes
             .push(Node::fresh((14, 10), Some(a), 0, Role::Exfil, 1));
         // Manufacture links with full paths marked drawn.
         let path_ca: Vec<(i16, i16)> =
-            (w.nodes[w.c2].pos.0..=10).map(|x| (x, 10)).collect();
+            (w.nodes[w.c2()].pos.0..=10).map(|x| (x, 10)).collect();
         let len_ca = path_ca.len() as u16;
         w.links.push(Link {
-            a: w.c2,
+            a: w.c2(),
             b: a,
             path: path_ca,
             drawn: len_ca,
@@ -1841,10 +1917,10 @@ mod tests {
         // goes c2→c→(cross)→b — b SHOULD survive via the cross.
         let a = w.nodes.len();
         w.nodes
-            .push(Node::fresh((20, 10), Some(w.c2), 0, Role::Relay, 1));
+            .push(Node::fresh((20, 10), Some(w.c2()), 0, Role::Relay, 1));
         let c = w.nodes.len();
         w.nodes
-            .push(Node::fresh((30, 10), Some(w.c2), 0, Role::Relay, 2));
+            .push(Node::fresh((30, 10), Some(w.c2()), 0, Role::Relay, 2));
         let b = w.nodes.len();
         w.nodes.push(Node::fresh((25, 12), Some(a), 0, Role::Relay, 1));
         // Fully-drawn cross link b ↔ c.
@@ -1870,7 +1946,7 @@ mod tests {
         w.cfg.p_spawn = 0.0;
         w.cfg.p_loss = 1.0;
         let id = w.nodes.len();
-        let mut n = Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1);
+        let mut n = Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1);
         n.hardened = true;
         w.nodes.push(n);
         w.advance_pwned_and_loss();
@@ -1894,9 +1970,9 @@ mod tests {
         w.cfg.reconnect_radius = 20;
         // Two alive nodes in different branches, no existing bridge.
         w.nodes
-            .push(Node::fresh((20, 10), Some(w.c2), 0, Role::Relay, 1));
+            .push(Node::fresh((20, 10), Some(w.c2()), 0, Role::Relay, 1));
         w.nodes
-            .push(Node::fresh((25, 12), Some(w.c2), 0, Role::Relay, 2));
+            .push(Node::fresh((25, 12), Some(w.c2()), 0, Role::Relay, 2));
         let before = w.links.iter().filter(|l| l.kind == LinkKind::Cross).count();
         w.maybe_reconnect();
         let after = w.links.iter().filter(|l| l.kind == LinkKind::Cross).count();
@@ -1916,9 +1992,9 @@ mod tests {
         w.cfg.reconnect_radius = 20;
         // Both nodes in the same branch — should NOT form a cross link.
         w.nodes
-            .push(Node::fresh((20, 10), Some(w.c2), 0, Role::Relay, 1));
+            .push(Node::fresh((20, 10), Some(w.c2()), 0, Role::Relay, 1));
         w.nodes
-            .push(Node::fresh((25, 12), Some(w.c2), 0, Role::Relay, 1));
+            .push(Node::fresh((25, 12), Some(w.c2()), 0, Role::Relay, 1));
         for _ in 0..20 {
             w.maybe_reconnect();
         }
@@ -1937,7 +2013,7 @@ mod tests {
         // can infect neighbors.
         let a = w.nodes.len();
         w.nodes
-            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+            .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
         let b = w.nodes.len();
         w.nodes.push(Node::fresh((12, 10), Some(a), 0, Role::Relay, 1));
         w.nodes[a].infection = Some(Infection {
@@ -1965,7 +2041,7 @@ mod tests {
         // Child directly attached to C2, infected and Active.
         let a = w.nodes.len();
         w.nodes
-            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+            .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
         w.nodes[a].infection = Some(Infection {
             strain: 0,
             stage: InfectionStage::Active,
@@ -1976,7 +2052,7 @@ mod tests {
         for _ in 0..20 {
             w.tick((80, 30));
         }
-        assert!(w.nodes[w.c2].infection.is_none(), "C2 must stay clean");
+        assert!(w.nodes[w.c2()].infection.is_none(), "C2 must stay clean");
     }
 
     #[test]
@@ -1988,11 +2064,11 @@ mod tests {
         w.cfg.virus_spread_rate = 0.0;
         w.cfg.worm_spawn_rate = 0.0;
         // Infected node with cure_resist=1, three cells from C2.
-        let c2_pos = w.nodes[w.c2].pos;
+        let c2_pos = w.nodes[w.c2()].pos;
         let a = w.nodes.len();
         w.nodes.push(Node::fresh(
             (c2_pos.0 + 3, c2_pos.1),
-            Some(w.c2),
+            Some(w.c2()),
             0,
             Role::Relay,
             1,
@@ -2028,7 +2104,7 @@ mod tests {
         // Build c2 -> a -> b with fully-drawn links.
         let a = w.nodes.len();
         w.nodes
-            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+            .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
         let b = w.nodes.len();
         w.nodes.push(Node::fresh((14, 10), Some(a), 0, Role::Relay, 1));
         let path_ab: Vec<(i16, i16)> = (10..=14).map(|x| (x, 10)).collect();
@@ -2065,7 +2141,7 @@ mod tests {
         w.cfg.virus_spread_rate = 0.0;
         let a = w.nodes.len();
         w.nodes
-            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+            .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
         w.nodes[a].infection = Some(Infection {
             strain: 0,
             stage: InfectionStage::Terminal,
@@ -2092,7 +2168,7 @@ mod tests {
         w.cfg.virus_seed_rate = 0.0;
         let id = w.nodes.len();
         w.nodes
-            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Honeypot, 1));
+            .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Honeypot, 1));
         for _ in 0..10 {
             w.maybe_mutate();
         }
@@ -2110,7 +2186,7 @@ mod tests {
         w.cfg.virus_seed_rate = 0.0;
         let id = w.nodes.len();
         w.nodes
-            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+            .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
         w.maybe_mutate();
         assert!(matches!(w.nodes[id].role, Role::Scanner | Role::Exfil));
         assert!(w.nodes[id].mutated_flash > 0);
@@ -2138,7 +2214,7 @@ mod tests {
         // saturate the candidate set without ever double-picking.
         for i in 0..4 {
             w.nodes
-                .push(Node::fresh((10 + i, 10), Some(w.c2), 0, Role::Relay, 1));
+                .push(Node::fresh((10 + i, 10), Some(w.c2()), 0, Role::Relay, 1));
         }
         w.zero_day_outbreak();
         let infected = w
@@ -2167,7 +2243,7 @@ mod tests {
         // but the honeypot must remain clean to keep its disguise.
         let infected = w.nodes.len();
         w.nodes
-            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+            .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
         let honey = w.nodes.len();
         w.nodes
             .push(Node::fresh((12, 10), Some(infected), 0, Role::Honeypot, 1));
@@ -2194,12 +2270,12 @@ mod tests {
         w.cfg.defender_pulse_period = 1; // fire on every tick
         w.cfg.defender_radius = 5;
         w.cfg.virus_cure_resist = 1; // single-pulse cure
-        let defender = w.nodes.len();
+        let _defender = w.nodes.len();
         w.nodes
-            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Defender, 1));
+            .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Defender, 1));
         let victim = w.nodes.len();
         w.nodes
-            .push(Node::fresh((12, 11), Some(w.c2), 0, Role::Relay, 1));
+            .push(Node::fresh((12, 11), Some(w.c2()), 0, Role::Relay, 1));
         w.nodes[victim].infection = Some(Infection {
             strain: 0,
             stage: InfectionStage::Active,
@@ -2220,7 +2296,7 @@ mod tests {
         w.cfg.virus_spread_rate = 1.0;
         let infected = w.nodes.len();
         w.nodes
-            .push(Node::fresh((10, 10), Some(w.c2), 0, Role::Relay, 1));
+            .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
         let defender = w.nodes.len();
         w.nodes
             .push(Node::fresh((12, 10), Some(infected), 0, Role::Defender, 1));
@@ -2235,6 +2311,54 @@ mod tests {
             w.tick((80, 30));
         }
         assert!(w.nodes[defender].infection.is_none(), "defender should never get infected");
+    }
+
+    #[test]
+    fn multiple_c2s_each_get_distinct_factions() {
+        let cfg = Config {
+            c2_count: 3,
+            p_spawn: 0.0,
+            ..Config::default()
+        };
+        let w = World::new(40, (120, 30), cfg);
+        assert_eq!(w.c2_nodes.len(), 3);
+        assert_eq!(w.nodes[w.c2_nodes[0]].faction, 0);
+        assert_eq!(w.nodes[w.c2_nodes[1]].faction, 1);
+        assert_eq!(w.nodes[w.c2_nodes[2]].faction, 2);
+        // Spaced horizontally on the midline.
+        assert_ne!(w.nodes[w.c2_nodes[0]].pos.0, w.nodes[w.c2_nodes[1]].pos.0);
+        assert_eq!(w.nodes[w.c2_nodes[0]].pos.1, w.nodes[w.c2_nodes[1]].pos.1);
+    }
+
+    #[test]
+    fn cascade_does_not_kill_other_factions() {
+        let cfg = Config {
+            c2_count: 2,
+            p_spawn: 0.0,
+            p_loss: 0.0,
+            virus_seed_rate: 0.0,
+            ..Config::default()
+        };
+        let mut w = World::new(41, (80, 30), cfg);
+        // Build one child for each faction.
+        let f0 = w.c2_nodes[0];
+        let f1 = w.c2_nodes[1];
+        let child0 = w.nodes.len();
+        let mut n0 = Node::fresh((10, 10), Some(f0), 0, Role::Relay, 1);
+        n0.faction = 0;
+        w.nodes.push(n0);
+        let child1 = w.nodes.len();
+        let mut n1 = Node::fresh((40, 10), Some(f1), 0, Role::Relay, 2);
+        n1.faction = 1;
+        w.nodes.push(n1);
+        // Trigger a cascade on faction 0's child. Faction 1 must survive.
+        w.schedule_subtree_death(child0, 1.0);
+        for _ in 0..20 {
+            w.tick((80, 30));
+        }
+        assert!(matches!(w.nodes[child0].state, State::Dead));
+        assert!(matches!(w.nodes[child1].state, State::Alive));
+        assert!(matches!(w.nodes[f1].state, State::Alive));
     }
 
     #[test]
