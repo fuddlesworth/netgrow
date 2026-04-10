@@ -61,6 +61,10 @@ struct Cli {
     /// Relative weight of Defender nodes at spawn.
     #[arg(long, default_value_t = 0.08)]
     defender_weight: f32,
+    /// Relative weight of Tower nodes at spawn. Towers only materialize
+    /// near C2 (within tower_spawn_radius) and absorb extra pwn attempts.
+    #[arg(long, default_value_t = 0.05)]
+    tower_weight: f32,
 
     /// Ticks between Scanner pings.
     #[arg(long, default_value_t = 30)]
@@ -228,6 +232,7 @@ fn main() -> io::Result<()> {
     let exfil_weight = pick_f32("exfil_weight", cli.exfil_weight, file.exfil_weight);
     let honeypot_weight = pick_f32("honeypot_weight", cli.honeypot_weight, file.honeypot_weight);
     let defender_weight = pick_f32("defender_weight", cli.defender_weight, file.defender_weight);
+    let tower_weight = pick_f32("tower_weight", cli.tower_weight, file.tower_weight);
     let scanner_ping_period = pick_u16(
         "scanner_ping_period",
         cli.scanner_ping_period,
@@ -286,6 +291,7 @@ fn main() -> io::Result<()> {
             exfil: exfil_weight,
             honeypot: honeypot_weight,
             defender: defender_weight,
+            tower: tower_weight,
         },
         scanner_ping_period,
         exfil_packet_period,

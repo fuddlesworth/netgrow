@@ -65,6 +65,9 @@ pub enum Role {
     /// Patrols its neighborhood and applies a local cure pulse to nearby
     /// infected nodes. Immune to infection itself; never mutates.
     Defender,
+    /// Fortified core node with extra pwn-absorbing charges. Spawns only
+    /// close to its faction's C2, creating visible fortified zones.
+    Tower,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +135,12 @@ pub struct Node {
     /// adjacent to it, creating a visible "surveying" pulse that rolls
     /// through the local topology instead of phantom dots in empty space.
     pub scan_pulse: u8,
+    /// Extra pwn-absorbing charges beyond the normal heartbeat-driven
+    /// shield. Towers spawn with a nonzero value; each pwn attempt
+    /// decrements this counter before touching the regular hardened
+    /// flag. Independent from `hardened` so towers can still gain and
+    /// spend a heartbeat shield on top of their fortification.
+    pub pwn_resist: u8,
     /// Which C2 this node belongs to (index into `World.c2_nodes`).
     /// Inherited from parent at spawn; first-hop C2 children take their
     /// C2's index. Used to keep cascade reachability and cross-link
@@ -170,6 +179,7 @@ impl Node {
             infection: None,
             mutated_flash: 0,
             scan_pulse: 0,
+            pwn_resist: 0,
             faction: 0,
         }
     }
@@ -233,16 +243,18 @@ pub struct RoleWeights {
     pub exfil: f32,
     pub honeypot: f32,
     pub defender: f32,
+    pub tower: f32,
 }
 
 impl Default for RoleWeights {
     fn default() -> Self {
         Self {
-            relay: 0.65,
+            relay: 0.60,
             scanner: 0.13,
             exfil: 0.10,
             honeypot: 0.04,
             defender: 0.08,
+            tower: 0.05,
         }
     }
 }
@@ -318,6 +330,12 @@ pub struct Config {
     pub storm_spawn_mult: f32,
     /// Multiplier applied to p_loss while a storm is active.
     pub storm_loss_mult: f32,
+    /// Maximum Chebyshev distance from any C2 at which a Tower may
+    /// spawn. Spawns rolling a Tower role beyond this distance fall
+    /// back to Relay, so fortified cores stay near their faction hub.
+    pub tower_spawn_radius: i16,
+    /// Extra pwn-absorbing charges a newly spawned Tower receives.
+    pub tower_pwn_resist: u8,
 }
 
 impl Default for Config {
@@ -370,6 +388,8 @@ impl Default for Config {
             storm_duration: 150,
             storm_spawn_mult: 2.2,
             storm_loss_mult: 2.2,
+            tower_spawn_radius: 10,
+            tower_pwn_resist: 2,
         }
     }
 }
@@ -682,7 +702,7 @@ impl World {
 
     fn roll_role(&mut self) -> Role {
         let w = &self.cfg.role_weights;
-        let total = w.relay + w.scanner + w.exfil + w.honeypot + w.defender;
+        let total = w.relay + w.scanner + w.exfil + w.honeypot + w.defender + w.tower;
         let mut r = self.rng.gen::<f32>() * total.max(f32::EPSILON);
         if r < w.relay {
             return Role::Relay;
@@ -699,7 +719,11 @@ impl World {
         if r < w.honeypot {
             return Role::Honeypot;
         }
-        Role::Defender
+        r -= w.honeypot;
+        if r < w.defender {
+            return Role::Defender;
+        }
+        Role::Tower
     }
 
     fn alloc_branch_id(&mut self) -> u16 {
@@ -844,12 +868,29 @@ impl World {
         } else {
             self.nodes[parent_id].branch_id
         };
-        let role = self.roll_role();
+        let mut role = self.roll_role();
         let faction = self.nodes[parent_id].faction;
+
+        // Towers only spawn near their faction's C2. If we rolled Tower
+        // but the candidate cell is too far from any C2, fall back to
+        // Relay so the fortified core stays a fortified core.
+        if role == Role::Tower {
+            let radius = self.cfg.tower_spawn_radius;
+            let near_c2 = self.c2_nodes.iter().any(|&id| {
+                let p = self.nodes[id].pos;
+                (p.0 - cand.0).abs().max((p.1 - cand.1).abs()) <= radius
+            });
+            if !near_c2 {
+                role = Role::Relay;
+            }
+        }
 
         let new_id = self.nodes.len();
         let mut node = Node::fresh(cand, Some(parent_id), self.tick, role, branch_id);
         node.faction = faction;
+        if role == Role::Tower {
+            node.pwn_resist = self.cfg.tower_pwn_resist;
+        }
         self.nodes.push(node);
         self.occupied.insert(cand);
         self.links.push(Link {
@@ -1571,8 +1612,8 @@ impl World {
                 if n.infection.is_some() {
                     return None;
                 }
-                if matches!(n.role, Role::Honeypot | Role::Defender) {
-                    return None; // honeypots hide; defenders are locked in
+                if matches!(n.role, Role::Honeypot | Role::Defender | Role::Tower) {
+                    return None; // honeypots hide; defenders and towers stay put
                 }
                 if now.saturating_sub(n.born) < min_age {
                     return None;
@@ -1589,7 +1630,7 @@ impl World {
                 Role::Relay => [Role::Scanner, Role::Exfil, Role::Relay],
                 Role::Scanner => [Role::Relay, Role::Exfil, Role::Scanner],
                 Role::Exfil => [Role::Relay, Role::Scanner, Role::Exfil],
-                Role::Honeypot | Role::Defender => continue,
+                Role::Honeypot | Role::Defender | Role::Tower => continue,
             };
             // Pick uniformly from the first two (the third is the sentinel).
             let new_role = choices[self.rng.gen_range(0..2)];
@@ -1602,6 +1643,7 @@ impl World {
                 Role::Exfil => "exfil",
                 Role::Honeypot => "honeypot",
                 Role::Defender => "defender",
+                Role::Tower => "tower",
             };
             self.log_node(pos, &format!("mutated → {}", name));
         }
@@ -1801,7 +1843,13 @@ impl World {
                 let pos = self.nodes[victim].pos;
                 let node = &mut self.nodes[victim];
 
-                if node.hardened {
+                if node.pwn_resist > 0 {
+                    // Tower fortification absorbs the hit before any
+                    // heartbeat shield or pwn even gets considered.
+                    node.pwn_resist -= 1;
+                    node.shield_flash = 6;
+                    self.log_node(pos, "reinforced");
+                } else if node.hardened {
                     // Reinforcement: consume the shield instead of pwning.
                     node.hardened = false;
                     node.heartbeats = 0;
@@ -2792,6 +2840,38 @@ mod tests {
             from_honey,
             after - before,
             "all revealed backdoors should anchor on the honeypot"
+        );
+    }
+
+    #[test]
+    fn tower_absorbs_pwn_attempts_before_dying() {
+        let cfg = Config {
+            p_spawn: 0.0,
+            p_loss: 1.0,
+            virus_seed_rate: 0.0,
+            tower_pwn_resist: 2,
+            ..Config::default()
+        };
+        let mut w = World::new(80, (80, 30), cfg);
+        // One tower adjacent to C2 — the only possible victim.
+        let tower = w.nodes.len();
+        let mut n = Node::fresh((11, 10), Some(w.c2()), 0, Role::Tower, 1);
+        n.pwn_resist = 2;
+        n.faction = 0;
+        w.nodes.push(n);
+        // Three ticks of guaranteed loss rolls. First two should consume
+        // the pwn_resist charges; third should finally pwn the tower.
+        for _ in 0..2 {
+            w.tick((80, 30));
+            assert!(
+                matches!(w.nodes[tower].state, State::Alive),
+                "tower should still be alive"
+            );
+        }
+        w.tick((80, 30));
+        assert!(
+            matches!(w.nodes[tower].state, State::Pwned { .. } | State::Dead),
+            "tower should be down after 3 hits"
         );
     }
 

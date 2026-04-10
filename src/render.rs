@@ -330,7 +330,10 @@ fn legend_block() -> Paragraph<'static> {
             cell("◎", th.scanner, "scanner"),
             Some(cell("·", th.ghost, "ghost")),
         ),
-        two(cell("▣", th.exfil, "exfil"), None),
+        two(
+            cell("▣", th.exfil, "exfil"),
+            Some(cell("⊞", th.frame_accent, "tower")),
+        ),
     ];
     Paragraph::new(lines).block(block)
 }
@@ -372,6 +375,7 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
                     Role::Exfil => "exfil",
                     Role::Honeypot => "honeypot",
                     Role::Defender => "defender",
+                    Role::Tower => "tower",
                 }
             };
             lines.push(row("role", role_name.to_string()));
@@ -476,7 +480,7 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default()
             .fg(th.log_hardened)
             .add_modifier(Modifier::BOLD)
-    } else if s.contains("shielded") {
+    } else if s.contains("shielded") || s.contains("reinforced") {
         Style::default()
             .fg(th.log_shielded)
             .add_modifier(Modifier::BOLD)
@@ -822,6 +826,7 @@ fn infected_glyph(
                 // Defenders are immune; this branch shouldn't fire in
                 // practice but the match must be exhaustive.
                 Role::Defender => "◇",
+                Role::Tower => "⊞",
             };
             (base, Style::default().fg(hue).add_modifier(Modifier::DIM))
         }
@@ -836,6 +841,7 @@ fn infected_glyph(
                 // Defenders are immune; this branch shouldn't fire in
                 // practice but the match must be exhaustive.
                 Role::Defender => "◇",
+                Role::Tower => "⊞",
             };
             let g = if (tick + inf.age as u64).is_multiple_of(3) {
                 "▓"
@@ -983,6 +989,12 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                     "◇",
                     Style::default()
                         .fg(th.defender)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Role::Tower => (
+                    "⊞",
+                    Style::default()
+                        .fg(th.frame_accent)
                         .add_modifier(Modifier::BOLD),
                 ),
             };
