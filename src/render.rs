@@ -317,16 +317,15 @@ pub fn draw_summary(frame: &mut Frame, world: &World, meta: &SummaryMeta<'_>) {
             .unwrap_or("?");
         vec![
             Span::styled(
-                "✦ DOMINANCE ✦  F".to_string(),
+                "✦ DOMINANCE ✦  ".to_string(),
                 Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
             ),
+            // Keep 'F0 aggressor' as one faction-hue chunk so the
+            // label/number/persona all read as a single unit
+            // instead of splitting at 'F' (accent) vs '0' (hue).
             Span::styled(
-                format!("{}", winner),
+                format!("F{} {}", winner, persona),
                 Style::default().fg(hue).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(" {}", persona),
-                Style::default().fg(hue),
             ),
             Span::raw("  ·  "),
             Span::styled(
