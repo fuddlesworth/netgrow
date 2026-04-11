@@ -2296,21 +2296,40 @@ impl<'a> Widget for MeshWidget<'a> {
             }
         }
 
-        // 4b. Background tint post-pass. Until now territory and
-        // hotspots only painted their glyphs on empty cells, so
-        // the occupied cells (nodes, links, packets, ...) stayed
-        // background-less. Walk back through the territory map
-        // and the hotspot rectangles and set `.bg` on every cell
-        // via cell_mut without touching the existing symbol or
-        // foreground. This makes the whole region read as a
-        // solid color wash underneath the mesh instead of a
-        // loose scatter of shade glyphs on empty ground.
-        // Only stamp territory bg on cells that don't already
-        // carry a bg — nodes and links already baked their own
-        // brighter bg in at draw time, and we don't want to
-        // clobber them here.
+        // 4b. Ambient background post-pass. Merge territory,
+        // hotspots, and outages into a single per-cell bg
+        // decision BEFORE applying, so priorities compose
+        // correctly — previous passes each ran sequentially and
+        // the earlier one (territory) filled cells that the
+        // later ones (hotspot, outage) then skipped because of
+        // the Color::Reset guard. Priority here is:
+        //
+        //     outage > hotspot > territory
+        //
+        // and any cell that already has a baked bg from a
+        // node/link/event foreground draw is left alone.
+        let mut cell_bg: std::collections::HashMap<(i16, i16), Color> =
+            std::collections::HashMap::new();
         for (&cell, &fac) in &territory {
-            let bg = dim_bg(faction_hue(w, fac));
+            cell_bg.insert(cell, dim_bg(faction_hue(w, fac)));
+        }
+        let hotspot_color = hotspot_bg(th.frame_accent);
+        for hot in &w.hotspots {
+            for y in hot.min.1..=hot.max.1 {
+                for x in hot.min.0..=hot.max.0 {
+                    cell_bg.insert((x, y), hotspot_color);
+                }
+            }
+        }
+        let outage_color = outage_bg(th.pwned_alt);
+        for outage in &w.outages {
+            for y in outage.min.1..=outage.max.1 {
+                for x in outage.min.0..=outage.max.0 {
+                    cell_bg.insert((x, y), outage_color);
+                }
+            }
+        }
+        for (&cell, &bg) in &cell_bg {
             let cx = area.x as i32 + cell.0 as i32;
             let cy = area.y as i32 + cell.1 as i32;
             if cx < area.x as i32
@@ -2323,57 +2342,6 @@ impl<'a> Widget for MeshWidget<'a> {
             if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
                 if c.bg == Color::Reset {
                     c.set_bg(bg);
-                }
-            }
-        }
-        // Hotspot bg tint: only paints empty / territory-colored
-        // cells; nodes and links keep their own bg so fiber zones
-        // don't blot out the mesh content inside them.
-        let hotspot_color = hotspot_bg(th.frame_accent);
-        for hot in &w.hotspots {
-            for y in hot.min.1..=hot.max.1 {
-                for x in hot.min.0..=hot.max.0 {
-                    let cx = area.x as i32 + x as i32;
-                    let cy = area.y as i32 + y as i32;
-                    if cx < area.x as i32
-                        || cy < area.y as i32
-                        || cx >= area.right() as i32
-                        || cy >= area.bottom() as i32
-                    {
-                        continue;
-                    }
-                    if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
-                        // Only overwrite Reset (fully empty) or
-                        // our own dim territory bg, not node/link
-                        // bg values.
-                        if c.bg == Color::Reset {
-                            c.set_bg(hotspot_color);
-                        }
-                    }
-                }
-            }
-        }
-        // Outage bg tint: same rule as hotspots — only paint
-        // cells that haven't had their bg baked in by a node or
-        // link draw already.
-        let outage_color = outage_bg(th.pwned_alt);
-        for outage in &w.outages {
-            for y in outage.min.1..=outage.max.1 {
-                for x in outage.min.0..=outage.max.0 {
-                    let cx = area.x as i32 + x as i32;
-                    let cy = area.y as i32 + y as i32;
-                    if cx < area.x as i32
-                        || cy < area.y as i32
-                        || cx >= area.right() as i32
-                        || cy >= area.bottom() as i32
-                    {
-                        continue;
-                    }
-                    if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
-                        if c.bg == Color::Reset {
-                            c.set_bg(outage_color);
-                        }
-                    }
                 }
             }
         }
