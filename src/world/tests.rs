@@ -33,6 +33,10 @@ fn scheduled_subtree_death_eventually_kills_all_descendants() {
 #[test]
 fn hardened_node_resists_first_pwn() {
     let mut w = World::new(7, (80, 30), Config::default());
+    // Neutralize era modifiers so `p_loss: 1.0` is truly
+    // guaranteed — the opening era's 0.7 loss multiplier would
+    // otherwise make the single roll probabilistic.
+    w.era_rules = EraRules::default();
     w.cfg.p_spawn = 0.0;
     let id = w.nodes.len();
     let mut n = Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1);
@@ -161,6 +165,10 @@ fn cross_link_saves_reachable_node_from_cascade() {
 #[test]
 fn shield_flash_is_set_when_hardened_node_is_hit() {
     let mut w = World::new(9, (80, 30), Config::default());
+    // Neutralize era modifiers so `p_loss: 1.0` is truly
+    // guaranteed — see hardened_node_resists_first_pwn for the
+    // same reasoning.
+    w.era_rules = EraRules::default();
     w.cfg.p_spawn = 0.0;
     w.cfg.p_loss = 1.0;
     let id = w.nodes.len();
@@ -891,6 +899,176 @@ fn diplomacy_pressure_escalates_to_cold_war_then_open_war() {
 }
 
 #[test]
+fn diplomacy_vassalage_transfers_tribute_from_vassal_to_overlord() {
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        c2_count: 2,
+        epoch_period: 0,
+        ..Config::default()
+    };
+    let mut w = World::new(1, (80, 30), cfg);
+    // Seed a Vassalage directly. F0 is the overlord, F1 the
+    // vassal. Canonical key ordering means a=0, b=1.
+    w.relations.insert(
+        (0, 1),
+        Relation {
+            state: DiplomaticState::Vassalage { overlord: 0 },
+            pressure: 0,
+            trust: 0,
+            entered_tick: 0,
+            expires_tick: 0,
+        },
+    );
+    // Keep both factions "alive" for the sweep — they already
+    // are from World::new, but make sure we haven't regressed.
+    assert!(matches!(w.nodes[w.c2_nodes[0]].state, State::Alive));
+    assert!(matches!(w.nodes[w.c2_nodes[1]].state, State::Alive));
+    let intel_before = w.faction_stats[0].intel;
+    w.advance_diplomacy();
+    assert!(
+        w.faction_stats[0].intel > intel_before,
+        "overlord should have collected tribute from vassal"
+    );
+    // Relation should still exist (Vassalage has no timer).
+    assert_eq!(
+        w.relation_state(0, 1),
+        DiplomaticState::Vassalage { overlord: 0 }
+    );
+}
+
+#[test]
+fn diplomacy_vassalage_rebels_when_vassal_recovers() {
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        c2_count: 2,
+        epoch_period: 0,
+        ..Config::default()
+    };
+    let mut w = World::new(1, (80, 30), cfg);
+    // Plant enough alive nodes for the rebellion check to even
+    // consider firing: overlord needs >= 8 alive, and the vassal
+    // needs >= 70% of the overlord's count. Give F0 (overlord)
+    // 10 alive children and F1 (vassal) 9 alive children so the
+    // vassal sits at 90% of the overlord's size.
+    for x in 15..25 {
+        w.nodes.push(Node::fresh(
+            (x, 10),
+            Some(w.c2_nodes[0]),
+            0,
+            Role::Relay,
+            1,
+        ));
+        let last = w.nodes.len() - 1;
+        w.nodes[last].faction = 0;
+    }
+    for x in 15..24 {
+        w.nodes.push(Node::fresh(
+            (x, 15),
+            Some(w.c2_nodes[1]),
+            0,
+            Role::Relay,
+            1,
+        ));
+        let last = w.nodes.len() - 1;
+        w.nodes[last].faction = 1;
+    }
+    w.relations.insert(
+        (0, 1),
+        Relation {
+            state: DiplomaticState::Vassalage { overlord: 0 },
+            pressure: 0,
+            trust: 0,
+            entered_tick: 0,
+            expires_tick: 0,
+        },
+    );
+    w.advance_diplomacy();
+    // Vassal sits past 70% of overlord's size — rebellion fires,
+    // Vassalage flips to ColdWar.
+    assert_eq!(w.relation_state(0, 1), DiplomaticState::ColdWar);
+}
+
+#[test]
+fn diplomacy_sweep_drops_relation_when_overlord_dies() {
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        c2_count: 2,
+        epoch_period: 0,
+        ..Config::default()
+    };
+    let mut w = World::new(1, (80, 30), cfg);
+    // Plant a Vassalage where F0 is the overlord.
+    w.relations.insert(
+        (0, 1),
+        Relation {
+            state: DiplomaticState::Vassalage { overlord: 0 },
+            pressure: 0,
+            trust: 0,
+            entered_tick: 0,
+            expires_tick: 0,
+        },
+    );
+    // Kill F0's C2 directly — this is the assimilation-style
+    // path that bypasses the cascade's inline purge.
+    let c2_0 = w.c2_nodes[0];
+    w.nodes[c2_0].state = State::Dead;
+    w.advance_diplomacy();
+    assert!(
+        !w.relations.contains_key(&(0, 1)),
+        "sweep should drop relations whose endpoint C2 has died"
+    );
+}
+
+#[test]
+fn diplomacy_sweep_drops_vassalage_when_overlord_dies_but_both_endpoints_live() {
+    // A rarer case: three-faction world where A and B are in
+    // Vassalage with C as overlord (stored on the pair key
+    // but not in the canonical pair). If C dies while A and B
+    // are both alive, the sweep should still drop the relation
+    // because the overlord is gone. This shouldn't normally
+    // happen (overlord is always one endpoint of the canonical
+    // key), but the safety sweep still handles it defensively.
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        c2_count: 3,
+        epoch_period: 0,
+        ..Config::default()
+    };
+    let mut w = World::new(1, (80, 30), cfg);
+    assert_eq!(w.c2_nodes.len(), 3);
+    // Plant a Vassalage with F2 as overlord, canonical key (0, 1).
+    // This is an intentionally malformed state to test the
+    // defensive branch — in practice Vassalage always keys one
+    // of its endpoints as the overlord.
+    w.relations.insert(
+        (0, 1),
+        Relation {
+            state: DiplomaticState::Vassalage { overlord: 2 },
+            pressure: 0,
+            trust: 0,
+            entered_tick: 0,
+            expires_tick: 0,
+        },
+    );
+    // Kill F2 (the overlord).
+    let c2_2 = w.c2_nodes[2];
+    w.nodes[c2_2].state = State::Dead;
+    w.advance_diplomacy();
+    assert!(
+        !w.relations.contains_key(&(0, 1)),
+        "sweep should drop Vassalage when overlord dies even if both endpoints remain alive"
+    );
+}
+
+#[test]
 fn diplomacy_trade_can_upgrade_through_nap_to_alliance() {
     let cfg = Config {
         p_spawn: 0.0,
@@ -988,7 +1166,7 @@ fn era_transition_rebinds_active_rules() {
     let era_lines = w
         .logs
         .iter()
-        .filter(|(s, _)| s.starts_with("── era"))
+        .filter(|(s, _)| s.starts_with("✦ era"))
         .count();
     assert!(era_lines >= 3, "expected ≥3 era log lines, got {}", era_lines);
 }

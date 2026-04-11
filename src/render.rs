@@ -1823,7 +1823,7 @@ fn color_log_line(s: &str) -> Line<'static> {
             .add_modifier(Modifier::BOLD | Modifier::REVERSED)
     } else if s.starts_with("storm passes") {
         Style::default().fg(th.label).add_modifier(Modifier::BOLD)
-    } else if s.starts_with("── era") {
+    } else if s.starts_with("✦ era") {
         Style::default()
             .fg(th.frame_accent)
             .add_modifier(Modifier::BOLD)

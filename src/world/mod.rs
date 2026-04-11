@@ -615,9 +615,16 @@ impl World {
     }
 
     /// Trust gain multiplier for a pair based on their personas.
-    /// Fortress doubles gains (turtles love treaties), Opportunist
-    /// adds 50% (happy to cooperate when convenient), Aggressor
-    /// halves them, Plague is neutral.
+    /// Each side contributes independently (Fortress 2.0×,
+    /// Opportunist 1.5×, Aggressor 0.5×, Plague 1.0×) and the
+    /// pair's final multiplier is the **average** of the two
+    /// contributions. Design implication: mixed pairs still grow
+    /// trust net-positive as long as at least one side wants
+    /// peace — a Fortress+Aggressor pair gets `(2.0 + 0.5) / 2 =
+    /// 1.25×`, which reads as "the Fortress carries the peace
+    /// despite the Aggressor's reluctance." If you want an
+    /// Aggressor in the pair to hard-block trust growth, switch
+    /// this to `pa.min(pb)` — intentional choice, not a bug.
     fn persona_trust_mult(&self, a: u8, b: u8) -> f32 {
         let contribution = |p: Option<&Persona>| -> f32 {
             match p {
@@ -647,29 +654,45 @@ impl World {
     }
 
     /// Diplomacy state-machine driver. Called once per faction
-    /// sample period. Walks every known relation plus random
-    /// Neutral pair rolls, accumulates trust in peaceful states,
-    /// decays pressure, fires transitions, and emits a log line
-    /// on every state change so the narrative reads back in the
-    /// scrollback.
+    /// sample period. Split into three cohesive passes so each
+    /// step has one job: `sweep_stale_relations` drops entries
+    /// for dead factions, `advance_relation_transitions` runs
+    /// the state machine over every surviving pair, and
+    /// `maybe_propose_trade` rolls an opportunistic Trade
+    /// proposal between a random Neutral pair. Previously the
+    /// method was one 250-line block with tangled early-exit
+    /// paths that masked a `return`-based control-flow bug.
     fn advance_diplomacy(&mut self) {
-        let tick = self.tick;
         let faction_count = self.c2_nodes.len() as u8;
         if faction_count < 2 {
             return;
         }
-        // Safety sweep: drop every relation involving a faction
-        // whose C2 is no longer Alive, and demote any Vassalage
-        // whose overlord has died back to Neutral. The cascade
-        // pipeline does this inline for cascade-driven deaths,
-        // but assimilation and other paths that flip the C2 to
-        // Dead directly wouldn't otherwise trigger the purge —
-        // doing it here centrally catches every death route.
+        self.sweep_stale_relations();
+        self.advance_relation_transitions();
+        self.maybe_propose_trade(faction_count);
+    }
+
+    /// Drop every relation entry involving a faction whose C2 is
+    /// no longer Alive, plus any Vassalage whose overlord has
+    /// died. Catches every death route centrally — the cascade
+    /// pipeline still runs its own inline purge for cascade
+    /// deaths, but assimilation (which flips C2s to Dead directly)
+    /// and any future path rely on this safety sweep.
+    fn sweep_stale_relations(&mut self) {
         let alive_c2: Vec<bool> = self
             .c2_nodes
             .iter()
             .map(|&id| matches!(self.nodes[id].state, State::Alive))
             .collect();
+        // Faction id must equal `c2_nodes` index — asserted in
+        // debug builds only, since every call site currently
+        // preserves this invariant and the runtime cost matters
+        // on the diplomacy hot path.
+        debug_assert_eq!(
+            alive_c2.len(),
+            self.c2_nodes.len(),
+            "faction id / c2_nodes index invariant broken"
+        );
         let faction_alive = |f: u8| -> bool {
             alive_c2.get(f as usize).copied().unwrap_or(false)
         };
@@ -692,9 +715,15 @@ impl World {
                 purged
             ));
         }
-        // Pass 1: walk all existing relations and collect any
-        // transitions. We defer the apply step so we can mutate
-        // `relations` without aliasing the iteration.
+    }
+
+    /// Walk every live relation, collect pressure decays, trust
+    /// bumps, and state transitions into side buffers, then
+    /// apply them. Split from the driver so the state-machine
+    /// arms live in one focused place and borrow handling is
+    /// isolated from the other diplomacy passes.
+    fn advance_relation_transitions(&mut self) {
+        let tick = self.tick;
         let counts = self.faction_alive_counts();
         let keys: Vec<(u8, u8)> = self.relations.keys().copied().collect();
         let mut transitions: Vec<((u8, u8), DiplomaticState, String)> = Vec::new();
@@ -871,13 +900,21 @@ impl World {
                     }
                 }
                 DiplomaticState::Vassalage { overlord } => {
+                    // Derive subordinate from the canonical key:
+                    // if overlord is the `a` side (the smaller
+                    // faction id), the vassal must be `b`, and
+                    // vice versa. Correct under either ordering.
                     let subordinate = if overlord == a { b } else { a };
-                    // Vassal rebellion: if the vassal has recovered
-                    // past 70% of the overlord's size, it throws off
-                    // the chain and the relation flips to ColdWar.
+                    // Vassal rebellion: the vassal throws off the
+                    // chain when it recovers past 70% of the
+                    // overlord's size. Requires a minimum overlord
+                    // size so tiny-vs-tiny pairs don't trip the
+                    // rebellion on the first sample — `1 >= 0.7`
+                    // would otherwise fire immediately for any
+                    // 1-alive overlord.
                     let overlord_count = counts.get(overlord as usize).copied().unwrap_or(0);
                     let vassal_count = counts.get(subordinate as usize).copied().unwrap_or(0);
-                    if overlord_count > 0
+                    if overlord_count >= 8
                         && (vassal_count as f32) >= (overlord_count as f32 * 0.7)
                     {
                         transitions.push((
@@ -932,43 +969,55 @@ impl World {
                 self.push_log(msg);
             }
         }
-        // Pass 2: roll for opportunistic Trade proposals between
-        // Neutral pairs. Low base chance, boosted when either side
-        // is Opportunist. Prevents the peace track from lying
-        // dormant in quiet mid-games.
-        if self.rng.gen_bool(0.25) {
-            let a = self.rng.gen_range(0..faction_count);
-            let mut b = self.rng.gen_range(0..faction_count);
-            if a == b && faction_count > 1 {
-                b = (a + 1) % faction_count;
-            }
-            if a != b {
-                let Some(key) = Self::rivalry_key(a, b) else { return };
-                let rel = self.relation(a, b);
-                if matches!(rel.state, DiplomaticState::Neutral) && rel.pressure < 20 {
-                    let opportunist = |p: Option<&Persona>| {
-                        matches!(p, Some(Persona::Opportunist))
-                    };
-                    let chance = if opportunist(self.personas.get(a as usize))
-                        || opportunist(self.personas.get(b as usize))
-                    {
-                        0.35
-                    } else {
-                        0.12
-                    };
-                    if self.rng.gen_bool(chance) {
-                        let entry = self.relations.entry(key).or_default();
-                        entry.state = DiplomaticState::Trade;
-                        entry.entered_tick = tick;
-                        entry.expires_tick = tick + STATE_DURATION_TRADE;
-                        self.push_log(format!(
-                            "✦ diplo ✦ F{}↔F{} open TRADE channel",
-                            a, b
-                        ));
-                    }
-                }
-            }
+    }
+
+    /// Roll an opportunistic Trade proposal between a random
+    /// Neutral pair. Low base chance, boosted when either side
+    /// is Opportunist. Prevents the peace track from lying
+    /// dormant in quiet mid-games. Split from `advance_diplomacy`
+    /// so the random-pair selection can short-circuit cleanly
+    /// without dragging the rest of the pass with it — the old
+    /// inline version used `else { return }` and would abort
+    /// every pass downstream of itself.
+    fn maybe_propose_trade(&mut self, faction_count: u8) {
+        if faction_count < 2 {
+            return;
         }
+        if !self.rng.gen_bool(0.25) {
+            return;
+        }
+        let tick = self.tick;
+        let a = self.rng.gen_range(0..faction_count);
+        let mut b = self.rng.gen_range(0..faction_count);
+        if a == b {
+            b = (a + 1) % faction_count;
+        }
+        if a == b {
+            return;
+        }
+        let Some(key) = Self::rivalry_key(a, b) else {
+            return;
+        };
+        let rel = self.relation(a, b);
+        if !matches!(rel.state, DiplomaticState::Neutral) || rel.pressure >= 20 {
+            return;
+        }
+        let opportunist = |p: Option<&Persona>| matches!(p, Some(Persona::Opportunist));
+        let chance = if opportunist(self.personas.get(a as usize))
+            || opportunist(self.personas.get(b as usize))
+        {
+            0.35
+        } else {
+            0.12
+        };
+        if !self.rng.gen_bool(chance) {
+            return;
+        }
+        let entry = self.relations.entry(key).or_default();
+        entry.state = DiplomaticState::Trade;
+        entry.entered_tick = tick;
+        entry.expires_tick = tick + STATE_DURATION_TRADE;
+        self.push_log(format!("✦ diplo ✦ F{}↔F{} open TRADE channel", a, b));
     }
 
     /// Research accrual + tier unlock pass. Called once per faction
@@ -1020,9 +1069,15 @@ impl World {
         let mut incomes = vec![0u32; faction_count];
         for (i, stats) in self.faction_stats.iter_mut().enumerate() {
             let alive = counts[i];
-            if alive == 0 && stats.research == 0 {
-                // Dead faction, no base — but keep ticking its last_*
-                // so a resurrection starts with a clean delta.
+            // Fully-dead factions earn nothing this pass. Previously
+            // the guard was `alive == 0 && research == 0`, which
+            // meant a faction that accumulated research before
+            // losing its mesh would keep earning the flat base
+            // forever — free progress toward tiers while having
+            // zero presence. Now: no alive nodes → no income, and
+            // `last_*_sample` is refreshed so a future resurrection
+            // starts with a clean delta.
+            if alive == 0 {
                 stats.last_intel_sample = stats.intel;
                 stats.last_cures_sample = stats.infections_cured;
                 continue;
@@ -1223,12 +1278,16 @@ impl World {
         ));
     }
 
-    /// Plague T3: force a fresh outbreak on two random alive
-    /// nodes anywhere on the mesh, bypassing immunity windows and
-    /// the normal seed-rate cap. Plants the faction's bias as a
-    /// mid-run pressure release valve.
+    /// Plague T3: force a fresh outbreak on two distinct random
+    /// alive nodes anywhere on the mesh, bypassing immunity
+    /// windows and the normal seed-rate cap. Plants the faction's
+    /// bias as a mid-run pressure release valve. Uses shuffle +
+    /// take so the two picks are guaranteed distinct — the
+    /// previous version drew two independent indices with
+    /// replacement, which could double-select the same node and
+    /// silently seed only one infection.
     fn tech_active_plague(&mut self, faction: u8) {
-        let alive_targets: Vec<NodeId> = self
+        let mut alive_targets: Vec<NodeId> = self
             .nodes
             .iter()
             .enumerate()
@@ -1245,15 +1304,8 @@ impl World {
         }
         let cure_resist = self.cfg.virus_cure_resist;
         let strain = self.rng.gen_range(0..STRAIN_COUNT as u8);
-        let picks: Vec<NodeId> = (0..2)
-            .filter_map(|_| {
-                if alive_targets.is_empty() {
-                    None
-                } else {
-                    Some(alive_targets[self.rng.gen_range(0..alive_targets.len())])
-                }
-            })
-            .collect();
+        alive_targets.shuffle(&mut self.rng);
+        let picks: Vec<NodeId> = alive_targets.into_iter().take(2).collect();
         let mut seeded = 0u32;
         for id in picks {
             if self.nodes[id].infection.is_none() {
@@ -1307,9 +1359,11 @@ impl World {
 
     /// Persona role-weight multiplier bonus granted at Tier 1+.
     /// Intensifies the faction's persona bias by pushing each
-    /// per-role multiplier away from 1.0 by a factor of 1.35 at
-    /// Tier 1 (and 1.6 at Tiers 2/3). `roll_role` reads this and
-    /// blends the amplified multipliers with the base weights.
+    /// per-role multiplier away from 1.0. Deliberately plateaus at
+    /// Tier 2 — Tier 3's reward is the active ability in
+    /// `advance_tech_actives`, not further role-weight escalation.
+    /// `roll_role` reads this and blends the amplified multipliers
+    /// with the base weights.
     pub fn tech_role_intensity(&self, faction: u8) -> f32 {
         let tier = self
             .faction_stats
@@ -1319,6 +1373,8 @@ impl World {
         match tier {
             0 => 1.0,
             1 => 1.35,
+            // Tiers 2 and 3 share this value by design — T3 gets
+            // its own reward via the active ability dispatcher.
             _ => 1.6,
         }
     }
@@ -2188,17 +2244,20 @@ impl World {
         // a new named era and swaps in its rule set. Every live
         // multiplier (spawn, loss, cascade, virus spread, mutation,
         // immunity, assimilation cadence, bridge chance, exfil period)
-        // rebinds to the new era on this tick.
+        // rebinds to the new era on this tick. Epoch periods shorter
+        // than 2 would log a transition every tick and thrash the
+        // scrollback, so anything under that floor is treated as
+        // disabled.
         let epoch_period = self.cfg.epoch_period;
-        if epoch_period > 0 && self.tick > 0 && self.tick.is_multiple_of(epoch_period) {
+        if epoch_period >= 2 && self.tick > 0 && self.tick.is_multiple_of(epoch_period) {
             let idx = (self.tick / epoch_period) as usize;
             let (rules, summary) = era_rules_for(idx);
             self.era_rules = rules;
             let name = ERA_NAMES[idx % ERA_NAMES.len()];
             if summary.is_empty() {
-                self.push_log(format!("── era {}: {}", idx, name));
+                self.push_log(format!("✦ era ✦ {}: {}", idx, name));
             } else {
-                self.push_log(format!("── era {}: {} ✦ {}", idx, name, summary));
+                self.push_log(format!("✦ era ✦ {}: {} — {}", idx, name, summary));
             }
         }
 

@@ -516,16 +516,18 @@ impl Default for Relation {
 }
 
 impl DiplomaticState {
-    /// Short label for render panels — 4 chars max so it fits in
-    /// the rivalries bar row next to the faction hues.
+    /// Short label for render panels — exactly 4 chars wide so
+    /// the diplomacy panel's columns line up row-to-row. The
+    /// render layer still pads with `{:<5}` for a trailing space,
+    /// but each label itself must stay within 4 visible glyphs.
     pub fn short_label(&self) -> &'static str {
         match self {
             DiplomaticState::Neutral => "····",
-            DiplomaticState::Trade => "TRADE",
-            DiplomaticState::NonAggression => "NAP",
+            DiplomaticState::Trade => "TRD ",
+            DiplomaticState::NonAggression => "NAP ",
             DiplomaticState::Alliance => "ALLY",
             DiplomaticState::ColdWar => "COLD",
-            DiplomaticState::OpenWar => "WAR",
+            DiplomaticState::OpenWar => "WAR ",
             DiplomaticState::Vassalage { .. } => "VASL",
         }
     }
