@@ -834,9 +834,11 @@ impl<'a> Widget for MeshWidget<'a> {
             if thin && (key & 1) == 0 {
                 continue;
             }
-            let style = Style::default()
-                .fg(faction_hue(fac))
-                .add_modifier(Modifier::DIM);
+            // No DIM modifier here — terminals render DIM as a
+            // desaturated variant that drifts visibly off the
+            // faction hue used in the header bar. The shade glyph
+            // itself (░ / ·) already keeps the tint subordinate.
+            let style = Style::default().fg(faction_hue(fac));
             put(buf, area, cell, shade, style);
         }
 
