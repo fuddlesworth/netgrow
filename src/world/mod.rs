@@ -105,13 +105,10 @@ pub const WAR_DECLARATION_THRESHOLD: u16 = 100;
 pub const WAR_DURATION_TICKS: u64 = 500;
 
 /// Fraction of total alive nodes a single faction needs to hold
-/// to trigger a dominance victory. Floating since it's compared
-/// against a ratio computed per sample.
+/// to be counted as the currently-dominant faction. Fires a log
+/// line on transitions, never ends the run — the sim keeps
+/// going until the user quits.
 pub const VICTORY_ALIVE_FRACTION: f32 = 0.60;
-/// Ticks the sim keeps running after a dominance victory fires,
-/// so the player gets a brief celebration window before the
-/// summary screen takes over.
-pub const VICTORY_LAP_TICKS: u64 = 300;
 
 /// Number of successful packet deliveries a Parent link must carry
 /// before it gets promoted to a backbone link with an inflated HOT
@@ -232,13 +229,15 @@ pub struct World {
     /// skirmish chance gets an extra 3x multiplier on top of the
     /// rivalry pressure amp.
     pub wars: HashMap<(u8, u8), u64>,
-    /// Tick at which the run should exit if a dominance victory
-    /// has fired. `None` means no winner yet; `Some(t)` means
-    /// main.rs should break the tick loop once `tick >= t`.
-    pub victory_tick: Option<u64>,
-    /// Faction id that won if `victory_tick` is set. Surfaced in
-    /// the summary screen's banner.
-    pub winner_faction: Option<u8>,
+    /// Faction currently holding dominance (≥ VICTORY_ALIVE_FRACTION
+    /// of total alive nodes, or sole surviving C2). Cleared when
+    /// the dominant faction drops below the threshold. Purely a
+    /// readout — the sim never auto-ends; dominance is just a
+    /// tracked state the UI and summary surface.
+    pub current_dominant: Option<u8>,
+    /// Cumulative count of distinct dominance declarations fired
+    /// this run, so the summary can show 'F0 crowned 3 times'.
+    pub dominance_shifts: u32,
 }
 
 impl World {
@@ -371,16 +370,11 @@ impl World {
         }
     }
 
-    /// Check whether one faction has crossed the dominance
-    /// threshold (≥ VICTORY_ALIVE_FRACTION of all alive nodes, or
-    /// is the last faction with any alive C2 and more than one
-    /// faction ever existed). Fires a mythic log and sets the
-    /// `victory_tick` so the main loop exits after
-    /// VICTORY_LAP_TICKS more ticks.
+    /// Recompute which faction (if any) currently holds dominance
+    /// and emit a log line when the holder changes. Dominance is
+    /// purely a tracked stat — the sim never auto-ends on it, the
+    /// holder is just surfaced in the UI and summary screen.
     fn maybe_declare_victory(&mut self) {
-        if self.victory_tick.is_some() {
-            return;
-        }
         if self.faction_stats.len() < 2 {
             return;
         }
@@ -398,7 +392,7 @@ impl World {
         if total_alive < 20 {
             return;
         }
-        // Last-C2-standing: only one faction still has an alive C2.
+        // Last-C2-standing check first.
         let alive_c2s: Vec<u8> = self
             .c2_nodes
             .iter()
@@ -410,30 +404,47 @@ impl World {
                 }
             })
             .collect();
-        if alive_c2s.len() == 1 {
-            let winner = alive_c2s[0];
-            self.victory_tick = Some(self.tick + VICTORY_LAP_TICKS);
-            self.winner_faction = Some(winner);
-            self.push_log(format!(
-                "✦ DOMINANCE ✦ F{} is the last C2 standing",
-                winner
-            ));
-            return;
-        }
-        // Alive-majority: one faction holds >= VICTORY_ALIVE_FRACTION.
-        let threshold = (total_alive as f32 * VICTORY_ALIVE_FRACTION) as usize;
-        if let Some((winner_idx, _)) =
-            counts.iter().enumerate().max_by_key(|(_, &c)| c)
-        {
-            if counts[winner_idx] >= threshold {
-                self.victory_tick = Some(self.tick + VICTORY_LAP_TICKS);
-                self.winner_faction = Some(winner_idx as u8);
-                self.push_log(format!(
-                    "✦ DOMINANCE ✦ F{} controls {:.0}% of the mesh",
-                    winner_idx,
-                    (counts[winner_idx] as f32 / total_alive as f32) * 100.0
-                ));
+        let new_dominant: Option<u8> = if alive_c2s.len() == 1 {
+            Some(alive_c2s[0])
+        } else {
+            // Alive-majority: one faction holds >= VICTORY_ALIVE_FRACTION.
+            let threshold = (total_alive as f32 * VICTORY_ALIVE_FRACTION) as usize;
+            counts
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, &c)| c)
+                .filter(|&(_, &c)| c >= threshold)
+                .map(|(i, _)| i as u8)
+        };
+        if new_dominant != self.current_dominant {
+            if let Some(prev) = self.current_dominant {
+                if new_dominant.is_none() {
+                    self.push_log(format!(
+                        "F{} loses dominance — the mesh fragments",
+                        prev
+                    ));
+                }
             }
+            if let Some(winner) = new_dominant {
+                let pct = counts
+                    .get(winner as usize)
+                    .copied()
+                    .map(|c| (c as f32 / total_alive as f32) * 100.0)
+                    .unwrap_or(0.0);
+                self.dominance_shifts = self.dominance_shifts.saturating_add(1);
+                if alive_c2s.len() == 1 {
+                    self.push_log(format!(
+                        "✦ DOMINANCE ✦ F{} is the last C2 standing",
+                        winner
+                    ));
+                } else {
+                    self.push_log(format!(
+                        "✦ DOMINANCE ✦ F{} controls {:.0}% of the mesh",
+                        winner, pct
+                    ));
+                }
+            }
+            self.current_dominant = new_dominant;
         }
     }
 
@@ -945,8 +956,8 @@ impl World {
             personas,
             faction_colors,
             wars: HashMap::new(),
-            victory_tick: None,
-            winner_faction: None,
+            current_dominant: None,
+            dominance_shifts: 0,
         }
     }
 

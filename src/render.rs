@@ -307,7 +307,7 @@ pub fn draw_summary(frame: &mut Frame, world: &World, meta: &SummaryMeta<'_>) {
         .iter()
         .filter(|n| matches!(n.state, State::Alive))
         .count();
-    let subtitle_spans = if let Some(winner) = world.winner_faction {
+    let subtitle_spans = if let Some(winner) = world.current_dominant {
         let hue = faction_hue(world, winner);
         let persona = world
             .personas
@@ -472,6 +472,11 @@ fn summary_totals_block(world: &World) -> Paragraph<'static> {
         row("cured", format!("{}", total_cured), th.defender),
         row("traps", format!("{}", total_honeys), th.accent),
         row("intel", format!("{}", total_intel), th.stat_packets),
+        row(
+            "shifts",
+            format!("{}", world.dominance_shifts),
+            th.accent,
+        ),
         row("alive", format!("{}", alive), th.value),
         row("dead", format!("{}", dead), th.ghost),
         row("branches", format!("{}", branches.len()), th.frame_accent),
@@ -620,6 +625,18 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
         spans.push(stat_span(
             "factions",
             format!("{}", world.faction_stats.len()),
+        ));
+    }
+    // Live dominance readout: when a faction holds the majority
+    // threshold, show a '✦ F{N} dominant' badge in its own hue
+    // so the viewer can see the current leader at a glance.
+    if let Some(winner) = world.current_dominant {
+        spans.push(sep());
+        spans.push(Span::styled(
+            format!("✦ F{} dominant", winner),
+            Style::default()
+                .fg(faction_hue(world, winner))
+                .add_modifier(Modifier::BOLD),
         ));
     }
     spans.push(sep());
