@@ -90,6 +90,7 @@ fn packet_reaches_c2_and_drops() {
         quarantined: 0,
         packets_delivered: 0,
         is_backbone: false,
+        black_market_until: 0,
         latent: false,
     });
     let path_ab: Vec<(i16, i16)> = (10..=14).map(|x| (x, 10)).collect();
@@ -106,6 +107,7 @@ fn packet_reaches_c2_and_drops() {
         quarantined: 0,
         packets_delivered: 0,
         is_backbone: false,
+        black_market_until: 0,
         latent: false,
     });
     // Force the Exfil to fire on tick 0 and then tick enough for the
@@ -153,6 +155,7 @@ fn cross_link_saves_reachable_node_from_cascade() {
         quarantined: 0,
         packets_delivered: 0,
         is_backbone: false,
+        black_market_until: 0,
         latent: false,
     });
     let cascade = w.compute_cascade(a);
@@ -359,6 +362,7 @@ fn worm_delivered_to_alive_neighbor() {
         quarantined: 0,
         packets_delivered: 0,
         is_backbone: false,
+        black_market_until: 0,
         latent: false,
     });
     // Launch a worm from a → b manually and tick the worm advance step
@@ -679,6 +683,7 @@ fn link_load_accumulates_and_decays() {
         quarantined: 0,
         packets_delivered: 0,
         is_backbone: false,
+        black_market_until: 0,
         latent: false,
     });
     // Park a packet on the link and tick the motion phase a few times.
@@ -969,6 +974,7 @@ fn ghost_packet_delivers_without_crediting_intel() {
         quarantined: 0,
         packets_delivered: 0,
         is_backbone: false,
+        black_market_until: 0,
         latent: false,
     });
     let intel_before = w.faction_stats[0].intel;
@@ -1082,6 +1088,7 @@ fn drought_tightens_effective_hot_link_while_active() {
         quarantined: 0,
         packets_delivered: 0,
         is_backbone: false,
+        black_market_until: 0,
         latent: false,
     };
     assert!(!w.is_droughted());
@@ -1097,6 +1104,7 @@ fn drought_tightens_effective_hot_link_while_active() {
     // Backbone links get the same penalty off their inflated base.
     let backbone = Link {
         is_backbone: true,
+        black_market_until: 0,
         ..link
     };
     assert_eq!(
@@ -1781,6 +1789,7 @@ fn large_cascade_can_resurrect_a_new_c2() {
             quarantined: 0,
             packets_delivered: 0,
             is_backbone: false,
+        black_market_until: 0,
             latent: false,
         });
     };

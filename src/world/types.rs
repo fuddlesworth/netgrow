@@ -383,6 +383,13 @@ pub struct Link {
     /// backbones even if traffic dries up, so the label reads as
     /// "this chain mattered once".
     pub is_backbone: bool,
+    /// Tick at which this link's black-market status expires.
+    /// While nonzero and > current tick, the link enjoys a
+    /// backbone-level HOT_LINK ceiling regardless of delivery
+    /// history, and collapses immediately if an active ISP
+    /// outage touches any cell in its path. Set by Opportunist
+    /// factions' maybe_spawn_black_market_link pass.
+    pub black_market_until: u64,
 }
 
 #[derive(Clone, Debug)]

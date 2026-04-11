@@ -144,6 +144,7 @@ impl World {
             quarantined: 0,
             packets_delivered: 0,
             is_backbone: false,
+            black_market_until: 0,
             latent,
         });
         if latent {
@@ -543,6 +544,7 @@ impl World {
             quarantined: 0,
             packets_delivered: 0,
             is_backbone: false,
+            black_market_until: 0,
             latent: false,
         });
 

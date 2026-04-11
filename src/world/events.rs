@@ -432,6 +432,33 @@ impl World {
                 }
             }
         }
+        // Black-market links collapse when an ISP outage touches
+        // any cell in their path. Unlicensed fiber is
+        // structurally fragile — ISP pressure instantly kills
+        // the uplift. Cleared by setting black_market_until back
+        // to 0 so effective_hot_link reverts to baseline.
+        let mut collapsed = 0u32;
+        for link in self.links.iter_mut() {
+            if link.black_market_until <= self.tick {
+                continue;
+            }
+            for &(x0, y0, x1, y1) in &zones {
+                if link.path.iter().any(|&(px, py)| {
+                    px >= x0 && px <= x1 && py >= y0 && py <= y1
+                }) {
+                    link.black_market_until = 0;
+                    link.load = 0;
+                    collapsed += 1;
+                    break;
+                }
+            }
+        }
+        if collapsed > 0 {
+            self.push_log(format!(
+                "black market collapse — {} uplinks seized",
+                collapsed
+            ));
+        }
         for o in self.outages.iter_mut() {
             o.age = o.age.saturating_add(1);
         }

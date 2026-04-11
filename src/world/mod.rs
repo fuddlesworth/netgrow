@@ -961,12 +961,15 @@ impl World {
     }
 
     /// Effective hot-link ceiling for a given link, folding in
-    /// backbone status and any active bandwidth drought. Packet
-    /// routing, exfil backpressure, and router upgrade logic all
-    /// read this so a drought brings visible throttling across
-    /// every traffic subsystem in one edit.
+    /// backbone status, temporary black-market uplifts, and any
+    /// active bandwidth drought. Packet routing, exfil
+    /// backpressure, and router upgrade logic all read this so
+    /// a drought brings visible throttling across every traffic
+    /// subsystem in one edit.
     pub fn effective_hot_link(&self, link: &Link) -> u8 {
-        let base = if link.is_backbone {
+        let is_uplifted =
+            link.is_backbone || link.black_market_until > self.tick;
+        let base = if is_uplifted {
             BACKBONE_HOT_LINK
         } else {
             HOT_LINK
@@ -2372,6 +2375,70 @@ impl World {
         });
     }
 
+    /// Black-market link pass. Opportunist factions periodically
+    /// upgrade one of their own cross-links to temporary
+    /// backbone-grade capacity for a window (~500 ticks). While
+    /// active, `effective_hot_link` reads backbone-level ceiling
+    /// so packets route freely even under mild drought pressure.
+    /// Collapses immediately if an active ISP outage touches any
+    /// cell in the link's path — black-market fiber is
+    /// "unlicensed" and falls apart under regulatory pressure.
+    fn maybe_black_market_link(&mut self) {
+        if !self.tick.is_multiple_of(400) || self.tick == 0 {
+            return;
+        }
+        // Pick one Opportunist faction that's still alive.
+        let opportunists: Vec<u8> = (0..self.c2_nodes.len() as u8)
+            .filter(|&f| {
+                let persona =
+                    self.personas.get(f as usize).copied().unwrap_or(Persona::Aggressor);
+                if !matches!(persona, Persona::Opportunist) {
+                    return false;
+                }
+                let c2 = self.c2_nodes[f as usize];
+                matches!(self.nodes[c2].state, State::Alive)
+            })
+            .collect();
+        if opportunists.is_empty() {
+            return;
+        }
+        if !self.rng.gen_bool(0.5) {
+            return;
+        }
+        let faction = opportunists[self.rng.gen_range(0..opportunists.len())];
+        // Find a cross-link with at least one endpoint in the
+        // opportunist's faction. Prefer links that aren't
+        // already uplifted.
+        let candidates: Vec<usize> = self
+            .links
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| {
+                if l.kind != LinkKind::Cross || l.latent {
+                    return None;
+                }
+                if l.black_market_until > self.tick {
+                    return None;
+                }
+                let fa = self.nodes[l.a].faction;
+                let fb = self.nodes[l.b].faction;
+                (fa == faction || fb == faction).then_some(i)
+            })
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let pick = candidates[self.rng.gen_range(0..candidates.len())];
+        let duration: u64 = 500;
+        self.links[pick].black_market_until = self.tick + duration;
+        let a_pos = self.nodes[self.links[pick].a].pos;
+        let (oa, ob) = octet_pair(a_pos);
+        self.push_log(format!(
+            "black market uplift @ 10.0.{}.{} — F{}",
+            oa, ob, faction
+        ));
+    }
+
     /// Mercenary auction pass. Walks alive nodes tagged with
     /// `MERCENARY_FACTION` (unaffiliated) and flips each to the
     /// alive faction with the highest intel that can afford the
@@ -3115,6 +3182,7 @@ impl World {
         }
         self.maybe_assimilate();
         self.maybe_mercenary_auction();
+        self.maybe_black_market_link();
         self.maybe_defector();
         self.maybe_border_skirmish();
 
