@@ -17,11 +17,6 @@ use crate::world::{
 /// empty background cells. Generous enough that territory blobs
 /// merge into continuous regions around clustered factions.
 const TERRITORY_RADIUS: i16 = 6;
-/// Solid block char used for the faction territory background tint.
-/// Day and night both use this shade — only the style modifier
-/// changes (DIM at night) so the territory always reads as the
-/// same shape, just darker after sundown.
-const TERRITORY_GLYPH: &str = "░";
 
 const RIGHT_COL_WIDTH: u16 = 41;
 const HEADER_HEIGHT: u16 = 1;
@@ -1613,13 +1608,16 @@ impl<'a> Widget for MeshWidget<'a> {
         let w = self.world;
         let th = theme();
 
-        // 0a. Faction territory tint — a multi-source BFS from every
-        // alive node stains empty cells within TERRITORY_RADIUS with
-        // the nearest faction's hue. Painted first so links, nodes,
-        // and every later effect overwrite it naturally. Makes
-        // borders, assimilation shifts, and skirmish frontiers
-        // visible in the background without competing with foreground
-        // mesh state.
+        // 0a. Faction territory — a multi-source BFS from every
+        // alive node records which faction owns each cell within
+        // TERRITORY_RADIUS. We build the map here and skip the
+        // foreground glyph pass entirely: the actual coloring is
+        // done by the bg post-pass below (for empty cells) and
+        // by bg values baked into every node and link style at
+        // draw time (for occupied cells). Merging those two
+        // sources into a single uniform bg makes the territory
+        // read as one solid colored region with the brighter
+        // fg glyphs sitting inside.
         let bounds = w.bounds;
         let mut territory: std::collections::HashMap<(i16, i16), u8> =
             std::collections::HashMap::new();
@@ -1658,40 +1656,11 @@ impl<'a> Widget for MeshWidget<'a> {
                 queue.push_back((np, f, d + 1));
             }
         }
-        // Atmospheric mood drives the modifier on the territory
-        // tint. Day uses the raw faction hue (matching the header
-        // bar exactly); night layers DIM on top so the territory
-        // visibly darkens at sundown. The glyph itself stays the
-        // same solid block in both states.
         let night = w.is_night();
         let storming = w.is_storming();
         let node_cells: std::collections::HashSet<(i16, i16)> =
             w.nodes.iter().map(|n| n.pos).collect();
-        for (&cell, &fac) in &territory {
-            // Don't waste writes under nodes — their glyphs would
-            // overwrite us anyway and we want the tint to read as
-            // strictly surround rather than underlay.
-            if node_cells.contains(&cell) {
-                continue;
-            }
-            // Day brightens the base faction hue (blend toward
-            // white) so territory reads as "lit up"; night uses
-            // the base hue unchanged so it stays at the same
-            // brightness as the header bar and leaderboard,
-            // without risking a dim variant that disappears on
-            // dark-panel themes like aretha-dark.
-            let base_hue = faction_hue(w, fac);
-            let resolved = if night || storming {
-                base_hue
-            } else {
-                brighten_rgb(base_hue, 0.3)
-            };
-            let mut style = Style::default().fg(resolved);
-            if !night && !storming {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-            put(buf, area, cell, TERRITORY_GLYPH, style);
-        }
+        let _ = night; // kept for potential future day/night bg tuning
 
         // 0a-quater. Fiber hotspot zones — persistent fixed
         // terrain rolled at world creation. Drawn after territory
@@ -2608,23 +2577,6 @@ fn outage_bg(c: Color) -> Color {
     }
 }
 
-/// Blend an RGB color toward white by `factor` (0.0–1.0). Used to
-/// brighten the daytime faction territory tint so day reads as
-/// "lit up" against the base-color night. Named color variants
-/// pass through unchanged; in practice every shipped theme's
-/// faction_palette is explicit Color::Rgb so the pass-through
-/// branch isn't hit.
-fn brighten_rgb(c: Color, factor: f32) -> Color {
-    let f = factor.clamp(0.0, 1.0);
-    match c {
-        Color::Rgb(r, g, b) => Color::Rgb(
-            (r as f32 + (255.0 - r as f32) * f) as u8,
-            (g as f32 + (255.0 - g as f32) * f) as u8,
-            (b as f32 + (255.0 - b as f32) * f) as u8,
-        ),
-        other => other,
-    }
-}
 
 fn faction_hue(world: &World, faction: u8) -> Color {
     let palette = &theme().faction_palette;
