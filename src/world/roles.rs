@@ -61,7 +61,11 @@ impl World {
                 }
             })
             .collect();
+        // (scanner_pos, scanner_faction) — collected so the
+        // sighting pass downstream can attribute each spot to the
+        // right faction without re-reading the scanner's state.
         let mut fired_positions: Vec<(i16, i16)> = Vec::new();
+        let mut scanner_info: Vec<((i16, i16), u8)> = Vec::new();
         for id in scanner_ids {
             // Pick a direction so the spawn bias in try_spawn still favors
             // growth along the scanner's last sweep. Pulled out of the
@@ -78,12 +82,50 @@ impl World {
             } else {
                 SCANNER_PULSE_TICKS
             };
+            let faction = self.nodes[id].faction;
             let n = &mut self.nodes[id];
             n.role_cooldown = period;
             n.last_ping_tick = now;
             n.last_ping_dir = Some((dx as i8, dy as i8));
             n.scan_pulse = pulse_ticks;
             fired_positions.push(n.pos);
+            scanner_info.push((n.pos, faction));
+        }
+        // Scanner sightings: each fired scanner rolls a small
+        // chance to spot one enemy-faction alive node within its
+        // pulse radius and log it. Rate-limited to one sighting
+        // per scanner per fire so the log doesn't flood.
+        if !scanner_info.is_empty() {
+            let sight_radius = self.cfg.proxy_radius;
+            for (spos, sfaction) in &scanner_info {
+                // Collect candidate enemy positions for this
+                // scanner and pick one.
+                let mut cands: Vec<(i16, i16, u8)> = Vec::new();
+                for n in &self.nodes {
+                    if !matches!(n.state, State::Alive) {
+                        continue;
+                    }
+                    if n.faction == *sfaction {
+                        continue;
+                    }
+                    let d = (n.pos.0 - spos.0).abs().max((n.pos.1 - spos.1).abs());
+                    if d <= sight_radius {
+                        cands.push((n.pos.0, n.pos.1, n.faction));
+                    }
+                }
+                if cands.is_empty() {
+                    continue;
+                }
+                if !self.rng.gen_bool(0.35) {
+                    continue;
+                }
+                let (ex, ey, ef) = cands[self.rng.gen_range(0..cands.len())];
+                let (oa, ob) = super::octet_pair((ex, ey));
+                self.push_log(format!(
+                    "F{} scanner spotted F{} asset @ 10.0.{}.{}",
+                    sfaction, ef, oa, ob
+                ));
+            }
         }
         // Proxies within proxy_radius of any fired scanner echo the
         // pulse on the same tick, so a single scanner firing lights
