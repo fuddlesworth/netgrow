@@ -509,6 +509,29 @@ fn main() -> io::Result<()> {
                             c.1 = (c.1 + 1).min(mesh_bounds.1 - 1);
                         }
                     }
+                    // Cursor actions: only active when the inspector
+                    // cursor is on. Each key drops the corresponding
+                    // event/effect at the cursor position.
+                    (KeyCode::Char('p'), _) if cursor.is_some() => {
+                        if let Some(c) = cursor {
+                            world.inject_patch_wave(c);
+                        }
+                    }
+                    (KeyCode::Char('s'), _) if cursor.is_some() => {
+                        if let Some(c) = cursor {
+                            world.inject_scanner_pulse(c);
+                        }
+                    }
+                    (KeyCode::Char('c'), _) if cursor.is_some() => {
+                        if let Some(c) = cursor {
+                            world.inject_c2(c);
+                        }
+                    }
+                    (KeyCode::Char('w'), _) if cursor.is_some() => {
+                        if let Some(c) = cursor {
+                            world.inject_wormhole(c);
+                        }
+                    }
                     _ => {}
                 }
             }

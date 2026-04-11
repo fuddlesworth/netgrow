@@ -386,6 +386,111 @@ impl World {
         }
     }
 
+    /// Drop a patch wave at `origin`. Uses the same geometry as
+    /// the heartbeat-driven waves so the visual/mechanic is
+    /// identical; it's just triggered by a keybind instead of the
+    /// timer. Used by the cursor-action hotkey 'p'.
+    pub fn inject_patch_wave(&mut self, origin: (i16, i16)) {
+        self.patch_waves.push(PatchWave { origin, radius: 0 });
+        let (a, b) = octet_pair(origin);
+        self.push_log(format!("patch wave injected @ 10.0.{}.{}", a, b));
+    }
+
+    /// Force the alive node (if any) nearest `origin` to fire a
+    /// scanner ping. If no alive node sits on the exact cell, the
+    /// closest Chebyshev neighbor within radius 2 is used. Used by
+    /// the cursor-action hotkey 's'.
+    pub fn inject_scanner_pulse(&mut self, origin: (i16, i16)) {
+        let pick = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| matches!(n.state, State::Alive))
+            .min_by_key(|(_, n)| {
+                (n.pos.0 - origin.0).abs().max((n.pos.1 - origin.1).abs())
+            });
+        let Some((id, node)) = pick else {
+            self.push_log("scanner pulse refused: no alive node".to_string());
+            return;
+        };
+        let dist = (node.pos.0 - origin.0).abs().max((node.pos.1 - origin.1).abs());
+        if dist > 4 {
+            self.push_log("scanner pulse refused: no nearby node".to_string());
+            return;
+        }
+        self.nodes[id].scan_pulse = SCANNER_PULSE_TICKS.saturating_mul(2);
+        self.nodes[id].role_cooldown = 0;
+        let pos = self.nodes[id].pos;
+        self.log_node(pos, "scanner pulse injected");
+    }
+
+    /// Plant a fresh C2 / new faction at `origin` if the cell is
+    /// empty and in-bounds. The new faction gets its own persona,
+    /// random palette slot, and full HP reservoir. Used by the
+    /// cursor-action hotkey 'c'.
+    pub fn inject_c2(&mut self, origin: (i16, i16)) {
+        if origin.0 < 0
+            || origin.1 < 0
+            || origin.0 >= self.bounds.0
+            || origin.1 >= self.bounds.1
+        {
+            self.push_log("c2 plant refused: out of bounds".to_string());
+            return;
+        }
+        if self.occupied.contains(&origin) {
+            self.push_log("c2 plant refused: cell occupied".to_string());
+            return;
+        }
+        let new_faction = self.c2_nodes.len() as u8;
+        let mut node = Node::fresh(origin, None, self.tick, Role::Relay, 0);
+        node.faction = new_faction;
+        node.pwn_resist = C2_INITIAL_HP;
+        node.mutated_flash = 12;
+        let id = self.nodes.len();
+        self.nodes.push(node);
+        self.occupied.insert(origin);
+        self.c2_nodes.push(id);
+        self.faction_stats.push(FactionStats::default());
+        let persona = match self.rng.gen_range(0..4u8) {
+            0 => Persona::Aggressor,
+            1 => Persona::Fortress,
+            2 => Persona::Plague,
+            _ => Persona::Opportunist,
+        };
+        self.personas.push(persona);
+        let palette_len = crate::theme::theme().faction_palette.len().max(1);
+        self.faction_colors.push(self.rng.gen_range(0..palette_len));
+        let (a, b) = octet_pair(origin);
+        self.push_log(format!(
+            "✦ c2 planted ✦ F{} online @ 10.0.{}.{}",
+            new_faction, a, b
+        ));
+    }
+
+    /// Spawn a wormhole connecting `origin` to a random alive cell
+    /// elsewhere on the mesh. Used by the cursor-action hotkey 'w'.
+    pub fn inject_wormhole(&mut self, origin: (i16, i16)) {
+        let alive: Vec<(i16, i16)> = self
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.state, State::Alive) && n.pos != origin)
+            .map(|n| n.pos)
+            .collect();
+        if alive.is_empty() {
+            self.push_log("wormhole refused: no other alive node".to_string());
+            return;
+        }
+        let other = alive[self.rng.gen_range(0..alive.len())];
+        let life = self.cfg.wormhole_life_ticks;
+        self.wormholes.push(Wormhole {
+            a: origin,
+            b: other,
+            age: 0,
+            life,
+        });
+        self.push_log("wormhole injected".to_string());
+    }
+
     /// Canonical-pair key for the rivalry map. Always (min, max) so
     /// either argument order produces the same lookup. Returns None
     /// if both factions are the same — self-rivalries are nonsense.
