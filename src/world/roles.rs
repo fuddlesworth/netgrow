@@ -347,7 +347,7 @@ impl World {
         // The worm travels like a regular worm but cures the
         // target's infection on arrival instead of infecting.
         for did in curing_defenders {
-            if !self.rng.gen_bool(0.45) {
+            if !self.rng.gen_bool(0.65) {
                 continue;
             }
             let outgoing: Vec<(usize, bool)> = self

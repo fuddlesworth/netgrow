@@ -202,7 +202,7 @@ impl World {
                 self.log_node(pos, "pkt drop");
             }
         }
-        if rerouted_count >= 4 {
+        if rerouted_count >= 2 {
             self.push_log(format!("{} pkts rerouted via cross-links", rerouted_count));
         }
     }
