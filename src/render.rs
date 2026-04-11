@@ -103,14 +103,14 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
         mesh_inner,
     );
 
-    let inspector_height: u16 = if ui.cursor.is_some() { 11 } else { 0 };
+    let inspector_height: u16 = if ui.cursor.is_some() { 13 } else { 0 };
     // factions panel sizes to exactly fit its rows + border. Always
     // reserve at least one content row so the border has something
     // to frame even on a fresh single-faction run.
     let faction_rows = world.faction_stats.len().max(1) as u16;
     let factions_height: u16 = faction_rows + 2;
     let right_rows = Layout::vertical([
-        Constraint::Length(8), // stats: 6 content rows + border
+        Constraint::Length(9), // stats: 7 content rows + border
         Constraint::Length(5), // activity: 3 braille content rows + border
         Constraint::Length(factions_height), // per-faction prestige rows + border
         Constraint::Length(7), // roles: 5 content rows + border
@@ -119,7 +119,10 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     ])
     .split(right_col);
 
-    frame.render_widget(stats_block(&stats, world.cfg.max_nodes), right_rows[0]);
+    frame.render_widget(
+        stats_block(world, &stats, world.cfg.max_nodes),
+        right_rows[0],
+    );
     frame.render_widget(activity_block(world, right_rows[1].width), right_rows[1]);
     frame.render_widget(factions_block(world), right_rows[2]);
     frame.render_widget(legend_block(), right_rows[3]);
@@ -433,7 +436,11 @@ fn sep() -> Span<'static> {
     Span::styled(" · ", Style::default().fg(theme().ghost))
 }
 
-fn stats_block(s: &WorldStats, max_nodes: usize) -> Paragraph<'static> {
+fn stats_block(
+    world: &World,
+    s: &WorldStats,
+    max_nodes: usize,
+) -> Paragraph<'static> {
     let th = theme();
     let block = bordered_block(" stats ");
     let label_style = Style::default().fg(th.stat_label);
@@ -454,22 +461,70 @@ fn stats_block(s: &WorldStats, max_nodes: usize) -> Paragraph<'static> {
                 Span::styled(bar, Style::default().fg(color)),
             ])
         };
-    let row_plain = |label: &'static str, value: usize, color: Color| -> Line<'static> {
+    // Double-column plain row: two label+value pairs sharing a row.
+    // Used for derived counters that don't need bars.
+    let row_pair = |la: &'static str,
+                    va: usize,
+                    ca: Color,
+                    lb: &'static str,
+                    vb: usize,
+                    cb: Color|
+     -> Line<'static> {
         Line::from(vec![
-            Span::styled(format!(" {:<9}", label), label_style),
+            Span::styled(format!(" {:<8}", la), label_style),
             Span::styled(
-                format!("{}", value),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
+                format!("{:<5}", va),
+                Style::default().fg(ca).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("{:<7}", lb), label_style),
+            Span::styled(
+                format!("{}", vb),
+                Style::default().fg(cb).add_modifier(Modifier::BOLD),
             ),
         ])
     };
+    // Derived counters. Routers and legendary nodes scan the node
+    // list directly — small enough to stay within a single render
+    // frame's budget.
+    let routers = world
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.state, State::Alive) && n.role == Role::Router)
+        .count();
+    let legends = world
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.state, State::Alive) && n.legendary_name != u16::MAX)
+        .count();
     let lines = vec![
         row_with_bar("alive", s.alive, alive_color),
         row_with_bar("pwned", s.pwned, th.pwned),
         row_with_bar("dying", s.dying, th.log_cascade),
         row_with_bar("dead", s.dead, th.ghost),
-        row_plain("branches", s.branches, branch_color),
-        row_plain("bridges", s.cross_links, th.cross_link),
+        row_pair(
+            "branches",
+            s.branches,
+            branch_color,
+            "bridges",
+            s.cross_links,
+            th.cross_link,
+        ),
+        row_pair(
+            "infected",
+            s.infected,
+            th.stat_infected,
+            "packets",
+            s.packets,
+            th.stat_packets,
+        ),
+        row_pair(
+            "routers",
+            routers,
+            th.value,
+            "legends",
+            legends,
+            th.accent,
+        ),
     ];
     Paragraph::new(lines).block(block)
 }
@@ -644,24 +699,66 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
                 State::Dead => "dead".to_string(),
             };
             lines.push(row("state", state_name));
-            lines.push(row("faction", format!("{}", n.faction)));
+            // faction row shows the faction number + persona so the
+            // viewer can tell who this node is serving at a glance.
+            let persona = world
+                .personas
+                .get(n.faction as usize)
+                .copied()
+                .map(|p| p.display_name())
+                .unwrap_or("?");
+            lines.push(row("faction", format!("{} {}", n.faction, persona)));
             lines.push(row("branch", format!("{}", n.branch_id)));
             let age = world.tick.saturating_sub(n.born);
-            lines.push(row("age", format!("{}t", age)));
+            lines.push(row(
+                "age",
+                format!("{}t · kids {}", age, n.children_spawned),
+            ));
+            // Dedicated infection row so strain + stage + resist +
+            // veteran rank all live in one place instead of being
+            // squashed into the flags line.
+            if let Some(inf) = n.infection {
+                let stage = match inf.stage {
+                    InfectionStage::Incubating => "inc",
+                    InfectionStage::Active => "act",
+                    InfectionStage::Terminal => "term",
+                };
+                let kind = if inf.is_ransom { " RANSOM" } else { "" };
+                let vet = if inf.veteran_rank > 0 {
+                    format!(" v{}", inf.veteran_rank)
+                } else {
+                    String::new()
+                };
+                lines.push(row(
+                    "virus",
+                    format!(
+                        "{} {} r{}{}{}",
+                        world.strain_name(inf.strain),
+                        stage,
+                        inf.cure_resist,
+                        vet,
+                        kind
+                    ),
+                ));
+            }
+            // Flags: bool and counter badges worth surfacing. Only
+            // shows the ones that are currently meaningful so an
+            // idle relay's flag row stays short.
             let mut tags: Vec<String> = Vec::new();
             if n.hardened {
                 tags.push("hardened".into());
             }
-            if n.dying_in > 0 {
-                tags.push(format!("dying({}t)", n.dying_in));
+            if n.pwn_resist > 0 {
+                tags.push(format!("resist {}", n.pwn_resist));
             }
-            if let Some(inf) = n.infection {
-                let stage = match inf.stage {
-                    InfectionStage::Incubating => "incubating",
-                    InfectionStage::Active => "active",
-                    InfectionStage::Terminal => "terminal",
-                };
-                tags.push(format!("{} {}", world.strain_name(inf.strain), stage));
+            if n.role_cooldown > 0 {
+                tags.push(format!("cd {}", n.role_cooldown));
+            }
+            if !n.hardened && n.heartbeats > 0 {
+                tags.push(format!("hb {}/{}", n.heartbeats, world.cfg.hardened_after_heartbeats));
+            }
+            if n.dying_in > 0 {
+                tags.push(format!("dying {}", n.dying_in));
             }
             let tag_text = if tags.is_empty() {
                 "—".to_string()
