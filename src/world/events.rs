@@ -124,7 +124,10 @@ impl World {
                 node.state = State::Pwned {
                     ticks_left: pwned_flash,
                 };
-                self.log_node(pos, "skirmish LOST");
+                self.log_node(
+                    pos,
+                    &format!("skirmish LOST F{}→F{}", enemy_faction, victim_faction),
+                );
                 self.bump_rivalry(victim_faction, enemy_faction, 6);
             }
         }

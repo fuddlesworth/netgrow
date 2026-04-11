@@ -219,7 +219,10 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
                 Constraint::Min(5),
             ])
             .split(right_col);
-            frame.render_widget(minimap_block(world, right_rows[0].width), right_rows[0]);
+            frame.render_widget(
+                minimap_block(world, right_rows[0].width, ui.cursor),
+                right_rows[0],
+            );
             frame.render_widget(rivalries_block(world), right_rows[1]);
             frame.render_widget(events_block(world), right_rows[2]);
             if let Some(pos) = ui.cursor {
@@ -907,6 +910,8 @@ fn footer_bar(ui: UiState) -> Paragraph<'static> {
                 format!(" view ({}) ", ui.view.label()),
                 Style::default().fg(th.label),
             ),
+            key("i"),
+            lab(" infect "),
             key("1-9"),
             lab(" favor "),
         ]);
@@ -1097,7 +1102,7 @@ fn factions_block(world: &World) -> Paragraph<'static> {
 /// Birds-eye view of the mesh rendered as a coarse grid of cells,
 /// each cell colored by the dominant faction of the mesh block it
 /// represents. Used by the Intel view's minimap panel.
-fn minimap_block(world: &World, panel_width: u16) -> Paragraph<'static> {
+fn minimap_block(world: &World, panel_width: u16, cursor: Option<(i16, i16)>) -> Paragraph<'static> {
     let th = theme();
     let block = bordered_block(" minimap ");
     let cols = panel_width.saturating_sub(2).max(1) as usize;
@@ -1122,27 +1127,87 @@ fn minimap_block(world: &World, panel_width: u16) -> Paragraph<'static> {
             }
         }
     }
+    // Overlay markers: C2 positions, hotspot cells, and cursor.
+    let mut c2_cells: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
+    for &c2_id in &world.c2_nodes {
+        let n = &world.nodes[c2_id];
+        if !matches!(n.state, State::Alive) {
+            continue;
+        }
+        let mx = (n.pos.0 as usize * cols) / bx.max(1);
+        let my = (n.pos.1 as usize * rows) / by.max(1);
+        c2_cells.insert(my * cols + mx);
+    }
+    let mut hotspot_cells: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
+    for hot in &world.hotspots {
+        for y in hot.min.1..=hot.max.1 {
+            for x in hot.min.0..=hot.max.0 {
+                let mx = (x as usize * cols) / bx.max(1);
+                let my = (y as usize * rows) / by.max(1);
+                hotspot_cells.insert(my * cols + mx);
+            }
+        }
+    }
+    let cursor_idx: Option<usize> = cursor.map(|(cx, cy)| {
+        let mx = (cx as usize * cols) / bx.max(1);
+        let my = (cy as usize * rows) / by.max(1);
+        my * cols + mx
+    });
     let lines: Vec<Line<'static>> = (0..rows)
         .map(|y| {
             let spans: Vec<Span<'static>> = (0..cols)
                 .map(|x| {
-                    let b = &buckets[y * cols + x];
+                    let idx = y * cols + x;
+                    let b = &buckets[idx];
                     let (best, best_count) = b
                         .iter()
                         .enumerate()
                         .max_by_key(|(_, &c)| c)
                         .map(|(i, &c)| (i, c))
                         .unwrap_or((0, 0));
-                    if best_count == 0 {
-                        Span::styled(" ", Style::default().fg(th.ghost))
-                    } else {
-                        let hue = faction_hue(world, best as u8);
-                        // Paint as a bg-filled cell (space + bg)
-                        // instead of a █ glyph so the minimap
-                        // renders flat solid blocks matching the
-                        // main mesh's bg-wash style.
-                        Span::styled(" ", Style::default().bg(dim_bg(hue)).fg(hue))
+                    let is_cursor = cursor_idx == Some(idx);
+                    let is_c2 = c2_cells.contains(&idx);
+                    let is_hotspot = hotspot_cells.contains(&idx);
+                    if is_cursor {
+                        return Span::styled(
+                            "+",
+                            Style::default()
+                                .fg(th.cursor)
+                                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                        );
                     }
+                    if best_count == 0 {
+                        if is_hotspot {
+                            return Span::styled(
+                                "·",
+                                Style::default().fg(th.frame_accent),
+                            );
+                        }
+                        return Span::styled(" ", Style::default().fg(th.ghost));
+                    }
+                    let hue = faction_hue(world, best as u8);
+                    if is_c2 {
+                        // C2 stands out as a bright bold diamond
+                        // on top of its bucket's faction color.
+                        return Span::styled(
+                            "◆",
+                            Style::default().fg(hue).add_modifier(Modifier::BOLD),
+                        );
+                    }
+                    if is_hotspot {
+                        // Hotspot overlay on a faction bucket.
+                        return Span::styled(
+                            "◇",
+                            Style::default()
+                                .fg(th.frame_accent)
+                                .bg(dim_bg(hue))
+                                .add_modifier(Modifier::BOLD),
+                        );
+                    }
+                    // Normal territory bucket.
+                    Span::styled(" ", Style::default().bg(dim_bg(hue)).fg(hue))
                 })
                 .collect();
             Line::from(spans)
@@ -1443,8 +1508,38 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
             let age = world.tick.saturating_sub(n.born);
             lines.push(row("age", format!("{}t", age)));
             lines.push(row("kids", format!("{}", n.children_spawned)));
+            // Link count: incoming parent + outgoing children +
+            // any cross-links touching this node. Computed from
+            // the links vec so the count always reflects live
+            // state.
+            let link_count = world
+                .links
+                .iter()
+                .filter(|l| {
+                    let a_match = world.nodes[l.a].pos == pos;
+                    let b_match = world.nodes[l.b].pos == pos;
+                    a_match || b_match
+                })
+                .count();
+            if link_count > 0 {
+                lines.push(row("links", format!("{}", link_count)));
+            }
             if n.pwn_resist > 0 {
                 lines.push(row("resist", format!("{}", n.pwn_resist)));
+            }
+            // Post-cure immunity window still active: show the
+            // strain it's immune to and remaining ticks.
+            if n.immunity_ticks > 0 {
+                if let Some(strain) = n.immunity_strain {
+                    lines.push(row(
+                        "immune",
+                        format!(
+                            "{} ({}t)",
+                            world.strain_name(strain),
+                            n.immunity_ticks
+                        ),
+                    ));
+                }
             }
             // Dedicated infection row so strain + stage + resist +
             // veteran rank all live in one place instead of being
@@ -1561,6 +1656,48 @@ fn color_log_line(s: &str) -> Line<'static> {
             .fg(th.header_brand_fg)
             .bg(th.accent)
             .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("✦ WAR") {
+        Style::default()
+            .fg(th.header_brand_fg)
+            .bg(th.pwned)
+            .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("✦ DOMINANCE") {
+        Style::default()
+            .fg(th.header_brand_fg)
+            .bg(th.accent)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else if s.starts_with("✦ FALL") {
+        Style::default()
+            .fg(th.header_brand_fg)
+            .bg(th.pwned)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else if s.starts_with("✦ sleeper") {
+        Style::default()
+            .fg(th.header_brand_fg)
+            .bg(th.log_injected_bg)
+            .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("✦ legend") {
+        Style::default()
+            .fg(th.accent)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else if s.starts_with("✦ favored") {
+        Style::default()
+            .fg(th.accent)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else if s.starts_with("✦ c2 planted") || s.starts_with("✦ hybrid") {
+        Style::default()
+            .fg(th.log_mutated)
+            .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("✦") {
+        // Generic catch-all for any other ✦-prefixed mythic event
+        // so nothing in that tier falls through to log_default.
+        Style::default()
+            .fg(th.accent)
+            .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("⚡ LINK OVERLOAD") {
+        Style::default()
+            .fg(th.log_cascade)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
     } else if s.starts_with("⚡ STORM") || s.starts_with("⚡ DDOS") {
         Style::default()
             .fg(th.pwned)
@@ -1588,7 +1725,11 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default()
             .fg(th.log_mutated)
             .add_modifier(Modifier::BOLD)
-    } else if node_suffix == Some("LOST") || node_suffix == Some("skirmish LOST") {
+    } else if node_suffix == Some("LOST")
+        || node_suffix
+            .map(|t| t.starts_with("skirmish LOST"))
+            .unwrap_or(false)
+    {
         Style::default().fg(th.log_lost).add_modifier(Modifier::BOLD)
     } else if s.starts_with("cascade:") || s.starts_with("HONEYPOT cascade:") {
         Style::default()
@@ -1641,6 +1782,48 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default()
             .fg(th.log_honeypot_bg)
             .add_modifier(Modifier::BOLD)
+    } else if node_suffix == Some("culled by hunter")
+        || node_suffix == Some("antibody cure")
+    {
+        Style::default().fg(th.defender).add_modifier(Modifier::BOLD)
+    } else if node_suffix == Some("antibody launched") {
+        Style::default().fg(th.defender)
+    } else if node_suffix == Some("backbone link forged") {
+        Style::default()
+            .fg(th.frame_accent)
+            .add_modifier(Modifier::BOLD)
+    } else if node_suffix
+        .map(|t| t.starts_with("upgraded →"))
+        .unwrap_or(false)
+    {
+        Style::default().fg(th.value).add_modifier(Modifier::BOLD)
+    } else if s.starts_with("F") && s.contains("persona shift") {
+        Style::default().fg(th.label).add_modifier(Modifier::BOLD)
+    } else if s.starts_with("partition healed")
+        || s.starts_with("ISP outage cleared")
+    {
+        Style::default().fg(th.log_cured)
+    } else if s.starts_with("⚠ ISP OUTAGE") || s.starts_with("✂ PARTITION") {
+        Style::default()
+            .fg(th.pwned_alt)
+            .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("F") && s.contains("loses dominance") {
+        Style::default().fg(th.log_cascade).add_modifier(Modifier::BOLD)
+    } else if s.starts_with("F") && s.contains("scanner spotted") {
+        Style::default().fg(th.scanner)
+    } else if s.starts_with("fiber zone") {
+        Style::default().fg(th.frame_accent).add_modifier(Modifier::DIM)
+    } else if node_suffix == Some("scanner pulse injected")
+        || node_suffix == Some("patch wave injected")
+        || node_suffix == Some("backdoor revealed")
+        || s.starts_with("patch wave injected")
+        || s.starts_with("wormhole injected")
+        || s.starts_with("scanner pulse refused")
+        || s.starts_with("c2 plant refused")
+        || s.starts_with("wormhole refused")
+        || s.starts_with("inject refused")
+    {
+        Style::default().fg(th.value).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(th.log_default)
     };

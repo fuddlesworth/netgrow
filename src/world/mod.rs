@@ -591,6 +591,12 @@ impl World {
     /// timer. Used by the cursor-action hotkey 'p'.
     pub fn inject_patch_wave(&mut self, origin: (i16, i16)) {
         self.patch_waves.push(PatchWave { origin, radius: 0 });
+        // Flash any node sitting at the cursor so the inject has
+        // a visible mesh-side response beyond the log line.
+        if let Some(n) = self.nodes.iter_mut().find(|n| n.pos == origin) {
+            n.mutated_flash = 8;
+            n.pulse = 4;
+        }
         let (a, b) = octet_pair(origin);
         self.push_log(format!("patch wave injected @ 10.0.{}.{}", a, b));
     }
@@ -619,6 +625,7 @@ impl World {
         }
         self.nodes[id].scan_pulse = SCANNER_PULSE_TICKS.saturating_mul(2);
         self.nodes[id].role_cooldown = 0;
+        self.nodes[id].mutated_flash = 8;
         let pos = self.nodes[id].pos;
         self.log_node(pos, "scanner pulse injected");
     }
@@ -680,6 +687,12 @@ impl World {
             return;
         }
         let other = alive[self.rng.gen_range(0..alive.len())];
+        let (oa, ob) = octet_pair(origin);
+        let (ta, tb) = octet_pair(other);
+        self.push_log(format!(
+            "wormhole injected 10.0.{}.{} ↔ 10.0.{}.{}",
+            oa, ob, ta, tb
+        ));
         let life = self.cfg.wormhole_life_ticks;
         self.wormholes.push(Wormhole {
             a: origin,
@@ -687,7 +700,6 @@ impl World {
             age: 0,
             life,
         });
-        self.push_log("wormhole injected".to_string());
     }
 
     /// Canonical-pair key for the rivalry map. Always (min, max) so
