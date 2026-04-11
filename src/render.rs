@@ -2276,6 +2276,72 @@ impl<'a> Widget for MeshWidget<'a> {
             }
         }
 
+        // 4b. Background tint post-pass. Until now territory and
+        // hotspots only painted their glyphs on empty cells, so
+        // the occupied cells (nodes, links, packets, ...) stayed
+        // background-less. Walk back through the territory map
+        // and the hotspot rectangles and set `.bg` on every cell
+        // via cell_mut without touching the existing symbol or
+        // foreground. This makes the whole region read as a
+        // solid color wash underneath the mesh instead of a
+        // loose scatter of shade glyphs on empty ground.
+        for (&cell, &fac) in &territory {
+            let bg = dim_bg(faction_hue(w, fac));
+            let cx = area.x as i32 + cell.0 as i32;
+            let cy = area.y as i32 + cell.1 as i32;
+            if cx < area.x as i32
+                || cy < area.y as i32
+                || cx >= area.right() as i32
+                || cy >= area.bottom() as i32
+            {
+                continue;
+            }
+            if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
+                c.set_bg(bg);
+            }
+        }
+        // Hotspot bg tint: slightly brighter than territory so the
+        // fiber zone reads through regardless of whose territory
+        // it sits inside.
+        for hot in &w.hotspots {
+            for y in hot.min.1..=hot.max.1 {
+                for x in hot.min.0..=hot.max.0 {
+                    let cx = area.x as i32 + x as i32;
+                    let cy = area.y as i32 + y as i32;
+                    if cx < area.x as i32
+                        || cy < area.y as i32
+                        || cx >= area.right() as i32
+                        || cy >= area.bottom() as i32
+                    {
+                        continue;
+                    }
+                    if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
+                        c.set_bg(hotspot_bg(th.frame_accent));
+                    }
+                }
+            }
+        }
+        // Outage bg tint: darken cells inside an active dead zone
+        // so the offline region reads as a bruise on the mesh.
+        for outage in &w.outages {
+            for y in outage.min.1..=outage.max.1 {
+                for x in outage.min.0..=outage.max.0 {
+                    let cx = area.x as i32 + x as i32;
+                    let cy = area.y as i32 + y as i32;
+                    if cx < area.x as i32
+                        || cy < area.y as i32
+                        || cx >= area.right() as i32
+                        || cy >= area.bottom() as i32
+                    {
+                        continue;
+                    }
+                    if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
+                        c.set_bg(outage_bg(th.pwned_alt));
+                    }
+                }
+            }
+        }
+
         // 5. Inspector cursor — drawn last so it sits above everything else.
         // We draw a 5-cell crosshair around the cursor: a reverse-video cell
         // at the position plus four bracket marks at the four diagonals so
@@ -2493,6 +2559,47 @@ fn strain_hue(strain: u8) -> Color {
         return Color::Magenta;
     }
     palette[(strain as usize) % palette.len()]
+}
+
+/// Darken a faction hue to a background-safe shade: very dark so
+/// the foreground glyph stays readable, but still recognizably
+/// the same hue. Named colors pass through unchanged.
+fn dim_bg(c: Color) -> Color {
+    match c {
+        Color::Rgb(r, g, b) => Color::Rgb(
+            (r as f32 * 0.18) as u8,
+            (g as f32 * 0.18) as u8,
+            (b as f32 * 0.18) as u8,
+        ),
+        other => other,
+    }
+}
+
+/// Slightly brighter background shade used for fiber-hotspot
+/// cells — ~25% of the accent hue so the zone reads through the
+/// territory tint but still doesn't compete with foreground.
+fn hotspot_bg(c: Color) -> Color {
+    match c {
+        Color::Rgb(r, g, b) => Color::Rgb(
+            (r as f32 * 0.28) as u8,
+            (g as f32 * 0.28) as u8,
+            (b as f32 * 0.28) as u8,
+        ),
+        other => other,
+    }
+}
+
+/// Darker red tint used for ISP outage cells so the dead region
+/// reads as a bruise regardless of whose territory it overlaps.
+fn outage_bg(c: Color) -> Color {
+    match c {
+        Color::Rgb(r, g, b) => Color::Rgb(
+            (r as f32 * 0.30) as u8,
+            (g as f32 * 0.12) as u8,
+            (b as f32 * 0.12) as u8,
+        ),
+        other => other,
+    }
 }
 
 /// Blend an RGB color toward white by `factor` (0.0–1.0). Used to
