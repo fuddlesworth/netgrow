@@ -176,6 +176,26 @@ pub const TECH_T3_ACTIVE_CHANCE: f64 = 0.22;
 /// down — before a fresh colony roll brings the sim back.
 pub const EXTINCTION_RESEED_DELAY_TICKS: u64 = 600;
 
+/// Minimum alive-node count a branch must reach before it's
+/// eligible to fission off from its parent faction. Smaller
+/// branches don't carry enough weight to read as a meaningful
+/// schism in the log feed.
+pub const FISSION_MIN_BRANCH_SIZE: usize = 15;
+/// Fraction of a branch's population that must be composed of
+/// its persona's **divergent** roles before the branch is flagged
+/// as a fission candidate. 0.5 means "more than half the branch
+/// is pulling against the faction's identity".
+pub const FISSION_DIVERGENCE_THRESHOLD: f32 = 0.5;
+/// Per-sample chance that an eligible divergent branch actually
+/// splits off. Tuned so civil wars feel rare and dramatic rather
+/// than a constant background churn.
+pub const FISSION_ROLL_CHANCE: f64 = 0.18;
+/// Starting pressure for the auto-declared OpenWar between a
+/// fissioned branch and its parent faction. Seeded high so the
+/// relation reads as "dynastic hatred" rather than a quiet
+/// skirmish border.
+pub const FISSION_INITIAL_PRESSURE: u16 = 150;
+
 /// Fraction of total alive nodes a single faction needs to hold
 /// to be counted as the currently-dominant faction. Fires a log
 /// line on transitions, never ends the run — the sim keeps
@@ -670,6 +690,198 @@ impl World {
             }
         }
         counts
+    }
+
+    /// Civil-war / faction-fission pass. Walks every (faction,
+    /// branch_id) group of alive nodes and scores each against its
+    /// parent faction's persona — if the branch is large enough,
+    /// composed mostly of the persona's **divergent** roles, and
+    /// wins a low-probability roll, it breaks away as its own
+    /// faction with a fresh persona derived from its actual role
+    /// mix, a new palette slot, and a pre-seeded OpenWar relation
+    /// with the parent. Opportunist factions never fission because
+    /// they have no ideological core to diverge from.
+    ///
+    /// Called on the faction sample cadence. Returns the number of
+    /// fissions fired this pass (0 or 1 — one per sample to avoid
+    /// churn).
+    fn advance_fission(&mut self) -> u32 {
+        if self.c2_nodes.is_empty() {
+            return 0;
+        }
+        // Pass 1: group alive nodes by (faction, branch_id) so we
+        // can score each subcluster independently. C2 nodes are
+        // skipped — a fissioning branch wouldn't include the C2
+        // itself, that's the anchor being broken away from.
+        let mut groups: HashMap<(u8, u16), Vec<NodeId>> = HashMap::new();
+        for (id, node) in self.nodes.iter().enumerate() {
+            if !matches!(node.state, State::Alive) {
+                continue;
+            }
+            if self.c2_nodes.contains(&id) {
+                continue;
+            }
+            groups
+                .entry((node.faction, node.branch_id))
+                .or_default()
+                .push(id);
+        }
+        // Pass 2: score each group against its parent persona's
+        // divergence profile. Collect only the qualifiers.
+        let mut candidates: Vec<((u8, u16), Vec<NodeId>, f32)> = Vec::new();
+        for ((faction, branch_id), members) in groups {
+            if members.len() < FISSION_MIN_BRANCH_SIZE {
+                continue;
+            }
+            let persona = match self.personas.get(faction as usize).copied() {
+                Some(p) => p,
+                None => continue,
+            };
+            let divergent = persona.divergent_roles();
+            if divergent.is_empty() {
+                continue;
+            }
+            let divergent_count = members
+                .iter()
+                .filter(|&&id| divergent.contains(&self.nodes[id].role))
+                .count();
+            let score = divergent_count as f32 / members.len() as f32;
+            if score >= FISSION_DIVERGENCE_THRESHOLD {
+                candidates.push(((faction, branch_id), members, score));
+            }
+        }
+        if candidates.is_empty() {
+            return 0;
+        }
+        // Sort by divergence descending so the most ideologically
+        // fractured branch gets the first fission roll.
+        candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        if !self.rng.gen_bool(FISSION_ROLL_CHANCE) {
+            return 0;
+        }
+        let ((parent_faction, _branch_id), members, _score) = candidates.remove(0);
+        self.execute_fission(parent_faction, members);
+        1
+    }
+
+    /// Pick the most-connected alive node in `members` as the new
+    /// C2 hub, reparent every other member to it, cut the hub's
+    /// old parent chain, register a fresh faction with a persona
+    /// derived from the branch's role mix, and seed an OpenWar
+    /// relation against the parent. All the state-mutation steps
+    /// live here so `advance_fission` can stay pure-scoring logic.
+    fn execute_fission(&mut self, parent_faction: u8, members: Vec<NodeId>) {
+        if members.is_empty() {
+            return;
+        }
+        // Pick the hub: whichever member has the most children.
+        // Falls back to the first member if everyone has zero.
+        let hub = members
+            .iter()
+            .copied()
+            .max_by_key(|&id| self.nodes[id].children_spawned)
+            .unwrap_or(members[0]);
+        // Derive the new faction's persona from the branch's
+        // actual role mix. Count each persona's signature-role
+        // overlap with the branch; the persona with the best
+        // overlap becomes the new faction's identity. Ties fall
+        // to Opportunist.
+        let role_counts: Vec<(Persona, usize)> = [
+            Persona::Aggressor,
+            Persona::Fortress,
+            Persona::Plague,
+            Persona::Opportunist,
+        ]
+        .into_iter()
+        .map(|p| {
+            let aligned = p.aligned_roles();
+            let n = members
+                .iter()
+                .filter(|&&id| aligned.contains(&self.nodes[id].role))
+                .count();
+            (p, n)
+        })
+        .collect();
+        let new_persona = role_counts
+            .iter()
+            .max_by_key(|(_, n)| *n)
+            .filter(|(_, n)| *n > 0)
+            .map(|(p, _)| *p)
+            .unwrap_or(Persona::Opportunist);
+        let new_faction = self.c2_nodes.len() as u8;
+        let new_branch = self.alloc_branch_id();
+        // Cut the hub's old parent chain and drop any link that
+        // connected hub to its previous parent. The rest of the
+        // members stay connected via their in-branch links.
+        let old_parent = self.nodes[hub].parent.take();
+        if let Some(pid) = old_parent {
+            self.links.retain(|l| {
+                !((l.a == hub && l.b == pid) || (l.a == pid && l.b == hub))
+            });
+        }
+        // Promote hub to C2 state: new faction, new branch, full
+        // pwn reservoir, no parent, visible flash.
+        let hub_pos;
+        {
+            let n = &mut self.nodes[hub];
+            n.faction = new_faction;
+            n.branch_id = new_branch;
+            n.parent = None;
+            n.pwn_resist = C2_INITIAL_HP;
+            n.mutated_flash = 12;
+            n.pulse = 6;
+            hub_pos = n.pos;
+        }
+        // Reparent every other member onto the hub (or a sibling
+        // on the hub's side — simplest correct move is to point
+        // them straight at the hub) and flip their faction + branch.
+        for &id in &members {
+            if id == hub {
+                continue;
+            }
+            let n = &mut self.nodes[id];
+            n.faction = new_faction;
+            n.branch_id = new_branch;
+            n.parent = Some(hub);
+            n.mutated_flash = 8;
+        }
+        // Register the new faction in lockstep across c2_nodes,
+        // faction_stats, personas, faction_colors. Order matters:
+        // every read-side helper keyed by faction id assumes the
+        // length of these four vectors is in sync.
+        self.c2_nodes.push(hub);
+        self.faction_stats.push(FactionStats::default());
+        self.personas.push(new_persona);
+        let palette_len = crate::theme::theme().faction_palette.len().max(1);
+        let color_idx = self.rng.gen_range(0..palette_len);
+        self.faction_colors.push(color_idx);
+        // Seed an OpenWar relation with the parent faction, at
+        // high initial pressure. Canonical key ordering.
+        let (ka, kb) = if parent_faction < new_faction {
+            (parent_faction, new_faction)
+        } else {
+            (new_faction, parent_faction)
+        };
+        self.relations.insert(
+            (ka, kb),
+            Relation {
+                state: DiplomaticState::OpenWar,
+                pressure: FISSION_INITIAL_PRESSURE,
+                trust: -TRUST_CAP,
+                entered_tick: self.tick,
+                expires_tick: self.tick + STATE_DURATION_OPEN_WAR,
+            },
+        );
+        let (oa, ob) = octet_pair(hub_pos);
+        self.push_log(format!(
+            "✦ MYTHIC ✦ F{} splinters from F{} ({} {}) @ 10.0.{}.{}",
+            new_faction,
+            parent_faction,
+            members.len(),
+            new_persona.display_name(),
+            oa,
+            ob
+        ));
     }
 
     /// Detect mesh-wide extinction and fire a cosmic reseed after
@@ -2395,6 +2607,10 @@ impl World {
             self.collect_strain_patents();
             // Wake any sleeper-lattice edges whose triggers fired.
             self.activate_sleeper_lattice();
+            // Civil-war / fission check: break away divergent
+            // branches that have drifted too far from their
+            // parent faction's persona.
+            self.advance_fission();
             // Detect full extinction and fire a cosmic reseed
             // after the silent-interval cooldown. The sim is
             // hands-off, so mesh-wide wipe shouldn't end the

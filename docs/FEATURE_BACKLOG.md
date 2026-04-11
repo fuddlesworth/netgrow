@@ -388,16 +388,26 @@ between meshes.
 **Transforms**: World feels bigger; cross-mesh escalation becomes its own
 arc.
 
-### 5. Civil wars / faction fission *(L)*
+### ✅ 5. Civil wars / faction fission *(L)*
 
-Factions can split internally when a branch gets big enough and
-ideologically diverges (e.g. a Plague-persona branch that's ended up
-mostly Defender nodes). The divergent branch cuts its parent chain,
-spawns its own C2, and declares immediate war on the parent. Creates
-faction lineage trees and dynastic conflict.
-
-**Transforms**: Factions aren't monolithic. Internal tension becomes a
-legitimate failure mode.
+Shipped: `Persona::aligned_roles` / `divergent_roles` define each
+persona's ideological core (Aggressor: Scanner/Exfil/Hunter;
+Fortress: Tower/Defender/Beacon; Plague: Exfil/Proxy/Router;
+Opportunist: none). `advance_fission` runs on the faction sample
+cadence, groups alive non-C2 nodes by `(faction, branch_id)`,
+scores each group's divergent-role fraction, and rolls
+`FISSION_ROLL_CHANCE=0.18` on the most divergent qualifier if the
+branch is ≥15 nodes and ≥50% divergent. On a hit, `execute_fission`
+promotes the branch's most-connected node to C2, reparents every
+other member to it, cuts the hub's old parent chain (dropping the
+link), allocates a fresh faction id with a persona derived from
+the branch's actual role mix (majority-signature-role wins), and
+seeds a pre-loaded OpenWar relation with the parent at
+`FISSION_INITIAL_PRESSURE=150` pressure and `trust = -TRUST_CAP`.
+Emits `✦ MYTHIC ✦ F{new} splinters from F{parent} ({N} persona)
+@ 10.0.a.b`. Opportunist factions never fission (no divergent
+roles). Interacts with tech tree (splinter starts at T0 with fresh
+FactionStats) and the diplomacy FSM (auto-war already in place).
 
 ### 6. Replay system *(XL)*
 

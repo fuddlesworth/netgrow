@@ -902,6 +902,125 @@ fn diplomacy_pressure_escalates_to_cold_war_then_open_war() {
 }
 
 #[test]
+fn fission_splits_a_divergent_branch_into_new_faction() {
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        worm_spawn_rate: 0.0,
+        reconnect_rate: 0.0,
+        c2_count: 1,
+        epoch_period: 0,
+        ..Config::default()
+    };
+    let mut w = World::new(1, (80, 30), cfg);
+    // Force F0 into Plague persona. Plague's divergent roles are
+    // [Defender, Tower, Hunter] — we'll seed a branch composed
+    // mostly of Defenders so the branch reads as a Fortress split.
+    w.personas[0] = Persona::Plague;
+    // Plant a 20-node branch of Defender+Tower nodes on branch_id 7,
+    // faction 0, all parented (conceptually) to the C2. That's
+    // 100% divergent roles for a Plague faction, well past the
+    // 50% threshold.
+    let branch_id = 7u16;
+    for x in 10..30 {
+        let mut n = Node::fresh((x, 12), Some(w.c2()), 0, Role::Defender, branch_id);
+        n.faction = 0;
+        w.nodes.push(n);
+    }
+    let initial_c2_count = w.c2_nodes.len();
+    // Run the fission pass directly. Roll chance is 0.18 so we
+    // may need multiple attempts; drive it deterministically by
+    // looping up to a generous ceiling.
+    let mut split = false;
+    for _ in 0..200 {
+        if w.advance_fission() > 0 {
+            split = true;
+            break;
+        }
+    }
+    assert!(split, "fission should have fired on a 20-defender Plague branch");
+    assert!(w.c2_nodes.len() > initial_c2_count);
+    // New faction should be Fortress (signature role = Defender).
+    let new_faction_id = (w.c2_nodes.len() - 1) as u8;
+    assert_eq!(w.personas[new_faction_id as usize], Persona::Fortress);
+    // OpenWar relation should be live with high pressure.
+    let rel = w.relation(0, new_faction_id);
+    assert_eq!(rel.state, DiplomaticState::OpenWar);
+    assert!(rel.pressure >= FISSION_INITIAL_PRESSURE);
+    // The splinter faction's hub has C2 HP and no parent.
+    let hub = w.c2_nodes[new_faction_id as usize];
+    assert_eq!(w.nodes[hub].pwn_resist, C2_INITIAL_HP);
+    assert!(w.nodes[hub].parent.is_none());
+    // The war mythic log line should have fired.
+    let fission_logged = w
+        .logs
+        .iter()
+        .any(|(s, _)| s.starts_with("✦ MYTHIC ✦") && s.contains("splinters from"));
+    assert!(fission_logged);
+}
+
+#[test]
+fn fission_ignores_opportunist_factions() {
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        c2_count: 1,
+        epoch_period: 0,
+        ..Config::default()
+    };
+    let mut w = World::new(1, (80, 30), cfg);
+    w.personas[0] = Persona::Opportunist;
+    // Plant a 20-node branch of Defenders — would fission under
+    // any ideological persona, but Opportunist has no identity
+    // to diverge from so fission should never fire.
+    for x in 10..30 {
+        let mut n = Node::fresh((x, 12), Some(w.c2()), 0, Role::Defender, 9);
+        n.faction = 0;
+        w.nodes.push(n);
+    }
+    let initial_c2_count = w.c2_nodes.len();
+    for _ in 0..500 {
+        w.advance_fission();
+    }
+    assert_eq!(
+        w.c2_nodes.len(),
+        initial_c2_count,
+        "Opportunist factions should never fission"
+    );
+}
+
+#[test]
+fn fission_ignores_branches_below_size_threshold() {
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        c2_count: 1,
+        epoch_period: 0,
+        ..Config::default()
+    };
+    let mut w = World::new(1, (80, 30), cfg);
+    w.personas[0] = Persona::Plague;
+    // Plant a 5-node divergent branch — below FISSION_MIN_BRANCH_SIZE.
+    for x in 10..15 {
+        let mut n = Node::fresh((x, 12), Some(w.c2()), 0, Role::Defender, 3);
+        n.faction = 0;
+        w.nodes.push(n);
+    }
+    let initial_c2_count = w.c2_nodes.len();
+    for _ in 0..500 {
+        w.advance_fission();
+    }
+    assert_eq!(
+        w.c2_nodes.len(),
+        initial_c2_count,
+        "branches below FISSION_MIN_BRANCH_SIZE should never fission"
+    );
+}
+
+#[test]
 fn extinction_triggers_reseed_after_silent_interval() {
     let cfg = Config {
         p_spawn: 0.0,

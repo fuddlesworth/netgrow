@@ -441,6 +441,35 @@ impl Persona {
             Persona::Opportunist => "opportunist",
         }
     }
+
+    /// Roles this persona considers "signature" — the ideological
+    /// core of the faction. A branch mostly composed of these reads
+    /// as faithful to its parent's identity. Used by the fission
+    /// system's divergence scoring.
+    pub fn aligned_roles(&self) -> &'static [Role] {
+        match self {
+            Persona::Aggressor => &[Role::Scanner, Role::Exfil, Role::Hunter],
+            Persona::Fortress => &[Role::Tower, Role::Defender, Role::Beacon],
+            Persona::Plague => &[Role::Exfil, Role::Proxy, Role::Router],
+            // Opportunist has no ideological core, so nothing
+            // counts as "divergent" from it — Opportunist branches
+            // never fission.
+            Persona::Opportunist => &[],
+        }
+    }
+
+    /// Roles that actively push against this persona's identity.
+    /// A branch dominated by these is a fission candidate — it has
+    /// drifted far enough from the persona's signature that the
+    /// narrative reads as a legitimate ideological split.
+    pub fn divergent_roles(&self) -> &'static [Role] {
+        match self {
+            Persona::Aggressor => &[Role::Tower, Role::Defender, Role::Beacon],
+            Persona::Fortress => &[Role::Exfil, Role::Proxy, Role::Scanner],
+            Persona::Plague => &[Role::Defender, Role::Tower, Role::Hunter],
+            Persona::Opportunist => &[],
+        }
+    }
 }
 
 /// Per-faction-pair diplomatic state. Every relation starts `Neutral`
