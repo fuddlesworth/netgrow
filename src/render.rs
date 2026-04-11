@@ -477,8 +477,25 @@ fn stats_block(world: &World, s: &WorldStats) -> Paragraph<'static> {
         .iter()
         .filter(|n| matches!(n.state, State::Alive) && n.legendary_name != u16::MAX)
         .count();
+    // Cumulative pwn count across all factions. Surfaced instead
+    // of the transient point-in-time State::Pwned count, which
+    // stayed at 0 or 1 almost always and looked broken. Summing
+    // faction_stats.lost gives a monotonically-growing lifetime
+    // kill counter the viewer can actually watch tick up.
+    let cumulative_pwns: usize = world
+        .faction_stats
+        .iter()
+        .map(|fs| fs.lost as usize)
+        .sum();
     let lines = vec![
-        row_pair("alive", s.alive, alive_color, "pwned", s.pwned, th.pwned),
+        row_pair(
+            "alive",
+            s.alive,
+            alive_color,
+            "pwned",
+            cumulative_pwns,
+            th.pwned,
+        ),
         row_pair("dying", s.dying, th.log_cascade, "dead", s.dead, th.ghost),
         row_pair(
             "branches",
@@ -1872,14 +1889,20 @@ fn node_glyph(node: &Node, tick: u64, world: &World) -> (&'static str, Style) {
             resolved
         }
         State::Pwned { .. } => {
+            // Distinct 'freshly compromised' look — reversed block
+            // flashing between two red tones, using a different
+            // glyph (◉) than the dying cascade's ✕ so the viewer
+            // can tell 'just exploited' apart from 'cascading out'.
             let st = if tick.is_multiple_of(2) {
                 Style::default()
                     .fg(th.pwned)
-                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::BOLD | Modifier::REVERSED)
             } else {
-                Style::default().fg(th.pwned_alt)
+                Style::default()
+                    .fg(th.pwned_alt)
+                    .add_modifier(Modifier::BOLD | Modifier::REVERSED)
             };
-            ("✕", st)
+            ("◉", st)
         }
         State::Dead => {
             // While the ghost echo is still counting down, keep

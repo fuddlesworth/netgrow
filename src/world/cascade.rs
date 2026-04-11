@@ -459,10 +459,18 @@ impl World {
         }
         for id in &newly_dead {
             let faction = self.nodes[*id].faction;
+            // Don't double-count: if the node was already in
+            // State::Pwned, advance_pwned_and_loss already bumped
+            // faction_stats.lost at the exploit moment. Only
+            // cascade-only deaths (still Alive when dying_in
+            // started) need to be counted here.
+            let was_pwned = matches!(self.nodes[*id].state, State::Pwned { .. });
             self.nodes[*id].state = State::Dead;
             self.nodes[*id].death_echo = GHOST_ECHO_TICKS;
-            if let Some(s) = self.faction_stats.get_mut(faction as usize) {
-                s.lost += 1;
+            if !was_pwned {
+                if let Some(s) = self.faction_stats.get_mut(faction as usize) {
+                    s.lost += 1;
+                }
             }
         }
         // Resurrection rolls now happen at schedule_subtree_death

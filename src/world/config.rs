@@ -183,7 +183,7 @@ impl Default for Config {
             base_dist: 4,
             max_nodes: 400,
             heartbeat_period: 20,
-            pwned_flash_ticks: 6,
+            pwned_flash_ticks: 18,
             log_cap: 32,
             role_weights: RoleWeights::default(),
             scanner_ping_period: 30,
