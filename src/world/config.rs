@@ -258,8 +258,8 @@ impl Default for Config {
             epoch_period: 5000,
             mythic_big_one_threshold: 30,
             c2_count_max: 0,
-            resurrection_threshold: 12,
-            resurrection_chance: 0.35,
+            resurrection_threshold: 10,
+            resurrection_chance: 0.55,
         }
     }
 }

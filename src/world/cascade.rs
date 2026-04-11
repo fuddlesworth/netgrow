@@ -340,14 +340,16 @@ impl World {
         }
     }
 
-    /// When a large cascade just finalized, roll for a "rebirth": one
-    /// of the freshly-dead nodes stands back up as the root of a brand-
-    /// new faction, with its own C2 entry, faction slot, and faction
-    /// stats. The old links and subtree stay dead — it literally rises
-    /// from the ashes, parentless, ready to grow its own colony.
-    fn maybe_resurrect_c2(&mut self, newly_dead: &[NodeId]) {
+    /// When a large subtree is scheduled to cascade, roll for a
+    /// "rebirth": one of the doomed nodes stands back up as the root
+    /// of a brand-new faction instead of dying, with its own C2
+    /// entry, faction slot, persona, and color. Called from
+    /// `schedule_subtree_death` where the full cascade cohort is
+    /// known, not from advance_dying (where staggered deaths rarely
+    /// reach the threshold in a single tick).
+    fn maybe_resurrect_c2_from_cascade(&mut self, doomed: &[NodeId]) {
         let threshold = self.cfg.resurrection_threshold as usize;
-        if threshold == 0 || newly_dead.len() < threshold {
+        if threshold == 0 || doomed.len() < threshold {
             return;
         }
         if self.cfg.resurrection_chance <= 0.0
@@ -355,16 +357,28 @@ impl World {
         {
             return;
         }
-        let idx = self.rng.gen_range(0..newly_dead.len());
-        let reborn = newly_dead[idx];
+        // Pick from the doomed pool, skipping anything that's
+        // already dead or mid-respawn.
+        let mut candidates: Vec<NodeId> = doomed
+            .iter()
+            .copied()
+            .filter(|&id| !matches!(self.nodes[id].state, State::Dead))
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let idx = self.rng.gen_range(0..candidates.len());
+        let reborn = candidates.swap_remove(idx);
         let new_faction = self.c2_nodes.len() as u8;
         let new_branch = self.alloc_branch_id();
         let pos = self.nodes[reborn].pos;
-        // Reset the node to a fresh C2 state. Old inbound/outbound
-        // links stay as ghost wires on the dead subtree.
+        // Cancel the pending death and reset the node to a fresh C2
+        // state. Old inbound/outbound links stay as ghost wires on
+        // the dying subtree around it.
         let node = &mut self.nodes[reborn];
         node.state = State::Alive;
         node.dying_in = 0;
+        node.death_echo = 0;
         node.parent = None;
         node.born = self.tick;
         node.role = Role::Relay;
@@ -374,9 +388,9 @@ impl World {
         node.infection = None;
         node.faction = new_faction;
         node.branch_id = new_branch;
-        node.pwn_resist = 0;
+        node.pwn_resist = super::C2_INITIAL_HP;
         node.shield_flash = 0;
-        node.mutated_flash = 0;
+        node.mutated_flash = 12;
         node.scan_pulse = 0;
         // Register the new C2 and faction.
         self.c2_nodes.push(reborn);
@@ -398,7 +412,7 @@ impl World {
         self.faction_colors.push(color_idx);
         let (a, b) = octet_pair(pos);
         self.push_log(format!(
-            "✦ MYTHIC ✦ REBIRTH — c2[{}] rises @ 10.0.{}.{}",
+            "✦ MYTHIC ✦ REBIRTH — c2[{}] rises from the ashes @ 10.0.{}.{}",
             new_faction, a, b
         ));
     }
@@ -406,12 +420,14 @@ impl World {
     pub fn schedule_subtree_death(&mut self, root: NodeId, mult: f32) {
         let cascade = self.compute_cascade(root);
         let mut touched = 0u32;
+        let mut doomed: Vec<NodeId> = Vec::with_capacity(cascade.len());
         for (id, distance) in cascade {
             let base = distance.saturating_mul(2).saturating_add(3) as f32;
             let delay = (base * mult).round().clamp(1.0, 255.0) as u8;
             if self.nodes[id].dying_in == 0 || self.nodes[id].dying_in > delay {
                 self.nodes[id].dying_in = delay;
                 touched += 1;
+                doomed.push(id);
             }
         }
         if touched > 0 {
@@ -422,6 +438,9 @@ impl World {
             }
             let root_pos = self.nodes[root].pos;
             self.emit_cascade_effects(root_pos, touched);
+            // Roll resurrection at schedule time so the whole
+            // cohort is visible instead of tick-by-tick finalizations.
+            self.maybe_resurrect_c2_from_cascade(&doomed);
         }
     }
 
@@ -446,10 +465,10 @@ impl World {
                 s.lost += 1;
             }
         }
-        // When a big batch of nodes dies in one breath, one of them may
-        // rise again as the root of a new faction — a new C2 born from
-        // the ashes of the fallen subtree.
-        self.maybe_resurrect_c2(&newly_dead);
+        // Resurrection rolls now happen at schedule_subtree_death
+        // time, where the whole cascade cohort is visible — by the
+        // point a node finalizes into Dead its cohort has long
+        // since been spread across multiple ticks.
         // Free cells of links that now touch a Dead endpoint so territory reopens.
         let dead: HashSet<NodeId> = self
             .nodes

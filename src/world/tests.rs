@@ -795,19 +795,45 @@ fn large_cascade_can_resurrect_a_new_c2() {
         ..Config::default()
     };
     let mut w = World::new(90, (80, 30), cfg);
-    // Manually stage three Alive nodes with dying_in == 1 so they
-    // all die on the next advance_dying tick, triggering the
-    // resurrection roll (threshold=3, chance=1.0 = guaranteed).
-    for i in 0..3 {
-        let id = w.nodes.len();
-        let mut n = Node::fresh((10 + i, 10), Some(w.c2()), 0, Role::Relay, 1);
-        n.faction = 0;
-        n.dying_in = 1;
-        w.nodes.push(n);
-        let _ = id;
-    }
+    // Build a short chain c2 -> a -> b -> c, where c is the
+    // cascade root. schedule_subtree_death(c) should doom c and
+    // roll the resurrection (threshold=3, chance=1.0 = guaranteed).
+    let a = w.nodes.len();
+    w.nodes
+        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
+    let b = w.nodes.len();
+    w.nodes.push(Node::fresh((11, 10), Some(a), 0, Role::Relay, 1));
+    let c = w.nodes.len();
+    w.nodes.push(Node::fresh((12, 10), Some(b), 0, Role::Relay, 1));
+    // Full parent-link chain so compute_cascade can walk it.
+    let make_path = |x0: i16, x1: i16| -> Vec<(i16, i16)> {
+        (x0..=x1).map(|x| (x, 10)).collect()
+    };
+    let push_link = |w: &mut World, a: usize, b: usize, x0: i16, x1: i16| {
+        let path = make_path(x0, x1);
+        let len = path.len() as u16;
+        w.links.push(Link {
+            a,
+            b,
+            path,
+            drawn: len,
+            kind: LinkKind::Parent,
+            load: 0,
+            breach_ttl: 0,
+            burn_ticks: 0,
+            quarantined: 0,
+            packets_delivered: 0,
+            is_backbone: false,
+        });
+    };
+    let c2 = w.c2();
+    push_link(&mut w, c2, a, 0, 10);
+    push_link(&mut w, a, b, 10, 11);
+    push_link(&mut w, b, c, 11, 12);
+
     let before = w.c2_nodes.len();
-    w.advance_dying();
+    // Schedule the whole subtree rooted at `a` (a, b, c → 3 nodes).
+    w.schedule_subtree_death(a, 1.0);
     let after = w.c2_nodes.len();
     assert_eq!(
         after,
