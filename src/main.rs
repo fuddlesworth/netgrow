@@ -544,37 +544,35 @@ fn main() -> io::Result<()> {
         mesh_bounds = render::mesh_bounds(terminal.size()?);
     }
 
-    // Build a summary screen and draw it inside the alternate screen
-    // so the user gets a clean screenshot-worthy readout on exit.
-    // Everything is pre-formatted here so render stays layout-only.
-    let mut summary: Vec<String> = Vec::new();
-    summary.push(format!("session  {}", util::session_name(seed)));
-    summary.push(format!("seed     {}", seed));
-    summary.push(format!("ticks    {}", util::with_commas(world.tick)));
-    summary.push(format!("era      {}", world.epoch_name()));
-    summary.push(format!("theme    {}", theme_name));
-    summary.push(String::new());
-    summary.push("factions:".to_string());
-    for (i, fs) in world.faction_stats.iter().enumerate() {
-        summary.push(format!(
-            "  F{}  score {:+}  spawn {}  lost {}  traps {}  cured {}",
-            i, fs.score(), fs.spawned, fs.lost, fs.honeys_tripped, fs.infections_cured
-        ));
-    }
-    summary.push(String::new());
-    summary.push("config:".to_string());
-    summary.push(format!("  c2_count       {}..{}", c2_count, c2_count_max));
-    summary.push(format!("  spawn_rate     {}", spawn_rate));
-    summary.push(format!("  loss_rate      {}", loss_rate));
-    summary.push(format!(
-        "  virus_spread   {}",
-        if disable_virus { "disabled".to_string() } else { virus_spread_rate.to_string() }
-    ));
-    summary.push(format!("  day_night      {}", day_night_period));
-    summary.push(String::new());
-    summary.push("press any key to exit".to_string());
-
-    terminal.draw(|f| render::draw_summary(f, &summary))?;
+    // Build the structured summary and draw the ricer-tier exit
+    // screen. Render handles all layout; we just hand over a small
+    // metadata struct with the CLI-side locals it can't derive from
+    // World directly.
+    let elapsed_ms = world.tick.saturating_mul(tick_ms);
+    let elapsed = {
+        let secs = elapsed_ms / 1000;
+        let h = secs / 3600;
+        let m = (secs / 60) % 60;
+        let s = secs % 60;
+        if h > 0 {
+            format!("{}h {:02}m {:02}s", h, m, s)
+        } else {
+            format!("{:02}m {:02}s", m, s)
+        }
+    };
+    let meta = render::SummaryMeta {
+        session: util::session_name(seed),
+        seed,
+        theme_name,
+        elapsed,
+        c2_count,
+        c2_count_max,
+        spawn_rate,
+        loss_rate,
+        virus_spread_rate: if disable_virus { None } else { Some(virus_spread_rate) },
+        day_night_period,
+    };
+    terminal.draw(|f| render::draw_summary(f, &world, &meta))?;
 
     // Wait for any key press before exiting so the user can read the
     // summary on-screen.

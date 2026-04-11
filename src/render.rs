@@ -225,52 +225,319 @@ pub fn draw_boot(frame: &mut Frame, boot_lines: &[String]) {
     frame.render_widget(paragraph, box_area);
 }
 
-/// Render a centered session-summary overlay. `lines` is a pre-built
-/// list of rows to display — the caller in main.rs decides the exact
-/// content so render stays layout-only.
-pub fn draw_summary(frame: &mut Frame, lines: &[String]) {
+/// Context passed to `draw_summary` — everything the end-of-run
+/// screen needs to render a full readout. Kept small so main.rs can
+/// build it inline from its own locals without reaching into the
+/// render layer.
+pub struct SummaryMeta<'a> {
+    pub session: String,
+    pub seed: u64,
+    pub theme_name: &'a str,
+    pub elapsed: String,
+    pub c2_count: u8,
+    pub c2_count_max: u8,
+    pub spawn_rate: f32,
+    pub loss_rate: f32,
+    pub virus_spread_rate: Option<f32>,
+    pub day_night_period: u64,
+}
+
+/// Render the full end-of-run summary: ASCII banner, session meta
+/// panel, totals panel, sorted faction leaderboard with medals and
+/// score bars, and a footer prompt. Replaces the plain list-of-
+/// strings screen with a proper multi-panel layout that makes the
+/// exit frame feel intentional.
+pub fn draw_summary(frame: &mut Frame, world: &World, meta: &SummaryMeta<'_>) {
     let area = frame.area();
-    // Clear the whole screen first so leftover chrome from the last
-    // tick doesn't bleed through.
     frame.render_widget(Clear, area);
     let th = theme();
 
-    let content_width = 56u16.min(area.width.saturating_sub(4));
-    let content_height = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
-    let box_area = Rect {
-        x: area.x + (area.width.saturating_sub(content_width)) / 2,
-        y: area.y + (area.height.saturating_sub(content_height)) / 2,
-        width: content_width,
-        height: content_height,
-    };
-    let block = Block::bordered()
+    // Outer frame covers the whole terminal. Everything else is
+    // layered inside.
+    let outer = Block::bordered()
         .border_type(BorderType::Thick)
         .border_style(Style::default().fg(th.frame_accent))
         .title(Span::styled(
-            " session summary ",
+            " session complete ",
             Style::default()
                 .fg(th.frame_accent)
                 .add_modifier(Modifier::BOLD),
         ));
-    let text: Vec<Line<'static>> = lines
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    // Vertical stack: banner / subtitle / meta+totals row / leaderboard / footer.
+    let rows = Layout::vertical([
+        Constraint::Length(8),  // banner
+        Constraint::Length(2),  // subtitle
+        Constraint::Length(10), // meta / totals row
+        Constraint::Min(6),     // leaderboard
+        Constraint::Length(2),  // footer prompt
+    ])
+    .split(inner);
+
+    // 1. ASCII banner.
+    let banner_lines = [
+        r" ███╗   ██╗███████╗████████╗ ██████╗ ██████╗  ██████╗ ██╗    ██╗",
+        r" ████╗  ██║██╔════╝╚══██╔══╝██╔════╝ ██╔══██╗██╔═══██╗██║    ██║",
+        r" ██╔██╗ ██║█████╗     ██║   ██║  ███╗██████╔╝██║   ██║██║ █╗ ██║",
+        r" ██║╚██╗██║██╔══╝     ██║   ██║   ██║██╔══██╗██║   ██║██║███╗██║",
+        r" ██║ ╚████║███████╗   ██║   ╚██████╔╝██║  ██║╚██████╔╝╚███╔███╔╝",
+        r" ╚═╝  ╚═══╝╚══════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝ ╚═════╝  ╚══╝╚══╝ ",
+    ];
+    let banner: Vec<Line<'static>> = banner_lines
         .iter()
-        .map(|l| {
-            // Section headers (indented, uppercase tokens) get an
-            // accent color; everything else uses the normal label.
-            if l.ends_with(':') {
-                Line::from(Span::styled(
-                    l.clone(),
-                    Style::default()
-                        .fg(th.frame_accent)
-                        .add_modifier(Modifier::BOLD),
-                ))
-            } else {
-                Line::from(Span::styled(l.clone(), Style::default().fg(th.label)))
-            }
+        .map(|s| {
+            Line::from(Span::styled(
+                (*s).to_string(),
+                Style::default()
+                    .fg(th.frame_accent)
+                    .add_modifier(Modifier::BOLD),
+            ))
         })
         .collect();
-    let paragraph = Paragraph::new(text).block(block);
-    frame.render_widget(paragraph, box_area);
+    frame.render_widget(
+        Paragraph::new(banner).alignment(Alignment::Center),
+        rows[0],
+    );
+
+    // 2. Subtitle — ticks + elapsed in one quiet line.
+    let alive: usize = world
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.state, State::Alive))
+        .count();
+    let subtitle = Line::from(vec![
+        Span::styled(
+            format!("t={}", with_commas(world.tick)),
+            Style::default().fg(th.label),
+        ),
+        Span::raw("  ·  "),
+        Span::styled(
+            meta.elapsed.clone(),
+            Style::default().fg(th.value).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  ·  "),
+        Span::styled(
+            format!("{} factions", world.faction_stats.len()),
+            Style::default().fg(th.label),
+        ),
+        Span::raw("  ·  "),
+        Span::styled(
+            format!("{} alive", alive),
+            Style::default().fg(th.label),
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(subtitle).alignment(Alignment::Center),
+        rows[1],
+    );
+
+    // 3. Meta / totals row — split horizontally.
+    let mid_cols = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .split(rows[2]);
+    frame.render_widget(summary_meta_block(meta, world), mid_cols[0]);
+    frame.render_widget(summary_totals_block(world), mid_cols[1]);
+
+    // 4. Leaderboard.
+    frame.render_widget(summary_leaderboard_block(world), rows[3]);
+
+    // 5. Footer prompt.
+    let footer = Line::from(vec![
+        Span::styled(
+            "▶ press any key to disconnect ",
+            Style::default()
+                .fg(th.accent)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(footer).alignment(Alignment::Center),
+        rows[4],
+    );
+}
+
+fn summary_meta_block(meta: &SummaryMeta<'_>, world: &World) -> Paragraph<'static> {
+    let th = theme();
+    let label_style = Style::default().fg(th.stat_label);
+    let value_style = Style::default().fg(th.value).add_modifier(Modifier::BOLD);
+    let row = |label: &'static str, value: String| {
+        Line::from(vec![
+            Span::styled(format!(" {:<9}", label), label_style),
+            Span::styled(value, value_style),
+        ])
+    };
+    let c2_range = if meta.c2_count_max > meta.c2_count {
+        format!("{}..{}", meta.c2_count, meta.c2_count_max)
+    } else {
+        format!("{}", meta.c2_count)
+    };
+    let virus = match meta.virus_spread_rate {
+        Some(r) => format!("{}", r),
+        None => "disabled".to_string(),
+    };
+    let day_night = if meta.day_night_period == 0 {
+        "off".to_string()
+    } else {
+        format!("{}", meta.day_night_period)
+    };
+    let lines = vec![
+        row("session", meta.session.clone()),
+        row("seed", format!("{}", meta.seed)),
+        row("era", world.epoch_name().to_string()),
+        row("theme", meta.theme_name.to_string()),
+        row("c2_count", c2_range),
+        row("spawn", format!("{}", meta.spawn_rate)),
+        row("loss", format!("{}", meta.loss_rate)),
+        row("virus", virus),
+        row("day/night", day_night),
+    ];
+    let block = Block::bordered()
+        .border_style(Style::default().fg(th.frame))
+        .title(Span::styled(
+            " run info ",
+            Style::default().fg(th.frame_accent).add_modifier(Modifier::BOLD),
+        ));
+    Paragraph::new(lines).block(block)
+}
+
+fn summary_totals_block(world: &World) -> Paragraph<'static> {
+    let th = theme();
+    let label_style = Style::default().fg(th.stat_label);
+    let value_style = Style::default().fg(th.value).add_modifier(Modifier::BOLD);
+    let row = |label: &'static str, value: String, color: Color| {
+        Line::from(vec![
+            Span::styled(format!(" {:<10}", label), label_style),
+            Span::styled(
+                value,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+        ])
+    };
+    // Global totals aggregated across every faction.
+    let total_spawned: u32 = world.faction_stats.iter().map(|f| f.spawned).sum();
+    let total_lost: u32 = world.faction_stats.iter().map(|f| f.lost).sum();
+    let total_honeys: u32 = world.faction_stats.iter().map(|f| f.honeys_tripped).sum();
+    let total_cured: u32 = world.faction_stats.iter().map(|f| f.infections_cured).sum();
+    let total_score: i32 = world.faction_stats.iter().map(|f| f.score()).sum();
+    let alive: usize = world
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.state, State::Alive))
+        .count();
+    let dead: usize = world
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.state, State::Dead))
+        .count();
+    let branches: std::collections::HashSet<u16> = world
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.state, State::Alive))
+        .map(|n| n.branch_id)
+        .collect();
+    let lines = vec![
+        Line::from(Span::styled(
+            " totals".to_string(),
+            Style::default().fg(th.stat_label),
+        )),
+        row("spawned", format!("{}", total_spawned), th.value),
+        row("lost", format!("{}", total_lost), th.pwned),
+        row("cured", format!("{}", total_cured), th.defender),
+        row("traps", format!("{}", total_honeys), th.accent),
+        row("alive", format!("{}", alive), th.value),
+        row("dead", format!("{}", dead), th.ghost),
+        row("branches", format!("{}", branches.len()), th.frame_accent),
+        Line::from(vec![
+            Span::styled(" score     ".to_string(), label_style),
+            Span::styled(
+                format!("{:+}", total_score),
+                value_style,
+            ),
+        ]),
+    ];
+    let block = Block::bordered()
+        .border_style(Style::default().fg(th.frame))
+        .title(Span::styled(
+            " totals ",
+            Style::default().fg(th.frame_accent).add_modifier(Modifier::BOLD),
+        ));
+    Paragraph::new(lines).block(block)
+}
+
+fn summary_leaderboard_block(world: &World) -> Paragraph<'static> {
+    let th = theme();
+    // Rank factions by score descending.
+    let mut ordered: Vec<(usize, i32)> = world
+        .faction_stats
+        .iter()
+        .enumerate()
+        .map(|(i, fs)| (i, fs.score()))
+        .collect();
+    ordered.sort_by(|a, b| b.1.cmp(&a.1));
+    let max_abs = ordered
+        .iter()
+        .map(|&(_, s)| s.unsigned_abs())
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let bar_cells = 16u32;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (rank, &(fid, score)) in ordered.iter().enumerate() {
+        let fs = &world.faction_stats[fid];
+        let persona = world
+            .personas
+            .get(fid)
+            .copied()
+            .map(|p| p.display_name())
+            .unwrap_or("?");
+        let hue = faction_hue(world, fid as u8);
+        let medal = match rank {
+            0 => "①",
+            1 => "②",
+            2 => "③",
+            _ => " ·",
+        };
+        let fill = ((score.unsigned_abs() * bar_cells) / max_abs).min(bar_cells);
+        let bar: String = (0..bar_cells)
+            .map(|i| if i < fill { '█' } else { '░' })
+            .collect();
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {} ", medal),
+                Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("F{} ", fid),
+                Style::default().fg(hue).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{:<11} ", persona),
+                Style::default().fg(hue),
+            ),
+            Span::styled(
+                format!("{:>+5}  ", score),
+                Style::default().fg(hue).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(bar, Style::default().fg(hue)),
+            Span::styled(
+                format!(
+                    "  spawn {:<4} lost {:<4} traps {:<3} cured {}",
+                    fs.spawned, fs.lost, fs.honeys_tripped, fs.infections_cured
+                ),
+                Style::default().fg(th.stat_label),
+            ),
+        ]));
+    }
+    let block = Block::bordered()
+        .border_style(Style::default().fg(th.frame))
+        .title(Span::styled(
+            " faction leaderboard ",
+            Style::default()
+                .fg(th.frame_accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    Paragraph::new(lines).block(block)
 }
 
 fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'static> {
