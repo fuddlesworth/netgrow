@@ -150,10 +150,6 @@ pub struct Config {
     /// Per-border-node chance of losing shielding / taking a hit on
     /// each skirmish tick.
     pub border_skirmish_chance: f32,
-    /// Ticks between alliance rolls.
-    pub alliance_period: u64,
-    pub alliance_chance: f32,
-    pub alliance_duration: u64,
     /// Length of a single named epoch in ticks. Each time the sim crosses
     /// a multiple of this value, it enters a new era with a name drawn
     /// from ERA_NAMES. Set to 0 to disable.
@@ -263,9 +259,6 @@ impl Default for Config {
             border_skirmish_period: 40,
             border_skirmish_radius: 3,
             border_skirmish_chance: 0.12,
-            alliance_period: 600,
-            alliance_chance: 0.3,
-            alliance_duration: 500,
             proxy_radius: 8,
             beacon_radius: 6,
             beacon_weight_mult: 1.5,
@@ -305,9 +298,9 @@ pub const STRAIN_NAME_POOL: &[&str] = &[
     "Azrael",
 ];
 
-/// Named eras the sim cycles through as it ages. Fully ephemeral — no
-/// gameplay effect, just a long-arc narrative marker in the header and
-/// the log so long sessions feel like they're going somewhere.
+/// Named eras the sim cycles through as it ages. Each era name also
+/// resolves to an `EraRules` block via `era_rules_for`, so crossing an
+/// epoch boundary visibly rewrites the active tuning.
 pub const ERA_NAMES: &[&str] = &[
     "Age of Silence",
     "First Signal",
@@ -322,6 +315,119 @@ pub const ERA_NAMES: &[&str] = &[
     "Echo Chamber",
     "The Long Drift",
 ];
+
+/// Per-era multiplier set consumed at the relevant tick-loop integration
+/// points. All defaults are 1.0 (no effect); `era_rules_for` returns the
+/// active set whenever the sim crosses into a new epoch. Keeping the
+/// effects as a small struct of scalar multipliers means every call site
+/// is a one-line change against the existing `self.cfg.*` read.
+#[derive(Clone, Copy, Debug)]
+pub struct EraRules {
+    /// Scales `p_spawn` in `try_spawn`.
+    pub spawn_mult: f32,
+    /// Scales `p_loss` in `advance_dying`.
+    pub loss_mult: f32,
+    /// Scales `exfil_packet_period`. >1 = packets fire less often.
+    pub exfil_period_mult: f32,
+    /// Scales `virus_spread_rate` in the infection spread pass.
+    pub virus_spread_mult: f32,
+    /// Scales `mutate_rate` in `maybe_mutate`.
+    pub mutate_mult: f32,
+    /// Scales the post-cure `IMMUNITY_DURATION_TICKS` applied to nodes.
+    pub immunity_mult: f32,
+    /// Scales the cascade multiplier passed to `schedule_subtree_death`.
+    pub cascade_mult: f32,
+    /// Scales the effective assimilation cadence. >1 = more frequent.
+    pub assimilation_speed_mult: f32,
+    /// Scales `cross_faction_bridge_chance` in `maybe_reconnect`.
+    pub bridge_mult: f32,
+}
+
+impl Default for EraRules {
+    fn default() -> Self {
+        Self {
+            spawn_mult: 1.0,
+            loss_mult: 1.0,
+            exfil_period_mult: 1.0,
+            virus_spread_mult: 1.0,
+            mutate_mult: 1.0,
+            immunity_mult: 1.0,
+            cascade_mult: 1.0,
+            assimilation_speed_mult: 1.0,
+            bridge_mult: 1.0,
+        }
+    }
+}
+
+/// Map an epoch index to its mechanical `EraRules` plus a short summary
+/// phrase used in the log on era transitions. Index wraps around
+/// `ERA_NAMES.len()` so long runs cycle through the same rule sets.
+pub fn era_rules_for(idx: usize) -> (EraRules, &'static str) {
+    let base = EraRules::default();
+    match idx % ERA_NAMES.len() {
+        // "Age of Silence" — packets hush, loss eases.
+        0 => (
+            EraRules { exfil_period_mult: 2.0, loss_mult: 0.7, ..base },
+            "packets hush, losses ease",
+        ),
+        // "First Signal" — growth surge.
+        1 => (
+            EraRules { spawn_mult: 1.3, ..base },
+            "spawns surge",
+        ),
+        // "Rise of the Mesh" — bridges flourish alongside steady growth.
+        2 => (
+            EraRules { spawn_mult: 1.25, bridge_mult: 1.8, ..base },
+            "bridges flourish",
+        ),
+        // "Era of Cascades" — cascades and losses amplified.
+        3 => (
+            EraRules { cascade_mult: 2.0, loss_mult: 1.3, ..base },
+            "cascades 2× / loss 1.3×",
+        ),
+        // "Winter of Quarantine" — long immunity, weak spread.
+        4 => (
+            EraRules { immunity_mult: 5.0, virus_spread_mult: 0.4, ..base },
+            "immunity 5× / spread 0.4×",
+        ),
+        // "The Great Spreading" — viral bloom.
+        5 => (
+            EraRules { virus_spread_mult: 2.2, ..base },
+            "viral bloom (spread 2.2×)",
+        ),
+        // "Dusk Protocols" — losses climb, mutation stirs.
+        6 => (
+            EraRules { loss_mult: 1.25, mutate_mult: 1.5, ..base },
+            "losses climb, mutation stirs",
+        ),
+        // "Zero-Day Bloom" — mutations rampant.
+        7 => (
+            EraRules { mutate_mult: 4.0, ..base },
+            "mutation 4×",
+        ),
+        // "Age of Wires" — bridges multiply and packets accelerate.
+        8 => (
+            EraRules { bridge_mult: 2.5, exfil_period_mult: 0.7, ..base },
+            "bridges 2.5× / packets 0.7×",
+        ),
+        // "Final Handshake" — assimilation accelerates.
+        9 => (
+            EraRules { assimilation_speed_mult: 3.0, ..base },
+            "assimilation 3×",
+        ),
+        // "Echo Chamber" — echoes amplify both spread and cascades.
+        10 => (
+            EraRules { virus_spread_mult: 1.5, cascade_mult: 1.4, ..base },
+            "echoes amplify",
+        ),
+        // "The Long Drift" — the mesh grows quiet.
+        11 => (
+            EraRules { spawn_mult: 0.6, loss_mult: 0.6, ..base },
+            "the mesh grows quiet",
+        ),
+        _ => (base, ""),
+    }
+}
 
 /// Names the sim awards to nodes that survive long enough and
 /// spawn enough children to earn legendary status. Picked by

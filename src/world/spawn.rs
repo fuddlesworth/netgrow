@@ -57,8 +57,12 @@ impl World {
             .max()
             .unwrap_or(0);
         let amp = 1.0 + (max_pressure as f32 / super::RIVALRY_CAP as f32);
-        let cross_chance =
-            (self.cfg.cross_faction_bridge_chance * amp).min(1.0) as f64;
+        let tech_bridge = self.tech_bridge_mult(a_faction);
+        let cross_chance = (self.cfg.cross_faction_bridge_chance
+            * amp
+            * self.era_rules.bridge_mult
+            * tech_bridge)
+            .min(1.0) as f64;
         let allow_cross_faction =
             self.cfg.cross_faction_bridge_chance > 0.0 && self.rng.gen_bool(cross_chance);
         let mut candidates: Vec<NodeId> = alive
@@ -192,6 +196,23 @@ impl World {
                     (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
                 }
             };
+        // Tier 1+ tech amplifies the persona's deviation from the
+        // baseline `1.0` multiplier. A Fortress at Tier 2 with
+        // intensity `1.6` pulls its 2.0× tower bias out to
+        // `1.0 + (2.0 - 1.0) * 1.6 = 2.6`. Opportunist's all-1.0
+        // weights are untouched because there's no deviation to
+        // amplify.
+        let intensity = self.tech_role_intensity(faction);
+        let amp = |m: f32| 1.0 + (m - 1.0) * intensity;
+        let m_relay = amp(m_relay);
+        let m_scan = amp(m_scan);
+        let m_exfil = amp(m_exfil);
+        let m_def = amp(m_def);
+        let m_tow = amp(m_tow);
+        let m_bea = amp(m_bea);
+        let m_prox = amp(m_prox);
+        let m_router = amp(m_router);
+        let m_hunter = amp(m_hunter);
         let w_relay = base.relay * m_relay;
         let w_scanner = base.scanner * m_scan;
         let w_exfil = base.exfil * m_exfil;
@@ -304,7 +325,8 @@ impl World {
         if self.is_storming() {
             spawn_mult *= self.cfg.storm_spawn_mult;
         }
-        let effective_spawn = (self.cfg.p_spawn * spawn_mult).clamp(0.0, 1.0);
+        let effective_spawn =
+            (self.cfg.p_spawn * spawn_mult * self.era_rules.spawn_mult).clamp(0.0, 1.0);
         if !self.rng.gen_bool(effective_spawn as f64) {
             return;
         }

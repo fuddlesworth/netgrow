@@ -754,6 +754,10 @@ fn tower_absorbs_pwn_attempts_before_dying() {
         ..Config::default()
     };
     let mut w = World::new(80, (80, 30), cfg);
+    // Neutralize era modifiers so `p_loss: 1.0` is truly guaranteed —
+    // otherwise the opening era's loss multiplier makes the 3-tick
+    // guarantee probabilistic.
+    w.era_rules = EraRules::default();
     // One tower adjacent to C2 — the only possible victim.
     let tower = w.nodes.len();
     let mut n = Node::fresh((11, 10), Some(w.c2()), 0, Role::Tower, 1);
@@ -774,6 +778,219 @@ fn tower_absorbs_pwn_attempts_before_dying() {
         matches!(w.nodes[tower].state, State::Pwned { .. } | State::Dead),
         "tower should be down after 3 hits"
     );
+}
+
+#[test]
+fn tech_research_accrues_and_unlocks_tier_1() {
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        worm_spawn_rate: 0.0,
+        reconnect_rate: 0.0,
+        c2_count: 2,
+        epoch_period: 0,
+        ..Config::default()
+    };
+    let mut w = World::new(1, (80, 30), cfg);
+    // Ensure both factions start at tier 0 and 0 research.
+    for stats in &w.faction_stats {
+        assert_eq!(stats.tech_tier, 0);
+        assert_eq!(stats.research, 0);
+    }
+    // Hand-credit intel so the delta-based income term kicks in
+    // and pushes F0 past the Tier 1 threshold on the next pass.
+    // Intel contributes 1:1 under the retuned formula, so we
+    // need at least TECH_TIER_1_COST worth of delta to unlock.
+    w.faction_stats[0].intel = TECH_TIER_1_COST + 20;
+    // Force a single research pass directly — tick() only runs
+    // it on the sample cadence, and we want a deterministic check.
+    w.advance_research();
+    assert!(w.faction_stats[0].research >= TECH_TIER_1_COST,
+        "expected F0 research >= {}, got {}",
+        TECH_TIER_1_COST,
+        w.faction_stats[0].research);
+    assert!(w.faction_stats[0].tech_tier >= 1);
+    // Log line should have been emitted.
+    let tech_lines = w
+        .logs
+        .iter()
+        .filter(|(s, _)| s.starts_with("✦ tech"))
+        .count();
+    assert!(tech_lines >= 1);
+}
+
+#[test]
+fn tech_role_intensity_amplifies_persona_at_tier_1_plus() {
+    let mut w = World::new(1, (80, 30), Config::default());
+    // Baseline: tier 0 → intensity 1.0.
+    assert_eq!(w.tech_role_intensity(0), 1.0);
+    // Bump tier directly and confirm the intensity climbs.
+    w.faction_stats[0].tech_tier = 1;
+    assert!((w.tech_role_intensity(0) - 1.35).abs() < 1e-6);
+    w.faction_stats[0].tech_tier = 2;
+    assert!((w.tech_role_intensity(0) - 1.6).abs() < 1e-6);
+    w.faction_stats[0].tech_tier = 3;
+    assert!((w.tech_role_intensity(0) - 1.6).abs() < 1e-6);
+}
+
+#[test]
+fn tech_persona_passives_gate_on_tier_and_match() {
+    let mut w = World::new(1, (80, 30), Config::default());
+    // T0: no bonuses anywhere.
+    assert_eq!(w.tech_defender_radius_bonus(0), 0);
+    assert_eq!(w.tech_scanner_period_mult(0), 1.0);
+    assert_eq!(w.tech_worm_spawn_mult(0), 1.0);
+    assert_eq!(w.tech_bridge_mult(0), 1.0);
+    // T2 Fortress → defender radius bonus.
+    w.faction_stats[0].tech_tier = 2;
+    w.personas[0] = Persona::Fortress;
+    assert_eq!(w.tech_defender_radius_bonus(0), 2);
+    assert_eq!(w.tech_worm_spawn_mult(0), 1.0);
+    // T2 Plague → worm spawn bonus instead.
+    w.personas[0] = Persona::Plague;
+    assert_eq!(w.tech_defender_radius_bonus(0), 0);
+    assert!((w.tech_worm_spawn_mult(0) - 2.0).abs() < 1e-6);
+    // T2 Aggressor → scanner period cut.
+    w.personas[0] = Persona::Aggressor;
+    assert!((w.tech_scanner_period_mult(0) - 0.65).abs() < 1e-6);
+    // T2 Opportunist → bridge mult.
+    w.personas[0] = Persona::Opportunist;
+    assert!((w.tech_bridge_mult(0) - 2.0).abs() < 1e-6);
+}
+
+#[test]
+fn diplomacy_pressure_escalates_to_cold_war_then_open_war() {
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        worm_spawn_rate: 0.0,
+        reconnect_rate: 0.0,
+        c2_count: 2,
+        epoch_period: 0,
+        ..Config::default()
+    };
+    let mut w = World::new(1, (80, 30), cfg);
+    // Two factions should be alive.
+    assert_eq!(w.c2_nodes.len(), 2);
+    // Push pressure past COLD_WAR_THRESHOLD and let the state
+    // machine run one pass.
+    w.bump_rivalry(0, 1, COLD_WAR_THRESHOLD);
+    w.advance_diplomacy();
+    assert_eq!(w.relation_state(0, 1), DiplomaticState::ColdWar);
+    // Now push past the war threshold — the cold-war pass should
+    // promote it to OpenWar.
+    w.bump_rivalry(0, 1, WAR_DECLARATION_THRESHOLD);
+    w.advance_diplomacy();
+    assert_eq!(w.relation_state(0, 1), DiplomaticState::OpenWar);
+    assert!(w.at_war(0, 1));
+    // Order-insensitive lookups.
+    assert!(w.at_war(1, 0));
+    assert_eq!(w.relation_state(1, 0), DiplomaticState::OpenWar);
+}
+
+#[test]
+fn diplomacy_trade_can_upgrade_through_nap_to_alliance() {
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        c2_count: 2,
+        epoch_period: 0,
+        ..Config::default()
+    };
+    let mut w = World::new(1, (80, 30), cfg);
+    // Force both factions into Fortress so persona trust gains
+    // are maxed (2.0× each side → 2.0× mult). This lets the test
+    // drive an Alliance upgrade deterministically without relying
+    // on RNG over thousands of ticks.
+    for p in w.personas.iter_mut() {
+        *p = Persona::Fortress;
+    }
+    // Seed a Trade state directly — the opportunistic roll in
+    // advance_diplomacy is probabilistic, so we skip it for the
+    // test and exercise the upgrade ladder.
+    let key = (0u8, 1u8);
+    w.relations.insert(
+        key,
+        Relation {
+            state: DiplomaticState::Trade,
+            pressure: 0,
+            trust: 0,
+            entered_tick: 0,
+            expires_tick: 5,
+        },
+    );
+    // Run the machine until the Trade timer expires and
+    // upgrades to NonAggression. The machine only runs inside
+    // tick() on the sample cadence, so step ticks manually.
+    for _ in 0..(FACTION_SAMPLE_PERIOD as usize * 2) {
+        w.tick((80, 30));
+    }
+    // Trade → NAP requires NAP_TRUST_THRESHOLD = 30. With
+    // Fortress × Fortress (2.0 mult) each Trade sample tick
+    // pushes 2 * 2.0 = 4 trust, so 30/4 ≈ 8 sample periods. In
+    // the loop we have 2 sample periods, so we'll be in Trade
+    // still. We advance more to cover the full ladder.
+    for _ in 0..(FACTION_SAMPLE_PERIOD as usize * 40) {
+        w.tick((80, 30));
+    }
+    // By now the pair should be in either NonAggression or
+    // Alliance depending on how many ladder steps happened.
+    let state = w.relation_state(0, 1);
+    assert!(
+        matches!(state, DiplomaticState::NonAggression | DiplomaticState::Alliance),
+        "expected NAP or Alliance, got {:?}",
+        state
+    );
+    // And peace helpers should agree.
+    assert!(w.allied(0, 1));
+    assert!(!w.at_war(0, 1));
+}
+
+#[test]
+fn era_transition_rebinds_active_rules() {
+    // Short epoch so we can cross several boundaries quickly, and
+    // kill all background rolls so the tick loop's only notable work
+    // is the era transition bookkeeping.
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        worm_spawn_rate: 0.0,
+        reconnect_rate: 0.0,
+        epoch_period: 10,
+        ..Config::default()
+    };
+    let mut w = World::new(1, (80, 30), cfg);
+    // Opening era is "Age of Silence" — packets hushed, losses eased.
+    assert_eq!(w.epoch_index(), 0);
+    assert!((w.era_rules.exfil_period_mult - 2.0).abs() < 1e-6);
+    assert!((w.era_rules.loss_mult - 0.7).abs() < 1e-6);
+    // Cross into era 1 ("First Signal") — spawn surge, nothing else.
+    // The epoch-boundary check runs inside `tick()` before the
+    // `self.tick += 1` at the end, so reaching tick=10 requires 11
+    // calls (first call processes tick=0 and increments to 1).
+    for _ in 0..11 {
+        w.tick((80, 30));
+    }
+    assert_eq!(w.epoch_index(), 1);
+    assert!((w.era_rules.spawn_mult - 1.3).abs() < 1e-6);
+    assert!((w.era_rules.loss_mult - 1.0).abs() < 1e-6);
+    // And again across tick=20 and tick=30 into era 3 ("Era of Cascades").
+    for _ in 0..20 {
+        w.tick((80, 30));
+    }
+    assert_eq!(w.epoch_index(), 3);
+    assert!((w.era_rules.cascade_mult - 2.0).abs() < 1e-6);
+    // A log line fired for each transition with the summary suffix.
+    let era_lines = w
+        .logs
+        .iter()
+        .filter(|(s, _)| s.starts_with("── era"))
+        .count();
+    assert!(era_lines >= 3, "expected ≥3 era log lines, got {}", era_lines);
 }
 
 #[test]

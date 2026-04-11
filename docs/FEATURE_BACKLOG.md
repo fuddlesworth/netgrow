@@ -4,6 +4,21 @@ Compiled design report of every feature that has shipped in netgrow, every
 unshipped idea we've brainstormed, and recommended next directions. Updated
 as rounds complete.
 
+## Design philosophy
+
+netgrow is a **hands-off ambient simulation** — the viewer watches the
+faction dynamics emerge on their own, and the mesh runs indefinitely until
+you quit. New features should preserve this: the sim decides what happens,
+the viewer reads it. No win conditions, no mandatory interaction, no
+modal game states.
+
+**God-mode tools** are allowed as inspection + light influence: the
+cursor-action hotkeys, faction favoritism, and event injection give the
+viewer ways to *nudge* what they're watching without taking control of any
+faction. Think of it like a zoologist poking a tank — you can reach in,
+but the animals run the show. Any future feature that would require the
+viewer to "play" a faction directly is out of scope.
+
 **How to read this**: status markers mean
 - ✅ shipped
 - 🔨 in flight / partially done
@@ -142,7 +157,7 @@ already exists in the sim", this is the authoritative list.
   `✦ MYTHIC ✦ THE BIG ONE`, `✦ MYTHIC ✦ PANDEMIC`, `✦ MYTHIC ✦ REBIRTH`,
   all colorized distinctly in the log.
 
-### Player interaction
+### God-mode tools
 
 - ✅ **Cursor mode** — Tab toggles inspector cursor, arrow keys move it.
 - ✅ **Cursor-action hotkeys** — `i`/`p`/`s`/`c`/`w` at cursor (infect,
@@ -245,10 +260,11 @@ Brainstormed unshipped items from earlier rounds, rough scope markers:
   color as a permanent memorial. Fall logs fire
   `✦ legend ✦ {name} falls @ ip (F{N})` as mythic events.
 
-### Player interaction
+### Viewer nudges
 
 - **Turf Graffiti** *(trivial)* — mark a cell as high-value target for
-  one cycle. Light-touch player steering wheel.
+  one cycle. Light-touch god-mode steering — the sim still decides, the
+  mark just biases role weights toward that cell briefly.
 
 ### Visualization
 
@@ -263,50 +279,105 @@ Brainstormed unshipped items from earlier rounds, rough scope markers:
 Bigger swings that would change what netgrow fundamentally is or does. All
 are implementable but each is a multi-commit undertaking at minimum.
 
-### 1. Player faction / god mode *(XL)*
+### ✅ 1. Full diplomatic state machine *(L)*
 
-Stop being a passive observer — you *are* a faction. All existing AI
-factions compete around you; you make strategic choices (spawn priorities,
-diplomacy decisions, event triggers). Cursor hotkeys become your action set.
-Adds win/lose conditions from a first-person perspective.
+Shipped: `World.wars`, `World.alliances`, `World.rivalry` all folded
+into a single `World.relations: HashMap<(u8,u8), Relation>` keyed by
+canonical pair. Each relation carries `state: DiplomaticState`,
+`pressure`, `trust`, `entered_tick`, and `expires_tick`. Seven states
+compose a ladder:
 
-**Transforms**: netgrow from a sim into an actual strategy game. Biggest
-conceptual shift available.
+- **Neutral** — default, pressure decays quietly
+- **Trade** — periodic opportunistic roll between low-pressure pairs,
+  Opportunist-biased, accumulates trust toward NAP
+- **NonAggression** — upgrades from Trade at `NAP_TRUST_THRESHOLD`,
+  continues trust-building toward Alliance
+- **Alliance** — upgrades from NAP at `ALLIANCE_TRUST_THRESHOLD`,
+  strongest peaceful bond
+- **ColdWar** — promoted from Neutral at `COLD_WAR_THRESHOLD`,
+  skirmishes dampened but sleeper lattice wakes readily
+- **OpenWar** — promoted from ColdWar at `WAR_DECLARATION_THRESHOLD`
+  (lowered by 20 for Aggressor personas), 3× skirmish amp +
+  cross-faction bridge freedom + worm crossing allowed, on expiry
+  falls back to ColdWar
+- **Vassalage { overlord }** — rolled during OpenWar when one side
+  is >2× the other and the weaker is below 30% of its peak; vassal
+  pays +1 intel tribute each sample period to the overlord; breaks
+  back to ColdWar if the vassal recovers past 70% of the overlord
 
-### 2. Full diplomatic state machine *(L)*
+Persona biases: Aggressor lowers war threshold, Fortress/Opportunist
+boost trust gain rate, Opportunist boosts Trade roll odds. Betrayal
+mechanic: hostile pressure in a peaceful state snaps straight to
+OpenWar with a trust plummet. Back-compat helpers `at_war`, `allied`,
+`rivalry_pressure`, `bump_rivalry` all preserved — callers don't
+know the backing store changed. Render panel upgraded from
+"rivalries" to "diplomacy": sorted by state priority (war first,
+then vassalage/cold/alliance/NAP/trade), each row shows the state
+label + pressure bar.
 
-Replace the ad-hoc alliance/war system with a proper per-pair diplomacy
-graph. States: neutral, trade, non-aggression, alliance, cold-war,
-open-war, vassalage, tribute. Transitions have conditions, costs, trust
-scores. Personas bias the state machine.
+### ✅ 2. Era system with mechanical rules *(M-L)*
 
-**Transforms**: Faction relations become a coherent second-layer game
-where alliances matter and treaties can be violated with consequences.
+Shipped: `EraRules` struct + `era_rules_for(idx)` mapping in
+`config.rs`. Each of the 12 named eras now rebinds a set of scalar
+multipliers (`spawn_mult`, `loss_mult`, `exfil_period_mult`,
+`virus_spread_mult`, `mutate_mult`, `immunity_mult`, `cascade_mult`,
+`assimilation_speed_mult`, `bridge_mult`) consumed at the relevant
+tick-loop sites. Era transitions fire a log line with a short summary
+suffix (e.g. `── era 3: Era of Cascades ✦ cascades 2× / loss 1.3×`).
+The opening era ("Age of Silence") hushes packets and eases losses;
+"Winter of Quarantine" stretches post-cure immunity 5×; "Zero-Day
+Bloom" quadruples mutation; "Final Handshake" accelerates assimilation;
+"The Long Drift" quiets both spawn and loss.
 
-### 3. Era system with mechanical rules *(M-L)* ⭐ top pick
+### ✅ 3. Hierarchical tech tree per faction *(L)*
 
-Eras currently exist as log flavor. Make each epoch change the active
-rules: *Age of Silence* suppresses packet traffic, *Era of Cascades*
-doubles cascade multipliers, *Winter of Quarantine* extends immunity 5x,
-*Zero-Day Bloom* spikes mutation rates, *Final Handshake* accelerates
-assimilation, etc. Era transitions visibly reshape what's happening.
+Shipped: `FactionStats` gained `research`, `tech_tier`,
+`last_intel_sample`, `last_cures_sample`. `advance_research` runs on
+the faction sample cadence and computes per-faction income from
+`base + 3·intel_delta + 2·cures_delta`, then applies a diplomatic
+multiplier (Trade +25%, NAP +10%, Alliance +50%) and skims 30% of
+each vassal's income to their overlord before adding to the research
+counter. Three tier thresholds (`TECH_TIER_1_COST=100`, `_2=300`,
+`_3=800`) promote the faction's `tech_tier` and emit a
+`✦ tech ✦ F{N} {persona} reaches tier {T} — {effect}` log line.
 
-**Transforms**: Long runs get narrative acts with distinct vibes. You
-*feel* when the era changes.
+**Tier 1** — `tech_role_intensity` amplifies the persona's role-weight
+deviation from 1.0 (intensity 1.35 at T1, 1.6 at T2/T3), read by
+`roll_role` when a new node picks its role. Stronger factions feel
+more like their persona.
 
-### 4. Hierarchical tech tree per faction *(L)*
+**Tier 2** — persona-specific passive:
+- Aggressor → `tech_scanner_period_mult=0.65` (scanners fire 35%
+  faster)
+- Fortress → `tech_defender_radius_bonus=+2` (wider cure pulses)
+- Plague → `tech_worm_spawn_mult=2.0` (doubled worm emission from
+  its infected hosts)
+- Opportunist → `tech_bridge_mult=2.0` (doubled cross-faction bridge
+  roll)
 
-Each faction accumulates research points over time (scaled from spawned /
-intel / cures / etc). Research unlocks tiered perks: Tier 1 = role weight
-multipliers, Tier 2 = passive abilities (Plague gets mutation speed,
-Fortress gets defender radius, Aggressor gets scanner range), Tier 3 =
-unique abilities (summon zero-day, region cure, reveal enemy C2).
-Factions can sabotage each other's research.
+**Tier 3** — active ability rolled at `TECH_T3_ACTIVE_CHANCE=0.22`
+per sample period:
+- Aggressor → `tech_active_aggressor`: free extended scanner pulse on
+  one of its scanners (`✦ tech ✦ F{N} orbital sweep @ 10.0.a.b`)
+- Fortress → `tech_active_fortress`: free patch wave from one of its
+  defenders (`✦ tech ✦ F{N} pulse cannon @ 10.0.a.b`)
+- Plague → `tech_active_plague`: plants 2 fresh infections anywhere
+  on the mesh (`✦ tech ✦ F{N} endemic bloom — 2 hosts seeded with
+  {strain}`)
+- Opportunist → `tech_active_opportunist`: spawns a free wormhole
+  (`✦ tech ✦ F{N} brokered wormhole @ 10.0.a.b`)
 
-**Transforms**: Factions have build orders. Early vs late game feel
-genuinely different.
+Faction leaderboard row shows a compact tier glyph
+(`····`/`t1▪▪`/`t2▪▪▪`/`t3★`) between persona and alive-count so the
+reader can see at a glance which factions are ahead. Log colorizer
+tints `✦ tech` lines in accent color.
 
-### 5. Multi-mesh / layered networks *(XL)*
+**Sabotage** is deferred — the hook points exist (`research` is just
+a counter) but the first cut ships without it. Future work: in
+OpenWar state, skirmish kills shave a small amount off the victim's
+research.
+
+### 4. Multi-mesh / layered networks *(XL)*
 
 Instead of a single flat grid, several smaller meshes connected by
 long-distance "backbone" links. Factions operate primarily on one mesh
@@ -317,7 +388,7 @@ between meshes.
 **Transforms**: World feels bigger; cross-mesh escalation becomes its own
 arc.
 
-### 6. Civil wars / faction fission *(L)*
+### 5. Civil wars / faction fission *(L)*
 
 Factions can split internally when a branch gets big enough and
 ideologically diverges (e.g. a Plague-persona branch that's ended up
@@ -328,16 +399,17 @@ faction lineage trees and dynastic conflict.
 **Transforms**: Factions aren't monolithic. Internal tension becomes a
 legitimate failure mode.
 
-### 7. Replay system *(XL)*
+### 6. Replay system *(XL)*
 
 Record every World state mutation to a ring buffer. Press `[` / `]` to
 scrub backward/forward through time. Pin a tick as a reference point and
-replay forward from it.
+replay forward from it. Purely observational — no interaction with the
+past, just inspection.
 
 **Transforms**: Lets the viewer deeply inspect what just happened. Turns
 the sim into a tool you can *study*.
 
-### 8. Procedural event generator *(L)*
+### 7. Procedural event generator *(L)*
 
 Compose events from parts at world creation: pick a random trigger
 (rivalry > threshold / era matches / day_night state / node count > X),
@@ -358,17 +430,18 @@ for the first time. Never feels stale.
 - **Virus escalation** — Carrier Nodes + Strain Patents + Sleeper Lattice
 - **Narrative/history** — Lore Tablets + Scorched-Earth + Faction Memory
   Decay *(coherent "map remembers" theme, all small/trivial)*
-- **Player agency** — Turf Graffiti + Mercenary Nodes + Cold War Pacts
+- **Viewer nudges** — Turf Graffiti + Mercenary Nodes + Cold War Pacts
+  *(three tiny levers that bias the sim without taking control)*
 - **Economy** — Bandwidth Drought + Black Market Links + Strain Patents
 
 ### From Round 3
 
 - **Deepen what's there** — Era system + Hierarchical tech tree + Civil
   wars *(these all add depth without changing what netgrow fundamentally
-  is; each makes factions feel more like real players)*
-- **Transform the sim** — Player faction / god mode + Replay system
-  *(biggest conceptual shifts, turn the sim into a tool you play and
-  study)*
+  is; each makes factions feel more alive and autonomous)*
+- **Study the sim** — Replay system + Procedural event generator
+  *(turn the sim into a tool you can rewind and inspect while every
+  run still generates first-time events)*
 - **Cross-round** — Era system + Procedural event generator + Scorched-
   Earth Protocol *(turns long runs into acts of emergent narrative where
   each phase has its own rules, mythics, and dramatic exits)*
@@ -385,7 +458,7 @@ Memory Decay. Three coherent commits, all small/trivial, form a
 
 ### If we're jumping into Round 3 major work
 
-**Era system with mechanical rules** (#3) as the first major expansion.
+**Era system with mechanical rules** (#2) as the first major expansion.
 Rationale:
 - Eras already exist as flavor text and a named pool
 - Hooks into the existing tick loop at one clean point
@@ -400,15 +473,15 @@ Rationale:
 
 ### The single biggest creative stretch
 
-**Procedural event generator** (#8). Produces the most "first-time-I've-
+**Procedural event generator** (#7). Produces the most "first-time-I've-
 seen-this" moments across runs. Slightly higher complexity than the era
 system because it needs a mini event DSL, but still in L range.
 
-### The single biggest game-changer
+### The single biggest structural shift
 
-**Player faction / god mode** (#1). Transforms netgrow from a sim into
-an actual strategy game. Highest impact on what the project *is*, also
-highest scope.
+**Multi-mesh / layered networks** (#4). Expands the world from one grid
+to several connected meshes with cross-mesh raids — the biggest change
+to what netgrow *is* that still respects the hands-off sim framing.
 
 ---
 
@@ -418,7 +491,7 @@ highest scope.
 |---|---|---|
 | Shipped | 60+ features | — |
 | Round 2 unshipped | 16 ideas | Mostly trivial/small |
-| Round 3 unshipped | 8 ideas | L to XL each |
+| Round 3 unshipped | 7 ideas | L to XL each |
 
 The sim is feature-rich enough that every Round 2 item is a polish
 pass on existing systems, while Round 3 items are genuine expansions

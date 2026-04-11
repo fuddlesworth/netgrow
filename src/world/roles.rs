@@ -43,7 +43,7 @@ impl World {
     }
 
     pub(super) fn fire_scanner_pings(&mut self) {
-        let period = self.cfg.scanner_ping_period;
+        let base_period = self.cfg.scanner_ping_period;
         let now = self.tick;
         let scanner_ids: Vec<NodeId> = self
             .nodes
@@ -83,6 +83,11 @@ impl World {
                 SCANNER_PULSE_TICKS
             };
             let faction = self.nodes[id].faction;
+            // Aggressor Tier 2 scales scanner period down, so
+            // recon fires more often for tech-advanced factions.
+            let period = ((base_period as f32)
+                * self.tech_scanner_period_mult(faction))
+            .max(1.0) as u16;
             let n = &mut self.nodes[id];
             n.role_cooldown = period;
             n.last_ping_tick = now;
@@ -148,7 +153,9 @@ impl World {
     }
 
     pub(super) fn fire_exfil_packets(&mut self) {
-        let period = self.cfg.exfil_packet_period;
+        let period = ((self.cfg.exfil_packet_period as f32)
+            * self.era_rules.exfil_period_mult)
+            .max(1.0) as u16;
         let inbound = self.build_inbound_links();
         let exfil_ids: Vec<NodeId> = self
             .nodes
@@ -283,7 +290,8 @@ impl World {
 
     pub(super) fn fire_defender_pulses(&mut self) {
         let period = self.cfg.defender_pulse_period;
-        let radius = self.cfg.defender_radius;
+        let base_radius = self.cfg.defender_radius;
+        let immunity_ticks = self.era_immunity_ticks();
         // Active defenders ready to pulse this tick.
         let defenders: Vec<(NodeId, (i16, i16))> = self
             .nodes
@@ -308,6 +316,11 @@ impl World {
         // tick — each is a candidate to spawn an antibody worm.
         let mut curing_defenders: Vec<NodeId> = Vec::new();
         for (id, dpos) in defenders {
+            // Fortress Tier 2 stretches this defender's effective
+            // cure radius so fortified factions feel decisively
+            // more antiviral as they tech up.
+            let faction = self.nodes[id].faction;
+            let radius = base_radius + self.tech_defender_radius_bonus(faction);
             self.nodes[id].role_cooldown = period;
             self.nodes[id].pulse = 2;
             // Scan for infected neighbors within radius and decrement
@@ -326,7 +339,7 @@ impl World {
                     cured_positions.push((n.pos, n.faction));
                     n.infection = None;
                     n.immunity_strain = Some(strain);
-                    n.immunity_ticks = super::IMMUNITY_DURATION_TICKS;
+                    n.immunity_ticks = immunity_ticks;
                     if !curing_defenders.contains(&id) {
                         curing_defenders.push(id);
                     }

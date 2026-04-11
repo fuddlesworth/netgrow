@@ -202,11 +202,16 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
         ViewMode::Intel => {
             // Rivalries / events panels size dynamically to their
             // content (capped so one panel can't eat the column).
-            let rivalry_rows: u16 = (world.rivalry.len().min(6) as u16).max(1);
+            let rivalry_rows: u16 = (world.relations.len().min(6) as u16).max(1);
             let rivalries_height = rivalry_rows + 2;
+            let war_count = world
+                .relations
+                .values()
+                .filter(|r| matches!(r.state, crate::world::DiplomaticState::OpenWar))
+                .count();
             let event_count = (world.outages.len()
                 + world.partitions.len()
-                + world.wars.len()
+                + war_count
                 + world.ddos_waves.len()
                 + if world.is_storming() { 1 } else { 0 })
                 .min(6) as u16;
@@ -1071,6 +1076,31 @@ fn factions_block(world: &World) -> Paragraph<'static> {
             .copied()
             .map(|p| p.display_name())
             .unwrap_or("?");
+        // Fixed-width 5-char tier badge. All four variants occupy
+        // exactly 5 columns so the alive/score/spark cells line up
+        // row-to-row — the previous mix (3/4/5 visible chars) put
+        // the sparkline in a different column on every row.
+        let (tier_glyph, tier_color) = match fs.tech_tier {
+            0 => ("·····", theme().ghost),
+            1 => ("t1•··", theme().label),
+            2 => ("t2••·", theme().accent),
+            _ => ("t3•••", theme().pwned),
+        };
+        // Scores scale with intel-delivering factions (3× intel in
+        // `FactionStats::score`), so long runs routinely produce
+        // 5-6 digit scores that overflow a `{:>+5}` slot. Collapse
+        // anything past 10k into a `+60k` suffix so the column
+        // stays exactly 6 chars regardless of magnitude.
+        let raw_score = fs.score();
+        let score_str = {
+            let abs = raw_score.unsigned_abs();
+            let sign = if raw_score < 0 { "-" } else { "+" };
+            if abs >= 10_000 {
+                format!("{}{}k", sign, abs / 1000)
+            } else {
+                format!("{}{}", sign, abs)
+            }
+        };
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled(
@@ -1086,10 +1116,12 @@ fn factions_block(world: &World) -> Paragraph<'static> {
                 Style::default().fg(hue),
             ),
             Span::raw(" "),
+            Span::styled(tier_glyph.to_string(), Style::default().fg(tier_color)),
+            Span::raw(" "),
             Span::styled(format!("{:>4}", alive), label_style),
             Span::raw(" "),
             Span::styled(
-                format!("{:>+5}", fs.score()),
+                format!("{:>6}", score_str),
                 Style::default().fg(hue).add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
@@ -1217,39 +1249,101 @@ fn minimap_block(world: &World, panel_width: u16, cursor: Option<(i16, i16)>) ->
 }
 
 /// Top-pressure rivalries rendered as horizontal bars. Pulls from
-/// `World.rivalry`, sorts descending, and shows the six hottest
-/// pairs in their combined faction hues.
+/// Compact diplomacy panel. For each active relation, draws a
+/// state glyph + pair label + the single most informative metric
+/// for that state (pressure for hostile pairs, trust for peaceful,
+/// overlord pointer for vassalage), plus a dim timer readout if
+/// the state is time-bounded. No progress bars — the previous
+/// version's low-value fill rendered as dithered noise against
+/// the mesh background and wasted horizontal space.
 fn rivalries_block(world: &World) -> Paragraph<'static> {
+    use crate::world::DiplomaticState;
     let th = theme();
-    let block = bordered_block(" rivalries ");
-    if world.rivalry.is_empty() {
+    let block = bordered_block(" diplomacy ");
+    if world.relations.is_empty() {
         let lines = vec![Line::from(Span::styled(
-            " (no active feuds)".to_string(),
+            " (all factions Neutral)".to_string(),
             Style::default().fg(th.ghost),
         ))];
         return Paragraph::new(lines).block(block);
     }
-    let mut entries: Vec<((u8, u8), u16)> =
-        world.rivalry.iter().map(|(&k, &v)| (k, v)).collect();
-    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut entries: Vec<((u8, u8), crate::world::Relation)> = world
+        .relations
+        .iter()
+        .map(|(&k, &r)| (k, r))
+        .collect();
+    // Sort by state priority (war first, peace last), then by
+    // pressure so the hottest feud lands on top.
+    let state_priority = |s: DiplomaticState| -> u8 {
+        match s {
+            DiplomaticState::OpenWar => 0,
+            DiplomaticState::Vassalage { .. } => 1,
+            DiplomaticState::ColdWar => 2,
+            DiplomaticState::Alliance => 3,
+            DiplomaticState::NonAggression => 4,
+            DiplomaticState::Trade => 5,
+            DiplomaticState::Neutral => 6,
+        }
+    };
+    entries.sort_by(|a, b| {
+        state_priority(a.1.state)
+            .cmp(&state_priority(b.1.state))
+            .then(b.1.pressure.cmp(&a.1.pressure))
+    });
     entries.truncate(6);
-    let cap = crate::world::RIVALRY_CAP.max(1);
-    let bar_cells = 14u32;
+    let tick = world.tick;
     let lines: Vec<Line<'static>> = entries
         .into_iter()
-        .map(|((a, b), pressure)| {
-            let at_war = world.at_war(a, b);
+        .map(|((a, b), rel)| {
             let hue_a = faction_hue(world, a);
             let hue_b = faction_hue(world, b);
-            let fill = ((pressure as u32 * bar_cells) / cap as u32).min(bar_cells);
-            let bar: String = (0..bar_cells)
-                .map(|i| if i < fill { '█' } else { '░' })
-                .collect();
-            let mark = if at_war { "⚔" } else { "·" };
+            let (mark, mark_color) = match rel.state {
+                DiplomaticState::OpenWar => ("⚔", th.pwned),
+                DiplomaticState::Vassalage { .. } => ("♛", th.accent),
+                DiplomaticState::ColdWar => ("⟡", th.pwned_alt),
+                DiplomaticState::Alliance => ("✦", th.accent),
+                DiplomaticState::NonAggression => ("◈", th.label),
+                DiplomaticState::Trade => ("⇌", th.accent),
+                DiplomaticState::Neutral => ("·", th.ghost),
+            };
+            // Context-sensitive metric: show the number that
+            // matters for this state. Pressure for hostilities,
+            // trust for cooperation, overlord pointer for
+            // vassalage. Neutral pairs only surface a pressure
+            // readout when the value is non-zero.
+            let (metric, metric_color) = match rel.state {
+                DiplomaticState::OpenWar | DiplomaticState::ColdWar => {
+                    (format!("p{:>3}", rel.pressure), th.pwned)
+                }
+                DiplomaticState::Trade
+                | DiplomaticState::NonAggression
+                | DiplomaticState::Alliance => {
+                    (format!("t{:>+3}", rel.trust), th.accent)
+                }
+                DiplomaticState::Vassalage { overlord } => {
+                    (format!("→F{}", overlord), th.accent)
+                }
+                DiplomaticState::Neutral => {
+                    if rel.pressure > 0 {
+                        (format!("p{:>3}", rel.pressure), th.stat_label)
+                    } else {
+                        ("    ".to_string(), th.ghost)
+                    }
+                }
+            };
+            // Dim countdown in ticks for timed states. Skipped
+            // entirely when expires_tick is 0 (Neutral /
+            // Vassalage use death-driven, not timer-driven,
+            // exits).
+            let timer = if rel.expires_tick > tick {
+                format!(" {}t", rel.expires_tick - tick)
+            } else {
+                String::new()
+            };
             Line::from(vec![
                 Span::styled(
                     format!(" {} ", mark),
-                    Style::default().fg(th.pwned).add_modifier(Modifier::BOLD),
+                    Style::default().fg(mark_color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!("F{}", a),
@@ -1260,11 +1354,13 @@ fn rivalries_block(world: &World) -> Paragraph<'static> {
                     format!("F{} ", b),
                     Style::default().fg(hue_b).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(bar, Style::default().fg(th.pwned)),
                 Span::styled(
-                    format!(" {}", pressure),
-                    Style::default().fg(th.stat_label),
+                    format!("{:<5}", rel.state.short_label()),
+                    Style::default().fg(mark_color),
                 ),
+                Span::raw(" "),
+                Span::styled(metric, Style::default().fg(metric_color)),
+                Span::styled(timer, Style::default().fg(th.ghost)),
             ])
         })
         .collect();
@@ -1312,8 +1408,12 @@ fn events_block(world: &World) -> Paragraph<'static> {
             th.pwned_alt,
         ));
     }
-    let mut war_pairs: Vec<((u8, u8), u64)> =
-        world.wars.iter().map(|(&k, &v)| (k, v)).collect();
+    let mut war_pairs: Vec<((u8, u8), u64)> = world
+        .relations
+        .iter()
+        .filter(|(_, r)| matches!(r.state, crate::world::DiplomaticState::OpenWar))
+        .map(|(&k, r)| (k, r.expires_tick))
+        .collect();
     war_pairs.sort_by(|a, b| b.1.cmp(&a.1));
     for ((a, b), expires) in war_pairs.into_iter().take(4) {
         let remaining = expires.saturating_sub(world.tick);
@@ -1784,6 +1884,10 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default()
             .fg(th.log_cured)
             .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("✦ diplo") {
+        Style::default().fg(th.log_cured)
+    } else if s.starts_with("✦ tech") {
+        Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
     } else if s.starts_with("handshake") {
         Style::default().fg(th.log_handshake)
     } else if s.starts_with("beacon") {

@@ -443,14 +443,92 @@ impl Persona {
     }
 }
 
-/// Two factions temporarily at peace. During the alliance, border
-/// skirmishes between them are suppressed and cross-faction bridge
-/// rolls between them don't fire. Purely a period of non-aggression.
+/// Per-faction-pair diplomatic state. Every relation starts `Neutral`
+/// and moves through the state machine in `advance_diplomacy` as
+/// pressure, trust, and timers evolve. States are either
+/// pressure-driven (ColdWar, OpenWar) or trust-driven (Trade,
+/// NonAggression, Alliance) with Vassalage as a directional post-war
+/// subordination. Skirmishes, bridges, worm crossings, and rendering
+/// all read the state to decide whether a pair is hostile, neutral,
+/// or cooperative.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiplomaticState {
+    /// Default: no active relationship, pressure can still climb.
+    Neutral,
+    /// Packet exchange between the pair is visible as intel boosts;
+    /// trust accumulates faster than in Neutral.
+    Trade,
+    /// Explicit ceasefire. No skirmishes, no cross-faction bridges,
+    /// trust still grows slowly, timer-bounded.
+    NonAggression,
+    /// Strongest peaceful state — built from NonAggression via
+    /// earned trust. Same mechanical blocks as NonAggression plus
+    /// mutual skirmish amnesty through the alliance window.
+    Alliance,
+    /// Hostile-but-not-shooting. Skirmishes suppressed, but sleeper
+    /// lattice wakes more readily between the pair and pressure
+    /// decays slower than in Neutral.
+    ColdWar,
+    /// Declared war. Skirmish chance gets a 3× amp, cross-faction
+    /// bridges roll freely, worm crossings land without alliance
+    /// blocks. Timer-bounded; expiry falls back to ColdWar.
+    OpenWar,
+    /// Directional subordination — the vassal in the pair owes the
+    /// overlord an intel tribute each sample period. `overlord` is
+    /// the dominant faction id. Suppresses skirmishes between the
+    /// pair, blocks cross-faction bridges, and feeds the overlord.
+    Vassalage { overlord: u8 },
+}
+
+/// One entry in `World.relations`. Keyed by canonical `(min, max)`
+/// faction pair, so any lookup with `(a, b)` or `(b, a)` resolves
+/// to the same record. Default is a fresh Neutral pair with zero
+/// pressure and trust.
 #[derive(Clone, Copy, Debug)]
-pub struct Alliance {
-    pub a: u8,
-    pub b: u8,
+pub struct Relation {
+    pub state: DiplomaticState,
+    /// Hostile tension. Bumped by skirmishes, worm crossings, siege
+    /// hits, spy reveals. Decayed each sample period.
+    pub pressure: u16,
+    /// Cooperative bond. Accumulated while peaceful states hold;
+    /// negative values possible when peace breaks down.
+    pub trust: i16,
+    /// Tick the current state was entered. Used by the UI for
+    /// relative age readouts and by transition rules that care
+    /// about minimum dwell time.
+    pub entered_tick: u64,
+    /// Tick at which the current state expires and transitions to
+    /// its follow-up. Zero means "no expiry" — used for Neutral,
+    /// ColdWar (decay-driven), and Vassalage (death-driven).
     pub expires_tick: u64,
+}
+
+impl Default for Relation {
+    fn default() -> Self {
+        Self {
+            state: DiplomaticState::Neutral,
+            pressure: 0,
+            trust: 0,
+            entered_tick: 0,
+            expires_tick: 0,
+        }
+    }
+}
+
+impl DiplomaticState {
+    /// Short label for render panels — 4 chars max so it fits in
+    /// the rivalries bar row next to the faction hues.
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            DiplomaticState::Neutral => "····",
+            DiplomaticState::Trade => "TRADE",
+            DiplomaticState::NonAggression => "NAP",
+            DiplomaticState::Alliance => "ALLY",
+            DiplomaticState::ColdWar => "COLD",
+            DiplomaticState::OpenWar => "WAR",
+            DiplomaticState::Vassalage { .. } => "VASL",
+        }
+    }
 }
 
 /// Rare visual-only event: a dashed braille line flickering briefly
@@ -639,6 +717,26 @@ pub struct FactionStats {
     /// chain-collapsed its own subtree in defiance rather than
     /// letting rivals reclaim it. One-shot per faction lifetime.
     pub scorched_earth_fired: bool,
+    /// Accumulated research points. Climbs each faction sample
+    /// period from a formula over alive count, recent intel
+    /// deliveries, and recent cures. Used to unlock successive
+    /// tiers of the persona-biased tech tree.
+    pub research: u32,
+    /// Highest tech tier this faction has unlocked (0 through 3).
+    /// Tier 1 amplifies the persona's role-weight bias, Tier 2
+    /// adds a persona-specific passive, Tier 3 unlocks a periodic
+    /// free active ability. Persists across persona shifts — a
+    /// faction that rolls into Fortress at T2 starts applying the
+    /// Fortress passives on the next sample.
+    pub tech_tier: u8,
+    /// Snapshot of `intel` at the previous research tick. The
+    /// income formula rewards deliveries-since-last-sample, so
+    /// this value lets `advance_research` compute a delta instead
+    /// of re-rewarding cumulative totals every pass.
+    pub last_intel_sample: u32,
+    /// Snapshot of `infections_cured` at the previous research
+    /// tick. Same delta-calculation pattern as `last_intel_sample`.
+    pub last_cures_sample: u32,
 }
 
 impl FactionStats {

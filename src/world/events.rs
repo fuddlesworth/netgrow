@@ -7,44 +7,9 @@
 
 use rand::Rng;
 
-use super::{
-    Alliance, DdosWave, IspOutage, NodeId, Partition, State, World, Wormhole, octet_pair,
-};
+use super::{DdosWave, IspOutage, NodeId, Partition, State, World, Wormhole, octet_pair};
 
 impl World {
-    pub(super) fn maybe_alliance(&mut self) {
-        // Expire any done alliances first.
-        let now = self.tick;
-        let prev_len = self.alliances.len();
-        self.alliances.retain(|al| al.expires_tick > now);
-        if self.alliances.len() < prev_len {
-            self.push_log("alliance dissolved".to_string());
-        }
-        if !self.roll_periodic(self.cfg.alliance_period, self.cfg.alliance_chance) {
-            return;
-        }
-        if self.c2_nodes.len() < 2 {
-            return;
-        }
-        // Pick two distinct faction ids.
-        let n = self.c2_nodes.len() as u8;
-        let a = self.rng.gen_range(0..n);
-        let mut b = self.rng.gen_range(0..n);
-        while b == a && n > 1 {
-            b = self.rng.gen_range(0..n);
-        }
-        if a == b {
-            return;
-        }
-        // Skip if already allied.
-        if self.allied(a, b) {
-            return;
-        }
-        let expires_tick = now + self.cfg.alliance_duration;
-        self.alliances.push(Alliance { a, b, expires_tick });
-        self.push_log(format!("alliance F{} ↔ F{} signed", a, b));
-    }
-
     /// Border skirmishes: periodic low-probability hits on nodes that
     /// sit near an enemy-faction neighbor. Visible as scattered
     /// shielded/LOST lines at faction frontiers during long runs.
@@ -140,7 +105,12 @@ impl World {
     /// C2 is marked dead — visible as a dramatic color swap + mythic
     /// log line.
     pub(super) fn maybe_assimilate(&mut self) {
-        if !self.roll_periodic(self.cfg.assimilation_period, 1.0) {
+        let period = {
+            let speed = self.era_rules.assimilation_speed_mult.max(0.01);
+            let scaled = (self.cfg.assimilation_period as f32 / speed) as u64;
+            scaled.max(1)
+        };
+        if !self.roll_periodic(period, 1.0) {
             return;
         }
         if self.c2_nodes.len() < 2 {

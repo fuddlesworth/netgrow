@@ -22,6 +22,7 @@ impl World {
             return;
         }
         let max_r = self.cfg.patch_wave_radius;
+        let immunity_ticks = self.era_immunity_ticks();
         for wave in self.patch_waves.iter_mut() {
             wave.radius += 1;
         }
@@ -57,7 +58,7 @@ impl World {
                         n.infection = None;
                         // Grant strain-specific post-cure immunity.
                         n.immunity_strain = Some(strain);
-                        n.immunity_ticks = super::IMMUNITY_DURATION_TICKS;
+                        n.immunity_ticks = immunity_ticks;
                         break;
                     } else {
                         inf.cure_resist -= 1;
@@ -152,7 +153,7 @@ impl World {
         // node with infected neighbors rolls once per tick. We collect first
         // and apply after so freshly infected nodes don't re-infect siblings
         // in the same tick.
-        let spread_rate = self.cfg.virus_spread_rate;
+        let spread_rate = self.cfg.virus_spread_rate * self.era_rules.virus_spread_mult;
         let cure_resist = self.cfg.virus_cure_resist;
         let c2_set: HashSet<NodeId> = self.c2_nodes.iter().copied().collect();
         let adj = self.live_adjacency();
@@ -258,7 +259,7 @@ impl World {
                     .unwrap_or(0);
                 self.nodes[id].infection = None;
                 self.nodes[id].immunity_strain = Some(strain);
-                self.nodes[id].immunity_ticks = super::IMMUNITY_DURATION_TICKS;
+                self.nodes[id].immunity_ticks = self.era_immunity_ticks();
                 let name = self.strain_name(strain);
                 self.log_node(pos, &format!("{} outcompeted", name));
             }
@@ -375,7 +376,7 @@ impl World {
     }
 
     pub(super) fn maybe_mutate(&mut self) {
-        let rate = self.cfg.mutate_rate;
+        let rate = self.cfg.mutate_rate * self.era_rules.mutate_mult;
         if rate <= 0.0 {
             return;
         }

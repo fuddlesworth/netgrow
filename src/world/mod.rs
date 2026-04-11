@@ -114,18 +114,61 @@ pub const LEGENDARY_MIN_AGE: u64 = 1200;
 /// qualify for a legendary name.
 pub const LEGENDARY_MIN_CHILDREN: u16 = 8;
 
-/// Maximum value any rivalry pair can hold. Caps the multiplier so
-/// even ancient feuds eventually plateau instead of melting events.
+/// Maximum value any relation's pressure can hold. Caps the
+/// multiplier so even ancient feuds eventually plateau instead of
+/// melting events.
 pub const RIVALRY_CAP: u16 = 200;
 
-/// Rivalry pressure threshold that promotes a feud to an open war
-/// declaration. Crossing it emits a mythic log line and applies a
-/// flat 3x skirmish chance multiplier on top of the rivalry amp.
-pub const WAR_DECLARATION_THRESHOLD: u16 = 100;
-/// Duration in ticks that an open war stays active after being
-/// declared. Keeps the amplification window bounded so wars don't
-/// consume the whole run.
-pub const WAR_DURATION_TICKS: u64 = 500;
+/// Pressure threshold that promotes a Neutral relation into ColdWar.
+/// Below this, pressure accumulates quietly — no visible state
+/// change; above it, the relation flips to an explicit hostile
+/// posture and `advance_diplomacy` starts watching for the war
+/// escalation.
+pub const COLD_WAR_THRESHOLD: u16 = 60;
+/// Pressure threshold that promotes a ColdWar relation into OpenWar.
+/// Aggressor-persona factions see a lowered effective threshold via
+/// `persona_war_bonus`, so their wars declare earlier.
+pub const WAR_DECLARATION_THRESHOLD: u16 = 120;
+/// Pressure level that an OpenWar must drop back below before it
+/// can de-escalate into ColdWar on timer expiry.
+pub const WAR_DE_ESCALATE_THRESHOLD: u16 = 80;
+
+/// Trust cap in both positive and negative directions. Trust
+/// accumulates while peaceful states hold and plummets on
+/// betrayal (alliance broken, war declared from a peaceful state).
+pub const TRUST_CAP: i16 = 100;
+/// Trust level at which a Trade relation can upgrade to
+/// NonAggression on timer expiry.
+pub const NAP_TRUST_THRESHOLD: i16 = 30;
+/// Trust level at which a NonAggression relation can upgrade to
+/// Alliance on timer expiry.
+pub const ALLIANCE_TRUST_THRESHOLD: i16 = 60;
+
+/// State durations in ticks. Timer-bounded states fall back to a
+/// follow-up state on expiry; pressure/trust/death-driven states
+/// use `expires_tick = 0` to mean "no timer".
+pub const STATE_DURATION_TRADE: u64 = 800;
+pub const STATE_DURATION_NAP: u64 = 1000;
+pub const STATE_DURATION_ALLIANCE: u64 = 600;
+pub const STATE_DURATION_COLD_WAR: u64 = 400;
+pub const STATE_DURATION_OPEN_WAR: u64 = 500;
+
+/// Research point thresholds for each tier of the persona tech tree.
+/// A faction that crosses `TECH_TIER_1_COST` total research unlocks
+/// Tier 1, and so on. Costs are cumulative and research never
+/// decrements — once unlocked a tier stays unlocked even if the
+/// faction then shrinks. Tuned so a typical mid-size faction
+/// unlocks T1 around tick 2000, T2 around tick 6000, T3 around
+/// tick 15000 — the system is meant to read as long-arc progress,
+/// not an early-game power spike.
+pub const TECH_TIER_1_COST: u32 = 200;
+pub const TECH_TIER_2_COST: u32 = 700;
+pub const TECH_TIER_3_COST: u32 = 1800;
+/// Per-sample chance that a Tier 3 faction fires its persona's
+/// active ability. Low enough that the active fires roughly once
+/// every few minutes of real time while still being noticeable in
+/// the log feed.
+pub const TECH_T3_ACTIVE_CHANCE: f64 = 0.22;
 
 /// Fraction of total alive nodes a single faction needs to hold
 /// to be counted as the currently-dominant faction. Fires a log
@@ -203,7 +246,6 @@ pub struct World {
     pub shockwaves: Vec<CascadeShockwave>,
     pub ddos_waves: Vec<DdosWave>,
     pub wormholes: Vec<Wormhole>,
-    pub alliances: Vec<Alliance>,
     pub next_branch_id: u16,
     /// Tick at which the current network storm ends. 0 if no storm is
     /// active. Storms spike both spawn and loss rates for a short burst.
@@ -230,13 +272,16 @@ pub struct World {
     /// cadence as faction history. Feeds the btop-style braille area
     /// graph in the right column's 'activity' panel.
     pub activity_history: VecDeque<u32>,
-    /// Per-faction-pair "war pressure". Indexed by canonical pair
-    /// `(min(a,b), max(a,b))`. Accumulates from cross-faction kills,
-    /// worm crossings, and border skirmish hits; decays slowly via
-    /// the faction sampler. High pressure amplifies border skirmish
-    /// chances and makes cross-faction bridge rolls more likely
-    /// between the rivals — feuds become sticky instead of uniform.
-    pub rivalry: HashMap<(u8, u8), u16>,
+    /// Per-faction-pair diplomatic state machine. Keyed by canonical
+    /// `(min(a,b), max(a,b))`. Replaces the earlier split between
+    /// `rivalry`, `wars`, and `alliances` with a single unified
+    /// record per pair that owns the current `DiplomaticState`,
+    /// pressure, trust, and the state timer. `advance_diplomacy`
+    /// drives transitions on the faction sample cadence; every
+    /// call site (`at_war`, `allied`, `rivalry_pressure`,
+    /// `bump_rivalry`, render panels) reads through helper methods
+    /// that back-compat to the old API.
+    pub relations: HashMap<(u8, u8), Relation>,
     /// Active ISP outage zones: rectangular dead regions where new
     /// spawns are blocked and any alive nodes inside take a steady
     /// role-cooldown spike. Spawned by `maybe_isp_outage` and
@@ -259,12 +304,6 @@ pub struct World {
     /// colors from the palette instead of F0 always being hue[0],
     /// F1 always being hue[1], etc.
     pub faction_colors: Vec<usize>,
-    /// Active open-war declarations. Key is the canonical
-    /// rivalry pair (min, max); value is the tick at which the
-    /// war window expires. While a pair is at war, border
-    /// skirmish chance gets an extra 3x multiplier on top of the
-    /// rivalry pressure amp.
-    pub wars: HashMap<(u8, u8), u64>,
     /// Faction currently holding dominance (≥ VICTORY_ALIVE_FRACTION
     /// of total alive nodes, or sole surviving C2). Cleared when
     /// the dominant faction drops below the threshold. Purely a
@@ -290,6 +329,11 @@ pub struct World {
     /// field clears and spawn rolls stop biasing.
     pub favored_faction: Option<u8>,
     pub favor_expires_tick: u64,
+    /// Active era's mechanical rule set. Recomputed at each epoch
+    /// boundary via `era_rules_for`. Individual tick-loop sites read
+    /// the relevant multiplier from this struct and fold it into the
+    /// existing cfg-derived values.
+    pub era_rules: EraRules,
 }
 
 impl World {
@@ -387,13 +431,12 @@ impl World {
 
     /// True if the given faction pair is currently in an active
     /// open-war state, i.e. their rivalry crossed
-    /// `WAR_DECLARATION_THRESHOLD` within the last
-    /// `WAR_DURATION_TICKS` ticks.
+    /// True if the relation between `a` and `b` is currently in
+    /// `OpenWar`. Back-compat helper so every existing caller
+    /// (skirmish amp, sleeper lattice, render marks) reads one
+    /// predicate instead of inlining a match.
     pub fn at_war(&self, a: u8, b: u8) -> bool {
-        Self::rivalry_key(a, b)
-            .and_then(|k| self.wars.get(&k).copied())
-            .map(|exp| exp > self.tick)
-            .unwrap_or(false)
+        matches!(self.relation_state(a, b), DiplomaticState::OpenWar)
     }
 
     /// Scan rivalry pairs for newly-crossed war declarations and
@@ -558,25 +601,810 @@ impl World {
         }
     }
 
-    fn maybe_declare_wars(&mut self) {
-        let mut new_wars: Vec<(u8, u8)> = Vec::new();
-        for (&(a, b), &pressure) in &self.rivalry {
-            if pressure < WAR_DECLARATION_THRESHOLD {
-                continue;
-            }
-            // Skip if already at war — avoids re-declaring every
-            // sample period while the rivalry stays above threshold.
-            if self.wars.contains_key(&(a, b)) {
-                continue;
-            }
-            new_wars.push((a, b));
+    /// Pressure threshold at which `persona_war_bonus` accounts for
+    /// Aggressor-persona factions escalating earlier than others.
+    fn persona_war_threshold(&self, a: u8, b: u8) -> u16 {
+        let aggressor = |p: Option<&Persona>| matches!(p, Some(Persona::Aggressor));
+        let pa = self.personas.get(a as usize);
+        let pb = self.personas.get(b as usize);
+        if aggressor(pa) || aggressor(pb) {
+            WAR_DECLARATION_THRESHOLD.saturating_sub(20)
+        } else {
+            WAR_DECLARATION_THRESHOLD
         }
-        for (a, b) in new_wars {
-            self.wars.insert((a, b), self.tick + WAR_DURATION_TICKS);
+    }
+
+    /// Trust gain multiplier for a pair based on their personas.
+    /// Fortress doubles gains (turtles love treaties), Opportunist
+    /// adds 50% (happy to cooperate when convenient), Aggressor
+    /// halves them, Plague is neutral.
+    fn persona_trust_mult(&self, a: u8, b: u8) -> f32 {
+        let contribution = |p: Option<&Persona>| -> f32 {
+            match p {
+                Some(Persona::Fortress) => 2.0,
+                Some(Persona::Opportunist) => 1.5,
+                Some(Persona::Aggressor) => 0.5,
+                _ => 1.0,
+            }
+        };
+        let pa = contribution(self.personas.get(a as usize));
+        let pb = contribution(self.personas.get(b as usize));
+        (pa + pb) * 0.5
+    }
+
+    /// Alive-node count per faction — helper used by Vassalage
+    /// dominance checks and by `advance_diplomacy`'s trade rolls.
+    fn faction_alive_counts(&self) -> Vec<u32> {
+        let mut counts = vec![0u32; self.faction_stats.len()];
+        for n in &self.nodes {
+            if matches!(n.state, State::Alive) {
+                if let Some(slot) = counts.get_mut(n.faction as usize) {
+                    *slot += 1;
+                }
+            }
+        }
+        counts
+    }
+
+    /// Diplomacy state-machine driver. Called once per faction
+    /// sample period. Walks every known relation plus random
+    /// Neutral pair rolls, accumulates trust in peaceful states,
+    /// decays pressure, fires transitions, and emits a log line
+    /// on every state change so the narrative reads back in the
+    /// scrollback.
+    fn advance_diplomacy(&mut self) {
+        let tick = self.tick;
+        let faction_count = self.c2_nodes.len() as u8;
+        if faction_count < 2 {
+            return;
+        }
+        // Safety sweep: drop every relation involving a faction
+        // whose C2 is no longer Alive, and demote any Vassalage
+        // whose overlord has died back to Neutral. The cascade
+        // pipeline does this inline for cascade-driven deaths,
+        // but assimilation and other paths that flip the C2 to
+        // Dead directly wouldn't otherwise trigger the purge —
+        // doing it here centrally catches every death route.
+        let alive_c2: Vec<bool> = self
+            .c2_nodes
+            .iter()
+            .map(|&id| matches!(self.nodes[id].state, State::Alive))
+            .collect();
+        let faction_alive = |f: u8| -> bool {
+            alive_c2.get(f as usize).copied().unwrap_or(false)
+        };
+        let before = self.relations.len();
+        self.relations.retain(|&(a, b), rel| {
+            if !faction_alive(a) || !faction_alive(b) {
+                return false;
+            }
+            if let DiplomaticState::Vassalage { overlord } = rel.state {
+                if !faction_alive(overlord) {
+                    return false;
+                }
+            }
+            true
+        });
+        let purged = before.saturating_sub(self.relations.len());
+        if purged > 0 {
             self.push_log(format!(
-                "✦ WAR ✦ F{} declares open hostilities on F{}",
-                a, b
+                "diplomacy: {} stale relations severed",
+                purged
             ));
+        }
+        // Pass 1: walk all existing relations and collect any
+        // transitions. We defer the apply step so we can mutate
+        // `relations` without aliasing the iteration.
+        let counts = self.faction_alive_counts();
+        let keys: Vec<(u8, u8)> = self.relations.keys().copied().collect();
+        let mut transitions: Vec<((u8, u8), DiplomaticState, String)> = Vec::new();
+        let mut trust_bumps: Vec<((u8, u8), i16)> = Vec::new();
+        let mut pressure_decays: Vec<((u8, u8), u16)> = Vec::new();
+        for key in keys {
+            let (a, b) = key;
+            let rel = self.relations[&key];
+            match rel.state {
+                DiplomaticState::Neutral => {
+                    pressure_decays.push((key, 2));
+                    if rel.pressure >= COLD_WAR_THRESHOLD {
+                        transitions.push((
+                            key,
+                            DiplomaticState::ColdWar,
+                            format!("✦ diplo ✦ F{}↔F{} tensions cool into COLD WAR", a, b),
+                        ));
+                    }
+                }
+                DiplomaticState::ColdWar => {
+                    pressure_decays.push((key, 1));
+                    let war_threshold = self.persona_war_threshold(a, b);
+                    if rel.pressure >= war_threshold {
+                        transitions.push((
+                            key,
+                            DiplomaticState::OpenWar,
+                            format!(
+                                "✦ WAR ✦ F{} declares open hostilities on F{}",
+                                a, b
+                            ),
+                        ));
+                    } else if rel.expires_tick > 0 && tick >= rel.expires_tick
+                        && rel.pressure < 30
+                    {
+                        transitions.push((
+                            key,
+                            DiplomaticState::Neutral,
+                            format!("✦ diplo ✦ F{}↔F{} cold war thaws", a, b),
+                        ));
+                    }
+                }
+                DiplomaticState::OpenWar => {
+                    // Wars stay hot — no passive pressure decay.
+                    // Check for post-war subordination: if one side
+                    // is >2x the other and the weaker side is below
+                    // 30% of its peak, the dominant faction vassals
+                    // the loser instead of finishing them off.
+                    let ca = counts.get(a as usize).copied().unwrap_or(0);
+                    let cb = counts.get(b as usize).copied().unwrap_or(0);
+                    let peak_a = self
+                        .faction_stats
+                        .get(a as usize)
+                        .map(|s| s.peak_alive)
+                        .unwrap_or(0);
+                    let peak_b = self
+                        .faction_stats
+                        .get(b as usize)
+                        .map(|s| s.peak_alive)
+                        .unwrap_or(0);
+                    let vassal_candidate = if ca >= cb.saturating_mul(2)
+                        && peak_b >= 10
+                        && (cb as f32) < (peak_b as f32 * 0.3)
+                    {
+                        Some((a, b))
+                    } else if cb >= ca.saturating_mul(2)
+                        && peak_a >= 10
+                        && (ca as f32) < (peak_a as f32 * 0.3)
+                    {
+                        Some((b, a))
+                    } else {
+                        None
+                    };
+                    if let Some((overlord, vassal)) = vassal_candidate {
+                        transitions.push((
+                            key,
+                            DiplomaticState::Vassalage { overlord },
+                            format!(
+                                "✦ MYTHIC ✦ F{} yields as VASSAL to F{}",
+                                vassal, overlord
+                            ),
+                        ));
+                    } else if rel.expires_tick > 0 && tick >= rel.expires_tick {
+                        if rel.pressure < WAR_DE_ESCALATE_THRESHOLD {
+                            transitions.push((
+                                key,
+                                DiplomaticState::ColdWar,
+                                format!("✦ diplo ✦ F{}↔F{} truce — falls to COLD WAR", a, b),
+                            ));
+                        } else {
+                            // Still too hot — refresh the war timer
+                            // in place (no transition; just extend).
+                            transitions.push((
+                                key,
+                                DiplomaticState::OpenWar,
+                                String::new(),
+                            ));
+                        }
+                    }
+                }
+                DiplomaticState::Trade => {
+                    let mult = self.persona_trust_mult(a, b);
+                    let gain = (2.0 * mult).round() as i16;
+                    trust_bumps.push((key, gain));
+                    if rel.expires_tick > 0 && tick >= rel.expires_tick {
+                        if rel.trust >= NAP_TRUST_THRESHOLD {
+                            transitions.push((
+                                key,
+                                DiplomaticState::NonAggression,
+                                format!(
+                                    "✦ diplo ✦ F{}↔F{} trade deepens into NON-AGGRESSION",
+                                    a, b
+                                ),
+                            ));
+                        } else {
+                            transitions.push((
+                                key,
+                                DiplomaticState::Neutral,
+                                format!("✦ diplo ✦ F{}↔F{} trade lapses", a, b),
+                            ));
+                        }
+                    }
+                }
+                DiplomaticState::NonAggression => {
+                    let mult = self.persona_trust_mult(a, b);
+                    let gain = (1.0 * mult).round() as i16;
+                    trust_bumps.push((key, gain));
+                    // Betrayal check: if pressure climbs above the
+                    // cold-war floor during a NAP, the peace breaks
+                    // and the relation snaps to OpenWar.
+                    if rel.pressure >= COLD_WAR_THRESHOLD {
+                        transitions.push((
+                            key,
+                            DiplomaticState::OpenWar,
+                            format!(
+                                "✦ MYTHIC ✦ F{}↔F{} non-aggression BROKEN — war!",
+                                a, b
+                            ),
+                        ));
+                    } else if rel.expires_tick > 0 && tick >= rel.expires_tick {
+                        if rel.trust >= ALLIANCE_TRUST_THRESHOLD {
+                            transitions.push((
+                                key,
+                                DiplomaticState::Alliance,
+                                format!("✦ diplo ✦ F{}↔F{} ALLIANCE forged", a, b),
+                            ));
+                        } else {
+                            transitions.push((
+                                key,
+                                DiplomaticState::Neutral,
+                                format!("✦ diplo ✦ F{}↔F{} NAP expires", a, b),
+                            ));
+                        }
+                    }
+                }
+                DiplomaticState::Alliance => {
+                    let mult = self.persona_trust_mult(a, b);
+                    let gain = (1.0 * mult).round() as i16;
+                    trust_bumps.push((key, gain));
+                    if rel.pressure >= COLD_WAR_THRESHOLD {
+                        transitions.push((
+                            key,
+                            DiplomaticState::OpenWar,
+                            format!(
+                                "✦ MYTHIC ✦ F{}↔F{} ALLIANCE BETRAYED — war!",
+                                a, b
+                            ),
+                        ));
+                    } else if rel.expires_tick > 0 && tick >= rel.expires_tick {
+                        transitions.push((
+                            key,
+                            DiplomaticState::NonAggression,
+                            format!("✦ diplo ✦ F{}↔F{} alliance winds down to NAP", a, b),
+                        ));
+                    }
+                }
+                DiplomaticState::Vassalage { overlord } => {
+                    let subordinate = if overlord == a { b } else { a };
+                    // Vassal rebellion: if the vassal has recovered
+                    // past 70% of the overlord's size, it throws off
+                    // the chain and the relation flips to ColdWar.
+                    let overlord_count = counts.get(overlord as usize).copied().unwrap_or(0);
+                    let vassal_count = counts.get(subordinate as usize).copied().unwrap_or(0);
+                    if overlord_count > 0
+                        && (vassal_count as f32) >= (overlord_count as f32 * 0.7)
+                    {
+                        transitions.push((
+                            key,
+                            DiplomaticState::ColdWar,
+                            format!(
+                                "✦ MYTHIC ✦ F{} throws off vassalage to F{}",
+                                subordinate, overlord
+                            ),
+                        ));
+                    }
+                    // Tribute trickle — vassals feed 1 intel per
+                    // sample period to their overlord. Recorded
+                    // on the overlord's faction_stats intel tally.
+                    if let Some(s) = self.faction_stats.get_mut(overlord as usize) {
+                        s.intel = s.intel.saturating_add(1);
+                    }
+                }
+            }
+        }
+        // Apply decays, trust bumps, and transitions in order.
+        for (key, amt) in pressure_decays {
+            if let Some(r) = self.relations.get_mut(&key) {
+                r.pressure = r.pressure.saturating_sub(amt);
+            }
+        }
+        for (key, amt) in trust_bumps {
+            if let Some(r) = self.relations.get_mut(&key) {
+                r.trust = r.trust.saturating_add(amt).clamp(-TRUST_CAP, TRUST_CAP);
+            }
+        }
+        for (key, new_state, msg) in transitions {
+            let fire_log = {
+                let Some(r) = self.relations.get_mut(&key) else { continue };
+                let expires = match new_state {
+                    DiplomaticState::Trade => tick + STATE_DURATION_TRADE,
+                    DiplomaticState::NonAggression => tick + STATE_DURATION_NAP,
+                    DiplomaticState::Alliance => tick + STATE_DURATION_ALLIANCE,
+                    DiplomaticState::ColdWar => tick + STATE_DURATION_COLD_WAR,
+                    DiplomaticState::OpenWar => tick + STATE_DURATION_OPEN_WAR,
+                    DiplomaticState::Neutral | DiplomaticState::Vassalage { .. } => 0,
+                };
+                r.expires_tick = expires;
+                let rotated = r.state != new_state;
+                if rotated {
+                    r.state = new_state;
+                    r.entered_tick = tick;
+                }
+                rotated && !msg.is_empty()
+            };
+            if fire_log {
+                self.push_log(msg);
+            }
+        }
+        // Pass 2: roll for opportunistic Trade proposals between
+        // Neutral pairs. Low base chance, boosted when either side
+        // is Opportunist. Prevents the peace track from lying
+        // dormant in quiet mid-games.
+        if self.rng.gen_bool(0.25) {
+            let a = self.rng.gen_range(0..faction_count);
+            let mut b = self.rng.gen_range(0..faction_count);
+            if a == b && faction_count > 1 {
+                b = (a + 1) % faction_count;
+            }
+            if a != b {
+                let Some(key) = Self::rivalry_key(a, b) else { return };
+                let rel = self.relation(a, b);
+                if matches!(rel.state, DiplomaticState::Neutral) && rel.pressure < 20 {
+                    let opportunist = |p: Option<&Persona>| {
+                        matches!(p, Some(Persona::Opportunist))
+                    };
+                    let chance = if opportunist(self.personas.get(a as usize))
+                        || opportunist(self.personas.get(b as usize))
+                    {
+                        0.35
+                    } else {
+                        0.12
+                    };
+                    if self.rng.gen_bool(chance) {
+                        let entry = self.relations.entry(key).or_default();
+                        entry.state = DiplomaticState::Trade;
+                        entry.entered_tick = tick;
+                        entry.expires_tick = tick + STATE_DURATION_TRADE;
+                        self.push_log(format!(
+                            "✦ diplo ✦ F{}↔F{} open TRADE channel",
+                            a, b
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Research accrual + tier unlock pass. Called once per faction
+    /// sample period. For each alive faction, computes income from
+    /// (alive count + intel delta + cures delta) plus diplomatic
+    /// bonuses (Trade/Alliance pairs contribute, Vassalage skims
+    /// from the vassal to the overlord), adds it to the faction's
+    /// research counter, and promotes the tech tier when the next
+    /// threshold is crossed. Tier transitions log a flavor line
+    /// tagged with the persona so the reader can see each faction's
+    /// specialization come online.
+    fn advance_research(&mut self) {
+        let faction_count = self.faction_stats.len();
+        if faction_count == 0 {
+            return;
+        }
+        // Alive counts for the base income term.
+        let mut counts = vec![0u32; faction_count];
+        for n in &self.nodes {
+            if matches!(n.state, State::Alive) {
+                if let Some(slot) = counts.get_mut(n.faction as usize) {
+                    *slot += 1;
+                }
+            }
+        }
+        // Per-faction diplomatic multiplier: +25% per Trade partner,
+        // +50% per Alliance. Computed before the income pass so the
+        // per-faction loop can apply a single scalar.
+        let mut diplo_mult = vec![1.0f32; faction_count];
+        for (&(a, b), rel) in &self.relations {
+            let bonus = match rel.state {
+                DiplomaticState::Trade => 0.25,
+                DiplomaticState::Alliance => 0.50,
+                DiplomaticState::NonAggression => 0.10,
+                _ => 0.0,
+            };
+            if bonus > 0.0 {
+                if let Some(m) = diplo_mult.get_mut(a as usize) {
+                    *m += bonus;
+                }
+                if let Some(m) = diplo_mult.get_mut(b as usize) {
+                    *m += bonus;
+                }
+            }
+        }
+        // Compute income per faction into a side buffer so we can
+        // also skim vassal income over to the overlord before
+        // applying anything.
+        let mut incomes = vec![0u32; faction_count];
+        for (i, stats) in self.faction_stats.iter_mut().enumerate() {
+            let alive = counts[i];
+            if alive == 0 && stats.research == 0 {
+                // Dead faction, no base — but keep ticking its last_*
+                // so a resurrection starts with a clean delta.
+                stats.last_intel_sample = stats.intel;
+                stats.last_cures_sample = stats.infections_cured;
+                continue;
+            }
+            let intel_delta = stats.intel.saturating_sub(stats.last_intel_sample);
+            let cures_delta = stats
+                .infections_cured
+                .saturating_sub(stats.last_cures_sample);
+            stats.last_intel_sample = stats.intel;
+            stats.last_cures_sample = stats.infections_cured;
+            // Base: 1 flat + 1 per 12 alive. Tuned so a 25-alive
+            // faction earns ~3/sample before deltas, pushing T1
+            // unlock to roughly tick 2000 under passive play.
+            let base = 1 + alive / 12;
+            // Intel and cures each contribute a modest per-event
+            // bump — previously +3/+2 per delta, which let active
+            // Plague/Aggressor factions hit T2 by tick 1900 and
+            // undercut the "late-game specialization" feel.
+            let earned = base + intel_delta + cures_delta;
+            let scaled = (earned as f32 * diplo_mult[i]).round() as u32;
+            incomes[i] = scaled;
+        }
+        // Vassalage tribute: each Vassalage relation skims 30% of
+        // the vassal's income and adds it to the overlord's bucket.
+        // Keeps vassals productive but tilts the ledger toward the
+        // overlord to make subordination meaningful.
+        let vassal_pairs: Vec<(u8, u8)> = self
+            .relations
+            .iter()
+            .filter_map(|(&(a, b), r)| match r.state {
+                DiplomaticState::Vassalage { overlord } => {
+                    let vassal = if overlord == a { b } else { a };
+                    Some((overlord, vassal))
+                }
+                _ => None,
+            })
+            .collect();
+        for (overlord, vassal) in vassal_pairs {
+            let v_idx = vassal as usize;
+            let o_idx = overlord as usize;
+            if v_idx < incomes.len() && o_idx < incomes.len() {
+                let skim = incomes[v_idx] * 30 / 100;
+                incomes[v_idx] = incomes[v_idx].saturating_sub(skim);
+                incomes[o_idx] = incomes[o_idx].saturating_add(skim);
+            }
+        }
+        // Apply the computed incomes and check for tier promotions.
+        for (i, stats) in self.faction_stats.iter_mut().enumerate() {
+            stats.research = stats.research.saturating_add(incomes[i]);
+        }
+        // Tier promotions + log lines. Split from the income pass so
+        // `push_log` doesn't alias `faction_stats.iter_mut()`.
+        let mut promotions: Vec<(usize, u8)> = Vec::new();
+        for (i, stats) in self.faction_stats.iter().enumerate() {
+            let new_tier = if stats.research >= TECH_TIER_3_COST {
+                3
+            } else if stats.research >= TECH_TIER_2_COST {
+                2
+            } else if stats.research >= TECH_TIER_1_COST {
+                1
+            } else {
+                0
+            };
+            if new_tier > stats.tech_tier {
+                promotions.push((i, new_tier));
+            }
+        }
+        for (i, new_tier) in promotions {
+            let persona = self
+                .personas
+                .get(i)
+                .copied()
+                .unwrap_or(Persona::Opportunist);
+            if let Some(stats) = self.faction_stats.get_mut(i) {
+                stats.tech_tier = new_tier;
+            }
+            let effect = match (new_tier, persona) {
+                (1, _) => "role specialization",
+                (2, Persona::Aggressor) => "recon lenses",
+                (2, Persona::Fortress) => "fortified radius",
+                (2, Persona::Plague) => "virulent strains",
+                (2, Persona::Opportunist) => "brokered channels",
+                (3, Persona::Aggressor) => "orbital sweeps",
+                (3, Persona::Fortress) => "pulse cannons",
+                (3, Persona::Plague) => "endemic bloom",
+                (3, Persona::Opportunist) => "wormhole brokerage",
+                _ => "advancement",
+            };
+            self.push_log(format!(
+                "✦ tech ✦ F{} {} reaches tier {} — {}",
+                i,
+                persona.display_name(),
+                new_tier,
+                effect
+            ));
+        }
+    }
+
+    /// Tier 3 active ability dispatcher. Called once per faction
+    /// sample period after `advance_research`. Each faction at
+    /// Tier 3 rolls `TECH_T3_ACTIVE_CHANCE` to fire its persona's
+    /// unique ability, drawing on the existing event machinery so
+    /// there's no duplicate tick logic — a Fortress just fires a
+    /// free defender pulse, a Plague spawns a free worm from one
+    /// of its infected hosts, etc.
+    fn advance_tech_actives(&mut self) {
+        let faction_count = self.faction_stats.len();
+        if faction_count == 0 {
+            return;
+        }
+        // Snapshot tier + persona up front so we can iterate
+        // without aliasing self across the ability dispatch.
+        let triggers: Vec<(u8, Persona)> = (0..faction_count)
+            .filter_map(|i| {
+                let tier = self.faction_stats.get(i)?.tech_tier;
+                if tier < 3 {
+                    return None;
+                }
+                if !self.rng.gen_bool(TECH_T3_ACTIVE_CHANCE) {
+                    return None;
+                }
+                let persona = self.personas.get(i).copied()?;
+                Some((i as u8, persona))
+            })
+            .collect();
+        for (faction, persona) in triggers {
+            match persona {
+                Persona::Aggressor => self.tech_active_aggressor(faction),
+                Persona::Fortress => self.tech_active_fortress(faction),
+                Persona::Plague => self.tech_active_plague(faction),
+                Persona::Opportunist => self.tech_active_opportunist(faction),
+            }
+        }
+    }
+
+    /// Aggressor T3: fire a free scanner pulse on one of the
+    /// faction's alive scanners, bypassing its cooldown.
+    fn tech_active_aggressor(&mut self, faction: u8) {
+        let candidates: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                (n.faction == faction
+                    && n.role == Role::Scanner
+                    && matches!(n.state, State::Alive))
+                .then_some(i)
+            })
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let pick = candidates[self.rng.gen_range(0..candidates.len())];
+        self.nodes[pick].role_cooldown = 0;
+        self.nodes[pick].scan_pulse = SCANNER_PULSE_TICKS.saturating_mul(2);
+        let pos = self.nodes[pick].pos;
+        let (oa, ob) = octet_pair(pos);
+        self.push_log(format!(
+            "✦ tech ✦ F{} orbital sweep @ 10.0.{}.{}",
+            faction, oa, ob
+        ));
+    }
+
+    /// Fortress T3: fire a free defender pulse centered on one
+    /// of the faction's alive defenders. Treated exactly like a
+    /// normal defender fire by reusing the same config + node
+    /// state mutation, just with the cooldown pre-cleared.
+    fn tech_active_fortress(&mut self, faction: u8) {
+        let candidates: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                (n.faction == faction
+                    && n.role == Role::Defender
+                    && matches!(n.state, State::Alive))
+                .then_some(i)
+            })
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let pick = candidates[self.rng.gen_range(0..candidates.len())];
+        self.nodes[pick].role_cooldown = 0;
+        self.nodes[pick].pulse = 4;
+        // Queue a patch wave from the defender's position — the
+        // existing patch_waves pipeline will sweep it outward and
+        // clear nearby infections on subsequent ticks.
+        let origin = self.nodes[pick].pos;
+        self.patch_waves.push(PatchWave {
+            origin,
+            radius: 0,
+        });
+        let (oa, ob) = octet_pair(origin);
+        self.push_log(format!(
+            "✦ tech ✦ F{} pulse cannon @ 10.0.{}.{}",
+            faction, oa, ob
+        ));
+    }
+
+    /// Plague T3: force a fresh outbreak on two random alive
+    /// nodes anywhere on the mesh, bypassing immunity windows and
+    /// the normal seed-rate cap. Plants the faction's bias as a
+    /// mid-run pressure release valve.
+    fn tech_active_plague(&mut self, faction: u8) {
+        let alive_targets: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                (matches!(n.state, State::Alive)
+                    && n.infection.is_none()
+                    && !n.role.is_virus_immune()
+                    && !self.c2_nodes.contains(&i))
+                .then_some(i)
+            })
+            .collect();
+        if alive_targets.is_empty() {
+            return;
+        }
+        let cure_resist = self.cfg.virus_cure_resist;
+        let strain = self.rng.gen_range(0..STRAIN_COUNT as u8);
+        let picks: Vec<NodeId> = (0..2)
+            .filter_map(|_| {
+                if alive_targets.is_empty() {
+                    None
+                } else {
+                    Some(alive_targets[self.rng.gen_range(0..alive_targets.len())])
+                }
+            })
+            .collect();
+        let mut seeded = 0u32;
+        for id in picks {
+            if self.nodes[id].infection.is_none() {
+                self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
+                seeded += 1;
+            }
+        }
+        if seeded > 0 {
+            let name = self.strain_name(strain);
+            self.push_log(format!(
+                "✦ tech ✦ F{} endemic bloom — {} hosts seeded with {}",
+                faction, seeded, name
+            ));
+        }
+    }
+
+    /// Opportunist T3: spawn a free wormhole somewhere on the mesh.
+    /// Uses the same two-random-alive-nodes pick that the periodic
+    /// `maybe_wormhole` event uses, just wrapped in a tech-tag
+    /// logline so the reader sees which faction triggered it.
+    fn tech_active_opportunist(&mut self, faction: u8) {
+        let alive: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                (matches!(n.state, State::Alive) && !self.c2_nodes.contains(&i)).then_some(i)
+            })
+            .collect();
+        if alive.len() < 2 {
+            return;
+        }
+        let a = alive[self.rng.gen_range(0..alive.len())];
+        let mut b = alive[self.rng.gen_range(0..alive.len())];
+        while b == a {
+            b = alive[self.rng.gen_range(0..alive.len())];
+        }
+        let life = self.cfg.wormhole_life_ticks;
+        self.wormholes.push(Wormhole {
+            a: self.nodes[a].pos,
+            b: self.nodes[b].pos,
+            age: 0,
+            life,
+        });
+        let (oa, ob) = octet_pair(self.nodes[a].pos);
+        self.push_log(format!(
+            "✦ tech ✦ F{} brokered wormhole @ 10.0.{}.{}",
+            faction, oa, ob
+        ));
+    }
+
+    /// Persona role-weight multiplier bonus granted at Tier 1+.
+    /// Intensifies the faction's persona bias by pushing each
+    /// per-role multiplier away from 1.0 by a factor of 1.35 at
+    /// Tier 1 (and 1.6 at Tiers 2/3). `roll_role` reads this and
+    /// blends the amplified multipliers with the base weights.
+    pub fn tech_role_intensity(&self, faction: u8) -> f32 {
+        let tier = self
+            .faction_stats
+            .get(faction as usize)
+            .map(|s| s.tech_tier)
+            .unwrap_or(0);
+        match tier {
+            0 => 1.0,
+            1 => 1.35,
+            _ => 1.6,
+        }
+    }
+
+    /// Tier 2+ defender-radius bonus. Fortress factions add +2 to
+    /// their cure pulse radius; other personas add 0. Read from
+    /// `fire_defender_pulses` when computing the effective radius
+    /// for each firing defender's faction.
+    pub fn tech_defender_radius_bonus(&self, faction: u8) -> i16 {
+        let tier = self
+            .faction_stats
+            .get(faction as usize)
+            .map(|s| s.tech_tier)
+            .unwrap_or(0);
+        let persona = self
+            .personas
+            .get(faction as usize)
+            .copied()
+            .unwrap_or(Persona::Opportunist);
+        if tier >= 2 && matches!(persona, Persona::Fortress) {
+            2
+        } else {
+            0
+        }
+    }
+
+    /// Tier 2+ scanner period multiplier. Aggressor factions at
+    /// T2 cut their scanner ping period by 35% so recon fires
+    /// more often; other personas use the baseline.
+    pub fn tech_scanner_period_mult(&self, faction: u8) -> f32 {
+        let tier = self
+            .faction_stats
+            .get(faction as usize)
+            .map(|s| s.tech_tier)
+            .unwrap_or(0);
+        let persona = self
+            .personas
+            .get(faction as usize)
+            .copied()
+            .unwrap_or(Persona::Opportunist);
+        if tier >= 2 && matches!(persona, Persona::Aggressor) {
+            0.65
+        } else {
+            1.0
+        }
+    }
+
+    /// Tier 2+ worm-spawn multiplier. Plague factions at T2
+    /// double their worm generation rate so viral pressure ramps
+    /// visibly with their tech. Other personas read 1.0.
+    pub fn tech_worm_spawn_mult(&self, faction: u8) -> f32 {
+        let tier = self
+            .faction_stats
+            .get(faction as usize)
+            .map(|s| s.tech_tier)
+            .unwrap_or(0);
+        let persona = self
+            .personas
+            .get(faction as usize)
+            .copied()
+            .unwrap_or(Persona::Opportunist);
+        if tier >= 2 && matches!(persona, Persona::Plague) {
+            2.0
+        } else {
+            1.0
+        }
+    }
+
+    /// Tier 2+ cross-faction bridge multiplier. Opportunist
+    /// factions at T2 roll bridges twice as often as the
+    /// baseline. Other personas read 1.0.
+    pub fn tech_bridge_mult(&self, faction: u8) -> f32 {
+        let tier = self
+            .faction_stats
+            .get(faction as usize)
+            .map(|s| s.tech_tier)
+            .unwrap_or(0);
+        let persona = self
+            .personas
+            .get(faction as usize)
+            .copied()
+            .unwrap_or(Persona::Opportunist);
+        if tier >= 2 && matches!(persona, Persona::Opportunist) {
+            2.0
+        } else {
+            1.0
         }
     }
 
@@ -896,21 +1724,95 @@ impl World {
         }
     }
 
-    /// Read the current war pressure between two factions. Zero if
-    /// they've never tangled.
+    /// Read the current hostile pressure between two factions.
+    /// Zero if they've never interacted.
     pub fn rivalry_pressure(&self, a: u8, b: u8) -> u16 {
         Self::rivalry_key(a, b)
-            .and_then(|k| self.rivalry.get(&k).copied())
+            .and_then(|k| self.relations.get(&k).map(|r| r.pressure))
             .unwrap_or(0)
     }
 
-    /// Bump war pressure between two factions by `amount`, clamped
-    /// to RIVALRY_CAP. No-op for self-pairs.
+    /// Look up the full `Relation` record for a pair. Returns a
+    /// fresh default Neutral relation if the pair has never
+    /// interacted — callers can inspect `.state` / `.trust` /
+    /// `.pressure` uniformly without worrying about absence.
+    pub fn relation(&self, a: u8, b: u8) -> Relation {
+        Self::rivalry_key(a, b)
+            .and_then(|k| self.relations.get(&k).copied())
+            .unwrap_or_default()
+    }
+
+    /// Convenience wrapper — just the `DiplomaticState` of a pair.
+    pub fn relation_state(&self, a: u8, b: u8) -> DiplomaticState {
+        self.relation(a, b).state
+    }
+
+    /// Bump hostile pressure on a pair by `amount`, clamped to
+    /// `RIVALRY_CAP`. No-op for self-pairs. Kept under the old
+    /// `bump_rivalry` name so the existing skirmish / worm-cross
+    /// / siege / sleeper callers don't need to know the relation
+    /// map exists — they just report hostilities and this records
+    /// it. The state machine picks up the pressure on the next
+    /// `advance_diplomacy` pass.
     pub fn bump_rivalry(&mut self, a: u8, b: u8, amount: u16) {
         if let Some(key) = Self::rivalry_key(a, b) {
-            let entry = self.rivalry.entry(key).or_insert(0);
-            *entry = entry.saturating_add(amount).min(RIVALRY_CAP);
+            let tick = self.tick;
+            let entry = self.relations.entry(key).or_insert_with(|| Relation {
+                entered_tick: tick,
+                ..Relation::default()
+            });
+            entry.pressure = entry.pressure.saturating_add(amount).min(RIVALRY_CAP);
+            // Betrayal: taking hostile action in a peaceful state
+            // shaves trust proportionally, making broken peace
+            // visible as a step change rather than a slow drift.
+            if matches!(
+                entry.state,
+                DiplomaticState::Trade
+                    | DiplomaticState::NonAggression
+                    | DiplomaticState::Alliance
+            ) {
+                entry.trust = entry
+                    .trust
+                    .saturating_sub(amount as i16)
+                    .clamp(-TRUST_CAP, TRUST_CAP);
+            }
         }
+    }
+
+    /// Bump cooperative trust on a pair by `amount` (signed),
+    /// clamped to ±`TRUST_CAP`. Called by the state machine
+    /// during peaceful dwell and by any future "positive event"
+    /// hooks. No-op for self-pairs.
+    #[allow(dead_code)]
+    pub fn bump_trust(&mut self, a: u8, b: u8, amount: i16) {
+        if let Some(key) = Self::rivalry_key(a, b) {
+            let tick = self.tick;
+            let entry = self.relations.entry(key).or_insert_with(|| Relation {
+                entered_tick: tick,
+                ..Relation::default()
+            });
+            entry.trust = entry
+                .trust
+                .saturating_add(amount)
+                .clamp(-TRUST_CAP, TRUST_CAP);
+        }
+    }
+
+    /// If `vassal` is subordinated under an overlord in the current
+    /// diplomacy map, return the overlord's faction id. Used by
+    /// tribute collection in `advance_diplomacy` and by the UI to
+    /// label vassal relations.
+    #[allow(dead_code)]
+    pub fn vassal_of(&self, vassal: u8) -> Option<u8> {
+        for (&(a, b), r) in &self.relations {
+            if let DiplomaticState::Vassalage { overlord } = r.state {
+                let subordinate = if overlord == a { b } else { a };
+                if subordinate == vassal {
+                    return Some(overlord);
+                }
+            }
+        }
+        None
     }
 
     /// Palette slot for a given faction. Used by the renderer to
@@ -981,16 +1883,34 @@ impl World {
         self.rng.gen_bool(chance as f64)
     }
 
-    /// True if factions `a` and `b` currently have a non-aggression
-    /// alliance in effect.
+    /// True if factions `a` and `b` currently have any peaceful
+    /// or subordinated relationship that should block aggression
+    /// between them — Alliance, NonAggression, Trade, or a
+    /// Vassalage pair. Kept under the old `allied` name because
+    /// every caller (skirmish target filter, worm crossing block,
+    /// bridge suppression) is asking the same question: "is this
+    /// pair off-limits for hostile actions right now?"
     pub fn allied(&self, a: u8, b: u8) -> bool {
         if a == b {
             return true;
         }
-        self.alliances.iter().any(|al| {
-            al.expires_tick > self.tick
-                && ((al.a == a && al.b == b) || (al.a == b && al.b == a))
-        })
+        matches!(
+            self.relation_state(a, b),
+            DiplomaticState::Alliance
+                | DiplomaticState::NonAggression
+                | DiplomaticState::Trade
+                | DiplomaticState::Vassalage { .. }
+        )
+    }
+
+    /// Post-cure immunity duration in ticks under the current era's
+    /// `immunity_mult`. Call sites that previously assigned
+    /// `IMMUNITY_DURATION_TICKS` directly now assign this value so the
+    /// "Winter of Quarantine" era can stretch immunity 5×.
+    pub fn era_immunity_ticks(&self) -> u16 {
+        let base = IMMUNITY_DURATION_TICKS as f32;
+        let scaled = base * self.era_rules.immunity_mult;
+        scaled.clamp(1.0, u16::MAX as f32) as u16
     }
 
     /// Index of the current named era, 0-based. Returns 0 when epoch
@@ -1216,7 +2136,6 @@ impl World {
             shockwaves: Vec::new(),
             ddos_waves: Vec::new(),
             wormholes: Vec::new(),
-            alliances: Vec::new(),
             next_branch_id: 1,
             storm_until: 0,
             storm_since: 0,
@@ -1225,18 +2144,18 @@ impl World {
             faction_stats: vec![FactionStats::default(); count],
             mythic_pandemic_seen: false,
             activity_history: VecDeque::with_capacity(ACTIVITY_HISTORY_LEN),
-            rivalry: HashMap::new(),
+            relations: HashMap::new(),
             outages: Vec::new(),
             partitions: Vec::new(),
             personas,
             faction_colors,
-            wars: HashMap::new(),
             current_dominant: None,
             dominance_shifts: 0,
             hotspots: hotspots_init,
             favored_faction: None,
             favor_expires_tick: 0,
             strain_patents: vec![None; STRAIN_COUNT],
+            era_rules: era_rules_for(0).0,
         }
     }
 
@@ -1266,12 +2185,21 @@ impl World {
         }
 
         // Epoch transition: crossing a multiple of epoch_period enters
-        // a new named era. Pure flavor — no gameplay effect.
+        // a new named era and swaps in its rule set. Every live
+        // multiplier (spawn, loss, cascade, virus spread, mutation,
+        // immunity, assimilation cadence, bridge chance, exfil period)
+        // rebinds to the new era on this tick.
         let epoch_period = self.cfg.epoch_period;
         if epoch_period > 0 && self.tick > 0 && self.tick.is_multiple_of(epoch_period) {
             let idx = (self.tick / epoch_period) as usize;
+            let (rules, summary) = era_rules_for(idx);
+            self.era_rules = rules;
             let name = ERA_NAMES[idx % ERA_NAMES.len()];
-            self.push_log(format!("── era {}: {}", idx, name));
+            if summary.is_empty() {
+                self.push_log(format!("── era {}: {}", idx, name));
+            } else {
+                self.push_log(format!("── era {}: {} ✦ {}", idx, name, summary));
+            }
         }
 
         // Network storm: rare chaotic burst that spikes spawn + loss for
@@ -1292,7 +2220,6 @@ impl World {
             self.maybe_wake_sleepers();
         }
         self.maybe_assimilate();
-        self.maybe_alliance();
         self.maybe_border_skirmish();
 
         // Sample faction alive counts for the header sparkline.
@@ -1302,14 +2229,18 @@ impl World {
             self.maybe_shift_personas();
             // Check for legendary-node promotions on the same cadence.
             self.maybe_promote_legendary();
-            // Slow rivalry decay so old feuds eventually fade.
-            self.rivalry.retain(|_, v| {
-                *v = v.saturating_sub(2);
-                *v > 0
-            });
-            // Promote any rivalry that crossed the war threshold
-            // to an open war declaration.
-            self.maybe_declare_wars();
+            // Diplomacy state machine: decays pressure, accumulates
+            // trust, fires transitions between Neutral ↔ ColdWar ↔
+            // OpenWar and Neutral → Trade → NonAggression →
+            // Alliance, handles Vassalage subordination, and rolls
+            // Trade proposals between quiet Neutral pairs.
+            self.advance_diplomacy();
+            // Research accrual + tier unlocks, then Tier 3 active
+            // ability rolls for any faction that just crossed (or
+            // already sits at) the top tier. Runs after diplomacy
+            // so Trade/Alliance bonuses land on the current tick.
+            self.advance_research();
+            self.advance_tech_actives();
             // Check for a dominance victory condition.
             self.maybe_declare_victory();
             // Let any critically-weakened faction trigger its
@@ -1320,8 +2251,6 @@ impl World {
             // Wake any sleeper-lattice edges whose triggers fired.
             self.activate_sleeper_lattice();
         }
-        // Expire any wars whose windows have elapsed.
-        self.wars.retain(|_, exp| *exp > self.tick);
         // Expire the faction favoritism boost.
         if self.favored_faction.is_some() && self.tick >= self.favor_expires_tick {
             self.favored_faction = None;

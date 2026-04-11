@@ -379,7 +379,7 @@ impl World {
                 .unwrap_or(0);
             self.nodes[target].infection = None;
             self.nodes[target].immunity_strain = Some(strain);
-            self.nodes[target].immunity_ticks = super::IMMUNITY_DURATION_TICKS;
+            self.nodes[target].immunity_ticks = self.era_immunity_ticks();
             let faction = self.nodes[target].faction;
             if let Some(s) = self.faction_stats.get_mut(faction as usize) {
                 s.infections_cured += 1;
@@ -466,12 +466,12 @@ impl World {
     }
 
     pub(super) fn maybe_spawn_worms(&mut self) {
-        let rate = self.cfg.worm_spawn_rate;
-        if rate <= 0.0 {
+        let base_rate = self.cfg.worm_spawn_rate;
+        if base_rate <= 0.0 {
             return;
         }
         // Find active-infected carriers up front.
-        let carriers: Vec<(NodeId, u8)> = self
+        let carriers: Vec<(NodeId, u8, u8)> = self
             .nodes
             .iter()
             .enumerate()
@@ -481,13 +481,17 @@ impl World {
                 }
                 match n.infection {
                     Some(inf) if matches!(inf.stage, InfectionStage::Active) => {
-                        Some((i, inf.strain))
+                        Some((i, inf.strain, n.faction))
                     }
                     _ => None,
                 }
             })
             .collect();
-        for (id, strain) in carriers {
+        for (id, strain, faction) in carriers {
+            // Plague Tier 2 doubles its hosts' worm spawn chance,
+            // so Plague factions feel progressively more viral
+            // as they tech up.
+            let rate = (base_rate * self.tech_worm_spawn_mult(faction)).clamp(0.0, 1.0);
             if !self.rng.gen_bool(rate as f64) {
                 continue;
             }

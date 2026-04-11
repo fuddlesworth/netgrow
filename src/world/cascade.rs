@@ -37,15 +37,19 @@ impl World {
                 // shortcuts are visible for a few ticks before the death
                 // wave propagates outward from them.
                 self.reveal_honeypot_backdoors(id);
+                let cm = self.era_rules.cascade_mult;
                 if let Some(parent) = self.nodes[id].parent {
                     if !self.is_c2(parent) {
-                        self.schedule_subtree_death(parent, self.cfg.honeypot_cascade_mult);
+                        self.schedule_subtree_death(
+                            parent,
+                            self.cfg.honeypot_cascade_mult * cm,
+                        );
                         continue;
                     }
                 }
-                self.schedule_subtree_death(id, self.cfg.honeypot_cascade_mult);
+                self.schedule_subtree_death(id, self.cfg.honeypot_cascade_mult * cm);
             } else {
-                self.schedule_subtree_death(id, 1.0);
+                self.schedule_subtree_death(id, self.era_rules.cascade_mult);
             }
         }
 
@@ -58,7 +62,8 @@ impl World {
         if self.is_storming() {
             loss_mult *= self.cfg.storm_loss_mult;
         }
-        let effective_loss = (self.cfg.p_loss * loss_mult).clamp(0.0, 1.0);
+        let effective_loss =
+            (self.cfg.p_loss * loss_mult * self.era_rules.loss_mult).clamp(0.0, 1.0);
         if self.rng.gen_bool(effective_loss as f64) {
             let alive_ids: Vec<NodeId> = self
                 .nodes
@@ -504,32 +509,29 @@ impl World {
                 name, a, b, faction
             ));
         }
-        // Faction memory decay: when a C2 node dies, purge any
-        // rivalry pairs involving that faction. The faction is
-        // gone — so are its grudges. Reborn colonies start with
-        // a clean slate, and surviving rivals stop escalating
-        // against a faction that no longer exists.
+        // Faction memory decay: when a C2 node dies, purge every
+        // relation entry involving that faction from the unified
+        // diplomacy map. The faction is gone — so are its
+        // grudges, alliances, NAPs, trades, and vassalage claims.
+        // Reborn colonies start with a clean slate, and surviving
+        // rivals stop escalating against a faction that no
+        // longer exists.
         let dead_factions: Vec<u8> = newly_dead
             .iter()
             .filter(|&&id| self.c2_nodes.contains(&id))
             .map(|&id| self.nodes[id].faction)
             .collect();
         if !dead_factions.is_empty() {
-            let before = self.rivalry.len();
-            self.rivalry
+            let before = self.relations.len();
+            self.relations
                 .retain(|&(a, b), _| !dead_factions.iter().any(|&f| a == f || b == f));
-            let purged = before.saturating_sub(self.rivalry.len());
+            let purged = before.saturating_sub(self.relations.len());
             for f in &dead_factions {
                 self.push_log(format!(
-                    "F{} memory fades — {} rivalries forgotten",
+                    "F{} memory fades — {} relations forgotten",
                     f, purged
                 ));
             }
-            // Also drop active war declarations involving the
-            // dead factions so they don't persist as dead-pair
-            // entries clogging the wars map.
-            self.wars
-                .retain(|&(a, b), _| !dead_factions.iter().any(|&f| a == f || b == f));
             // Release any strain patents held by the dead
             // factions — dead factions don't collect royalties.
             for slot in self.strain_patents.iter_mut() {
