@@ -476,13 +476,18 @@ fn legend_block() -> Paragraph<'static> {
                 Style::default().fg(glyph_color).add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
-            Span::styled(format!("{:<13}", name), label_style),
+            Span::styled(format!("{:<10}", name), label_style),
         ]
     };
-    let two = |a: Vec<Span<'static>>, b: Option<Vec<Span<'static>>>| {
+    let row = |a: Vec<Span<'static>>,
+               b: Option<Vec<Span<'static>>>,
+               c: Option<Vec<Span<'static>>>| {
         let mut spans = a;
         if let Some(b) = b {
             spans.extend(b);
+        }
+        if let Some(c) = c {
+            spans.extend(c);
         }
         Line::from(spans)
     };
@@ -490,34 +495,27 @@ fn legend_block() -> Paragraph<'static> {
     // Honeypots are intentionally absent — they masquerade as relays (●)
     // until tripped. Worms and patch waves are also transient-only.
     let lines = vec![
-        two(
+        row(
             cell("◆", faction_hue(0), "c2"),
+            Some(cell("●", relay_color, "relay")),
+            Some(cell("◉", relay_color, "hardened")),
+        ),
+        row(
+            cell("◎", th.scanner, "scanner"),
+            Some(cell("▣", th.exfil, "exfil")),
             Some(cell("◇", th.defender, "defender")),
         ),
-        two(
-            cell("●", relay_color, "relay"),
-            Some(cell("▓", strain_hue(0), "infected")),
-        ),
-        two(
-            cell("◉", relay_color, "hardened"),
-            Some(cell("✕", th.pwned, "pwned")),
-        ),
-        two(
-            cell("◎", th.scanner, "scanner"),
-            Some(cell("·", th.ghost, "ghost")),
-        ),
-        two(
-            cell("▣", th.exfil, "exfil"),
-            Some(cell("⊞", th.frame_accent, "tower")),
-        ),
-        two(
-            cell("⊚", th.accent, "beacon"),
+        row(
+            cell("⊞", th.frame_accent, "tower"),
+            Some(cell("⊚", th.accent, "beacon")),
             Some(cell("⊛", th.stat_packets, "proxy")),
         ),
-        two(
+        row(
             cell("⊕", th.value, "router"),
-            None,
+            Some(cell("▓", strain_hue(0), "infected")),
+            Some(cell("✕", th.pwned, "pwned")),
         ),
+        row(cell("·", th.ghost, "ghost"), None, None),
     ];
     Paragraph::new(lines).block(block)
 }
