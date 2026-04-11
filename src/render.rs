@@ -197,7 +197,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
             if let Some(pos) = ui.cursor {
                 frame.render_widget(inspector_block(world, pos), right_rows[4]);
             }
-            frame.render_widget(log_block(world), right_rows[5]);
+            frame.render_widget(log_block(world, right_rows[5].width), right_rows[5]);
         }
         ViewMode::Intel => {
             // Rivalries / events panels size dynamically to their
@@ -233,7 +233,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
             if let Some(pos) = ui.cursor {
                 frame.render_widget(inspector_block(world, pos), right_rows[3]);
             }
-            frame.render_widget(log_block(world), right_rows[4]);
+            frame.render_widget(log_block(world, right_rows[4].width), right_rows[4]);
         }
     }
 }
@@ -1702,22 +1702,48 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
     Paragraph::new(lines).block(block)
 }
 
-fn log_block(world: &World) -> Paragraph<'static> {
+fn log_block(world: &World, panel_width: u16) -> Paragraph<'static> {
     let block = bordered_block(" logs ");
+    // Inner width = panel width minus the two border cells and one
+    // space of left padding. Clamped to a safe floor so we never
+    // hand `truncate_to_width` a 0-width budget during startup.
+    let inner = (panel_width.saturating_sub(3)).max(10) as usize;
     let lines: Vec<Line<'static>> = world
         .logs
         .iter()
         .rev()
         .take(64)
         .map(|(s, count)| {
-            if *count > 1 {
-                color_log_line(&format!("{} (×{})", s, count))
+            let raw = if *count > 1 {
+                format!("{} (×{})", s, count)
             } else {
-                color_log_line(s)
-            }
+                s.clone()
+            };
+            let clipped = truncate_to_width(&raw, inner);
+            color_log_line(&clipped)
         })
         .collect();
     Paragraph::new(lines).block(block)
+}
+
+/// Truncate `s` so its visible column count fits within `max_cols`,
+/// appending `…` when anything gets dropped. Counts chars (not
+/// bytes) so multi-byte glyphs like `✦` and `↔` consume one column
+/// each — which matches how the terminal renders them in practice
+/// for this codebase's log taxonomy. If `max_cols` is smaller than
+/// the ellipsis itself, falls back to a hard char-count clamp.
+fn truncate_to_width(s: &str, max_cols: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max_cols {
+        return s.to_string();
+    }
+    if max_cols <= 1 {
+        return chars.into_iter().take(max_cols).collect();
+    }
+    let keep = max_cols - 1;
+    let mut out: String = chars.into_iter().take(keep).collect();
+    out.push('…');
+    out
 }
 
 fn bordered_block(title: &'static str) -> Block<'static> {

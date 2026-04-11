@@ -739,7 +739,7 @@ impl World {
                         transitions.push((
                             key,
                             DiplomaticState::ColdWar,
-                            format!("✦ diplo ✦ F{}↔F{} tensions cool into COLD WAR", a, b),
+                            format!("✦ diplo ✦ F{}↔F{} NEUT → COLD", a, b),
                         ));
                     }
                 }
@@ -750,10 +750,7 @@ impl World {
                         transitions.push((
                             key,
                             DiplomaticState::OpenWar,
-                            format!(
-                                "✦ WAR ✦ F{} declares open hostilities on F{}",
-                                a, b
-                            ),
+                            format!("✦ WAR ✦ F{} declares war on F{}", a, b),
                         ));
                     } else if rel.expires_tick > 0 && tick >= rel.expires_tick
                         && rel.pressure < 30
@@ -761,7 +758,7 @@ impl World {
                         transitions.push((
                             key,
                             DiplomaticState::Neutral,
-                            format!("✦ diplo ✦ F{}↔F{} cold war thaws", a, b),
+                            format!("✦ diplo ✦ F{}↔F{} COLD → NEUT", a, b),
                         ));
                     }
                 }
@@ -800,17 +797,14 @@ impl World {
                         transitions.push((
                             key,
                             DiplomaticState::Vassalage { overlord },
-                            format!(
-                                "✦ MYTHIC ✦ F{} yields as VASSAL to F{}",
-                                vassal, overlord
-                            ),
+                            format!("✦ MYTHIC ✦ F{} → VASSAL of F{}", vassal, overlord),
                         ));
                     } else if rel.expires_tick > 0 && tick >= rel.expires_tick {
                         if rel.pressure < WAR_DE_ESCALATE_THRESHOLD {
                             transitions.push((
                                 key,
                                 DiplomaticState::ColdWar,
-                                format!("✦ diplo ✦ F{}↔F{} truce — falls to COLD WAR", a, b),
+                                format!("✦ diplo ✦ F{}↔F{} WAR → COLD", a, b),
                             ));
                         } else {
                             // Still too hot — refresh the war timer
@@ -832,16 +826,13 @@ impl World {
                             transitions.push((
                                 key,
                                 DiplomaticState::NonAggression,
-                                format!(
-                                    "✦ diplo ✦ F{}↔F{} trade deepens into NON-AGGRESSION",
-                                    a, b
-                                ),
+                                format!("✦ diplo ✦ F{}↔F{} TRD → NAP", a, b),
                             ));
                         } else {
                             transitions.push((
                                 key,
                                 DiplomaticState::Neutral,
-                                format!("✦ diplo ✦ F{}↔F{} trade lapses", a, b),
+                                format!("✦ diplo ✦ F{}↔F{} TRD → NEUT", a, b),
                             ));
                         }
                     }
@@ -857,23 +848,20 @@ impl World {
                         transitions.push((
                             key,
                             DiplomaticState::OpenWar,
-                            format!(
-                                "✦ MYTHIC ✦ F{}↔F{} non-aggression BROKEN — war!",
-                                a, b
-                            ),
+                            format!("✦ MYTHIC ✦ F{}↔F{} NAP BROKEN → WAR", a, b),
                         ));
                     } else if rel.expires_tick > 0 && tick >= rel.expires_tick {
                         if rel.trust >= ALLIANCE_TRUST_THRESHOLD {
                             transitions.push((
                                 key,
                                 DiplomaticState::Alliance,
-                                format!("✦ diplo ✦ F{}↔F{} ALLIANCE forged", a, b),
+                                format!("✦ diplo ✦ F{}↔F{} NAP → ALLY", a, b),
                             ));
                         } else {
                             transitions.push((
                                 key,
                                 DiplomaticState::Neutral,
-                                format!("✦ diplo ✦ F{}↔F{} NAP expires", a, b),
+                                format!("✦ diplo ✦ F{}↔F{} NAP → NEUT", a, b),
                             ));
                         }
                     }
@@ -886,16 +874,13 @@ impl World {
                         transitions.push((
                             key,
                             DiplomaticState::OpenWar,
-                            format!(
-                                "✦ MYTHIC ✦ F{}↔F{} ALLIANCE BETRAYED — war!",
-                                a, b
-                            ),
+                            format!("✦ MYTHIC ✦ F{}↔F{} ALLY BETRAYED → WAR", a, b),
                         ));
                     } else if rel.expires_tick > 0 && tick >= rel.expires_tick {
                         transitions.push((
                             key,
                             DiplomaticState::NonAggression,
-                            format!("✦ diplo ✦ F{}↔F{} alliance winds down to NAP", a, b),
+                            format!("✦ diplo ✦ F{}↔F{} ALLY → NAP", a, b),
                         ));
                     }
                 }
@@ -920,10 +905,7 @@ impl World {
                         transitions.push((
                             key,
                             DiplomaticState::ColdWar,
-                            format!(
-                                "✦ MYTHIC ✦ F{} throws off vassalage to F{}",
-                                subordinate, overlord
-                            ),
+                            format!("✦ MYTHIC ✦ F{} rebels vs F{}", subordinate, overlord),
                         ));
                     }
                     // Tribute trickle — vassals feed 1 intel per
@@ -1017,7 +999,7 @@ impl World {
         entry.state = DiplomaticState::Trade;
         entry.entered_tick = tick;
         entry.expires_tick = tick + STATE_DURATION_TRADE;
-        self.push_log(format!("✦ diplo ✦ F{}↔F{} open TRADE channel", a, b));
+        self.push_log(format!("✦ diplo ✦ F{}↔F{} NEUT → TRD", a, b));
     }
 
     /// Research accrual + tier unlock pass. Called once per faction
@@ -1184,11 +1166,8 @@ impl World {
                 _ => "advancement",
             };
             self.push_log(format!(
-                "✦ tech ✦ F{} {} reaches tier {} — {}",
-                i,
-                persona.display_name(),
-                new_tier,
-                effect
+                "✦ tech ✦ F{} T{}: {}",
+                i, new_tier, effect
             ));
         }
     }
@@ -1333,7 +1312,7 @@ impl World {
         if seeded > 0 {
             let name = self.strain_name(strain);
             self.push_log(format!(
-                "✦ tech ✦ F{} endemic bloom — {} hosts seeded with {}",
+                "✦ tech ✦ F{} bloom: {}× {}",
                 faction, seeded, name
             ));
         }

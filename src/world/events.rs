@@ -197,7 +197,7 @@ impl World {
         }
 
         self.push_log(format!(
-            "✦ MYTHIC ✦ ASSIMILATION — F{} absorbed by F{} ({} hosts)",
+            "✦ MYTHIC ✦ F{} absorbed by F{} ({} hosts)",
             weak_idx, strong_idx, flipped
         ));
     }
