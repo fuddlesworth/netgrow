@@ -82,9 +82,15 @@ impl World {
                     *delivery_credits.entry(pkt.link_id).or_default() += 1;
                     // Credit the C2's faction with one unit of
                     // intel for the successful exfil delivery.
-                    let fac = self.nodes[parent_id].faction as usize;
-                    if let Some(s) = self.faction_stats.get_mut(fac) {
-                        s.intel = s.intel.saturating_add(1);
+                    // Ghost packets carry no payload and skip
+                    // the intel bump — they still count as a
+                    // delivered packet for backbone-promotion
+                    // bookkeeping, just without the reward.
+                    if !pkt.ghost {
+                        let fac = self.nodes[parent_id].faction as usize;
+                        if let Some(s) = self.faction_stats.get_mut(fac) {
+                            s.intel = s.intel.saturating_add(1);
+                        }
                     }
                     continue; // delivered
                 }
@@ -100,10 +106,13 @@ impl World {
                     // Router caches also contribute intel to the
                     // owning faction — the data made it to a
                     // legitimate caching layer, not just onto the
-                    // wire.
-                    let fac = self.nodes[parent_id].faction as usize;
-                    if let Some(s) = self.faction_stats.get_mut(fac) {
-                        s.intel = s.intel.saturating_add(1);
+                    // wire. Ghost packets pollute the cache without
+                    // crediting intel.
+                    if !pkt.ghost {
+                        let fac = self.nodes[parent_id].faction as usize;
+                        if let Some(s) = self.faction_stats.get_mut(fac) {
+                            s.intel = s.intel.saturating_add(1);
+                        }
                     }
                     continue;
                 }

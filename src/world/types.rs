@@ -391,6 +391,14 @@ pub struct Packet {
     /// Index into link.path. Packets travel from the child end (high index)
     /// toward the parent end (index 0).
     pub pos: u16,
+    /// True if this packet is a decoy — carries no real payload.
+    /// Opportunist/Plague factions emit these to clog rival
+    /// router caches without producing a matching intel reward
+    /// on successful delivery. Ghost packets still add link
+    /// load and still route normally; they just don't credit
+    /// the sender's `intel` counter when they drop into C2 or
+    /// get absorbed by a Router.
+    pub ghost: bool,
 }
 
 #[derive(Clone, Debug)]

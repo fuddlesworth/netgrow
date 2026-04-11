@@ -685,6 +685,7 @@ fn link_load_accumulates_and_decays() {
     w.packets.push(Packet {
         link_id: 0,
         pos: len - 1,
+        ghost: false,
     });
     for _ in 0..5 {
         w.decay_link_load();
@@ -899,6 +900,49 @@ fn diplomacy_pressure_escalates_to_cold_war_then_open_war() {
     // Order-insensitive lookups.
     assert!(w.at_war(1, 0));
     assert_eq!(w.relation_state(1, 0), DiplomaticState::OpenWar);
+}
+
+#[test]
+fn ghost_packet_delivers_without_crediting_intel() {
+    let mut w = World::new(3, (80, 30), Config::default());
+    w.cfg.p_spawn = 0.0;
+    w.cfg.p_loss = 0.0;
+    // Build c2 → a chain and park a ghost packet right at the
+    // parent-end of the c2→a link so the next advance_packets
+    // call drops it into C2.
+    let a = w.nodes.len();
+    w.nodes
+        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
+    let path_ca: Vec<(i16, i16)> =
+        (w.nodes[w.c2()].pos.0..=10).map(|x| (x, 10)).collect();
+    let len_ca = path_ca.len() as u16;
+    w.links.push(Link {
+        a: w.c2(),
+        b: a,
+        path: path_ca,
+        drawn: len_ca,
+        kind: LinkKind::Parent,
+        load: 0,
+        breach_ttl: 0,
+        burn_ticks: 0,
+        quarantined: 0,
+        packets_delivered: 0,
+        is_backbone: false,
+        latent: false,
+    });
+    let intel_before = w.faction_stats[0].intel;
+    // Park a ghost packet at pos 0 — ready to drop into C2.
+    w.packets.push(Packet {
+        link_id: 0,
+        pos: 0,
+        ghost: true,
+    });
+    w.advance_packets();
+    // Packet should have been delivered (removed from the vec).
+    assert!(w.packets.is_empty());
+    // Intel should NOT have incremented — ghost packets skip the
+    // reward path on C2 delivery.
+    assert_eq!(w.faction_stats[0].intel, intel_before);
 }
 
 #[test]

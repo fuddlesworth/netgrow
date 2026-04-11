@@ -2397,18 +2397,24 @@ impl<'a> Widget for MeshWidget<'a> {
             }
             let a_pos = w.nodes[link.a].pos;
             let b_pos = w.nodes[link.b].pos;
-            // Head — bright.
+            // Head — bright. Ghost packets use the ghost palette
+            // color and drop the BOLD modifier so the decoy
+            // stream reads as translucent against the real
+            // traffic.
             let head_cell = link.path[idx];
             if head_cell != a_pos && head_cell != b_pos {
                 let glyph = packet_glyph(link, idx);
+                let (head_color, head_mod) = if pkt.ghost {
+                    (theme().ghost, Modifier::empty())
+                } else {
+                    (theme().packet, Modifier::BOLD)
+                };
                 put(
                     buf,
                     area,
                     head_cell,
                     glyph,
-                    Style::default()
-                        .fg(theme().packet)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(head_color).add_modifier(head_mod),
                 );
             }
             // Tail — two cells behind the head, dimmer with each step.

@@ -198,9 +198,29 @@ impl World {
                     continue;
                 }
                 self.nodes[id].role_cooldown = period;
+                // Ghost-packet roll: Opportunist and Plague
+                // exfils occasionally emit a decoy packet with
+                // no payload. Adds load and clogs router caches
+                // without a matching intel reward on delivery.
+                // Rolled per fire so a busy exfil produces a
+                // steady stream of ghosts without drowning the
+                // real traffic channel.
+                let faction = self.nodes[id].faction;
+                let persona = self
+                    .personas
+                    .get(faction as usize)
+                    .copied()
+                    .unwrap_or(super::Persona::Opportunist);
+                let ghost_chance: f64 = match persona {
+                    super::Persona::Opportunist => 0.25,
+                    super::Persona::Plague => 0.20,
+                    _ => 0.0,
+                };
+                let is_ghost = ghost_chance > 0.0 && self.rng.gen_bool(ghost_chance);
                 self.packets.push(Packet {
                     link_id,
                     pos: (link.path.len() - 1) as u16,
+                    ghost: is_ghost,
                 });
             } else {
                 self.nodes[id].role_cooldown = period;
