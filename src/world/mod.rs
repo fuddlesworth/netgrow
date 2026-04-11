@@ -209,6 +209,11 @@ pub struct World {
     /// role-cooldown spike. Spawned by `maybe_isp_outage` and
     /// dissolved by `advance_outages`.
     pub outages: Vec<IspOutage>,
+    /// Active network partitions: horizontal or vertical slices
+    /// through the mesh. Packets and worms crossing an active
+    /// partition drop instantly, and new cross-faction bridges
+    /// can't form through one. Companion to IspOutage.
+    pub partitions: Vec<Partition>,
     /// Per-faction AI personality. Indexed in lockstep with
     /// `c2_nodes` and `faction_stats`. Picked at World::new and
     /// when a faction is birthed via resurrection. Drives
@@ -936,6 +941,7 @@ impl World {
             activity_history: VecDeque::with_capacity(ACTIVITY_HISTORY_LEN),
             rivalry: HashMap::new(),
             outages: Vec::new(),
+            partitions: Vec::new(),
             personas,
             faction_colors,
             wars: HashMap::new(),
@@ -988,6 +994,8 @@ impl World {
         self.advance_wormholes();
         self.maybe_isp_outage();
         self.advance_outages();
+        self.maybe_partition();
+        self.advance_partitions();
         if self.cfg.sleeper_wake_period > 0
             && self.tick.is_multiple_of(self.cfg.sleeper_wake_period)
         {

@@ -420,6 +420,38 @@ pub struct Wormhole {
     pub life: u16,
 }
 
+/// Rare environmental event — a horizontal or vertical slice
+/// through the mesh that briefly blocks traffic from crossing it.
+/// Packets and worms whose link spans both sides are dropped at
+/// the partition. Thematic companion to IspOutage: instead of a
+/// dead region, a line cut through the fabric.
+#[derive(Clone, Debug)]
+pub struct Partition {
+    /// If true, the partition is a horizontal line at y = pos.
+    /// Otherwise a vertical line at x = pos.
+    pub horizontal: bool,
+    /// Cell index (x or y depending on orientation) of the cut line.
+    pub pos: i16,
+    pub age: u16,
+    pub life: u16,
+}
+
+impl Partition {
+    /// True if the path from `a` to `b` crosses this partition line.
+    /// The check is the classic 'points on opposite sides of the
+    /// cut' test: whichever coordinate the partition slices, the
+    /// two endpoints must straddle the line value.
+    pub fn crosses(&self, a: (i16, i16), b: (i16, i16)) -> bool {
+        if self.horizontal {
+            (a.1 <= self.pos && b.1 > self.pos)
+                || (a.1 > self.pos && b.1 <= self.pos)
+        } else {
+            (a.0 <= self.pos && b.0 > self.pos)
+                || (a.0 > self.pos && b.0 <= self.pos)
+        }
+    }
+}
+
 /// Rare environmental event — a rectangular dead zone where new
 /// spawns are blocked and any alive node inside has its role
 /// cooldowns continuously spiked. Simulates an upstream provider

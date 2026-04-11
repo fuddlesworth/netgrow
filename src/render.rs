@@ -1347,6 +1347,54 @@ impl<'a> Widget for MeshWidget<'a> {
             }
         }
 
+        // 0a-ter. Network partitions — a dashed horizontal or
+        // vertical line cut across the mesh where packets and
+        // worms refuse to cross. Draw every other cell so the cut
+        // reads as dashed rather than solid.
+        for p in &w.partitions {
+            if p.horizontal {
+                let y = p.pos;
+                for x in 0..bounds.0 {
+                    if (x as i64 + w.tick as i64).rem_euclid(2) == 0 {
+                        continue;
+                    }
+                    let cell = (x, y);
+                    if node_cells.contains(&cell) {
+                        continue;
+                    }
+                    put(
+                        buf,
+                        area,
+                        cell,
+                        "─",
+                        Style::default()
+                            .fg(th.pwned_alt)
+                            .add_modifier(Modifier::BOLD | Modifier::DIM),
+                    );
+                }
+            } else {
+                let x = p.pos;
+                for y in 0..bounds.1 {
+                    if (y as i64 + w.tick as i64).rem_euclid(2) == 0 {
+                        continue;
+                    }
+                    let cell = (x, y);
+                    if node_cells.contains(&cell) {
+                        continue;
+                    }
+                    put(
+                        buf,
+                        area,
+                        cell,
+                        "│",
+                        Style::default()
+                            .fg(th.pwned_alt)
+                            .add_modifier(Modifier::BOLD | Modifier::DIM),
+                    );
+                }
+            }
+        }
+
         // 0b. Storm crackle — a directional front rolling down from
         // the top edge of the mesh. Each active storm picks a
         // direction (dx, 1) at spawn, where dx ∈ {-1, 0, 1} so the

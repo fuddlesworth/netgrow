@@ -101,6 +101,13 @@ pub struct Config {
     /// Side length range (Chebyshev) of an ISP outage rectangle.
     pub isp_outage_min_side: i16,
     pub isp_outage_max_side: i16,
+    /// Ticks between network partition rolls. A partition is a
+    /// horizontal or vertical slice through the mesh that drops
+    /// packets/worms trying to cross it and blocks new cross-
+    /// faction bridges through the cut.
+    pub partition_period: u64,
+    pub partition_chance: f32,
+    pub partition_life_ticks: u16,
     /// Per-spawn chance that a freshly minted node is secretly a
     /// sleeper agent loyal to a different faction. Stays dormant
     /// until `maybe_wake_sleepers` rolls a wake.
@@ -236,6 +243,9 @@ impl Default for Config {
             isp_outage_life_ticks: 180,
             isp_outage_min_side: 6,
             isp_outage_max_side: 14,
+            partition_period: 2800,
+            partition_chance: 0.45,
+            partition_life_ticks: 220,
             sleeper_spawn_chance: 0.012,
             sleeper_wake_period: 200,
             sleeper_wake_chance: 0.18,

@@ -7,7 +7,9 @@
 
 use rand::Rng;
 
-use super::{Alliance, DdosWave, IspOutage, NodeId, State, World, Wormhole, octet_pair};
+use super::{
+    Alliance, DdosWave, IspOutage, NodeId, Partition, State, World, Wormhole, octet_pair,
+};
 
 impl World {
     pub(super) fn maybe_alliance(&mut self) {
@@ -301,6 +303,48 @@ impl World {
         };
         self.outages.push(outage);
         self.push_log("⚠ ISP OUTAGE — region offline".to_string());
+    }
+
+    /// Roll for a new network partition. Picks a random orientation
+    /// (horizontal or vertical) and a position somewhere in the
+    /// middle third of the mesh so the cut always separates a
+    /// meaningful portion of the network.
+    pub(super) fn maybe_partition(&mut self) {
+        if !self.roll_periodic(self.cfg.partition_period, self.cfg.partition_chance) {
+            return;
+        }
+        let bounds = self.bounds;
+        if bounds.0 < 6 || bounds.1 < 6 {
+            return;
+        }
+        let horizontal = self.rng.gen_bool(0.5);
+        let pos = if horizontal {
+            self.rng.gen_range(bounds.1 / 3..(bounds.1 * 2 / 3))
+        } else {
+            self.rng.gen_range(bounds.0 / 3..(bounds.0 * 2 / 3))
+        };
+        self.partitions.push(Partition {
+            horizontal,
+            pos,
+            age: 0,
+            life: self.cfg.partition_life_ticks,
+        });
+        let axis = if horizontal { "horizontal" } else { "vertical" };
+        self.push_log(format!("✂ PARTITION — {} cut at {}", axis, pos));
+    }
+
+    pub(super) fn advance_partitions(&mut self) {
+        if self.partitions.is_empty() {
+            return;
+        }
+        for p in self.partitions.iter_mut() {
+            p.age = p.age.saturating_add(1);
+        }
+        let dissolved = self.partitions.iter().filter(|p| p.age >= p.life).count();
+        self.partitions.retain(|p| p.age < p.life);
+        if dissolved > 0 {
+            self.push_log("partition healed".to_string());
+        }
     }
 
     pub(super) fn advance_outages(&mut self) {

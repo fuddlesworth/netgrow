@@ -58,6 +58,16 @@ impl World {
             {
                 continue; // drop packet; route is compromised
             }
+            // Network partition: drop if the link's endpoints
+            // straddle any active partition line. The packet is
+            // silently lost — the cut severed its route.
+            let a_pos = self.nodes[link_a].pos;
+            let b_pos = self.nodes[link_b].pos;
+            if self.partitions.iter().any(|p| p.crosses(a_pos, b_pos)) {
+                dropped_count += 1;
+                last_drop_pos = Some(a_pos);
+                continue;
+            }
             // Each in-flight packet heats up its current link.
             self.links[pkt.link_id].load =
                 self.links[pkt.link_id].load.saturating_add(PACKET_LOAD_INCREMENT);
