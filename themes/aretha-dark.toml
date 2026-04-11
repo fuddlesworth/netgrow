@@ -1,0 +1,85 @@
+# Aretha Dark — warm-black ground with aged gold, rose, and sage.
+# A soulful, low-chroma dark palette that leans into warm amber
+# highlights instead of the cool cyans of the default cyberpunk
+# look. Named for the Queen of Soul — gold as royalty, burgundy
+# as velvet, sage as a quiet undercurrent.
+
+frame          = "#b7841c"  # aged gold
+frame_accent   = "#e5b347"  # bright gold
+bar_bg         = "#14100c"  # warm near-black
+label          = "#c9b88c"  # muted cream
+value          = "#f5e9cc"  # ivory highlight
+ghost          = "#675c4a"  # warm gray
+accent         = "#e5b347"
+
+header_brand_bg = "#e5b347"
+header_brand_fg = "#14100c"
+stat_label      = "#b09b75"
+stat_value      = "#f5e9cc"
+stat_packets    = "#d4a84a"  # amber
+stat_infected   = "#d17478"  # rose
+
+pwned          = "#c23838"  # deep red
+pwned_alt      = "#d95454"  # warm red
+dying_alt      = "#c06b2e"  # burnt orange
+honey_reveal   = "#e5b347"
+shield_flash_a = "#d4a84a"
+shield_flash_b = "#f5e9cc"
+mutated_flash_a = "#d17478"
+mutated_flash_b = "#8a4a8e"  # warm purple
+
+scanner  = "#6ba895"  # dusty teal
+exfil    = "#9d6bb0"  # warm purple
+defender = "#89a66a"  # sage
+
+patch_wave = "#89a66a"
+packet     = "#e5b347"
+cross_link = "#b09b75"
+ping       = "#6ba895"
+cursor     = "#e5b347"
+
+branch_palette = [
+  "#89a66a",  # sage
+  "#e5b347",  # bright gold
+  "#d48322",  # amber
+  "#d95454",  # warm red
+  "#d17478",  # rose
+  "#9d6bb0",  # warm purple
+  "#6ba895",  # dusty teal
+  "#c9b88c",  # cream
+]
+
+faction_palette = [
+  "#e5b347",  # bright gold
+  "#9d6bb0",  # warm purple
+  "#89a66a",  # sage
+  "#d95454",  # warm red
+]
+
+strain_palette = [
+  "#9d6bb0",  # warm purple
+  "#8a4a8e",
+  "#d17478",  # rose
+  "#b34a5a",
+  "#c23838",  # deep red
+  "#6a1a22",  # burgundy
+  "#d17478",
+  "#9d6bb0",
+]
+
+log_handshake = "#89a66a"
+log_beacon    = "#675c4a"
+log_lost      = "#c23838"
+log_hardened  = "#e5b347"
+log_shielded  = "#d4a84a"
+log_cured     = "#89a66a"
+log_cascade   = "#c06b2e"
+log_strain    = "#9d6bb0"
+log_worm      = "#d17478"
+log_mutated   = "#d17478"
+log_bridge    = "#b09b75"
+log_c2_online = "#e5b347"
+log_default   = "#c9b88c"
+log_zero_day_bg = "#e5b347"
+log_honeypot_bg = "#d4a84a"
+log_injected_bg = "#9d6bb0"

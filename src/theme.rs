@@ -308,6 +308,7 @@ impl Theme {
 /// need the themes directory on disk.
 pub fn builtin_theme(name: &str) -> Option<&'static str> {
     match name {
+        "aretha" | "aretha-dark" => Some(include_str!("../themes/aretha-dark.toml")),
         "gruvbox" => Some(include_str!("../themes/gruvbox.toml")),
         "nord" => Some(include_str!("../themes/nord.toml")),
         "dracula" => Some(include_str!("../themes/dracula.toml")),
@@ -321,6 +322,7 @@ pub fn builtin_theme(name: &str) -> Option<&'static str> {
 
 /// Sorted list of built-in theme names for `--help` text and listings.
 pub const BUILTIN_NAMES: &[&str] = &[
+    "aretha-dark",
     "catppuccin-mocha",
     "dracula",
     "gruvbox",
