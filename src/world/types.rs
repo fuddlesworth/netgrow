@@ -231,6 +231,13 @@ pub struct Node {
     /// render a stable callable name for recurring characters in a
     /// run. `u16::MAX` means "not legendary".
     pub legendary_name: u16,
+    /// Some(f) marks this node as a sleeper agent secretly loyal
+    /// to faction `f`. The node renders as its visible faction
+    /// until `maybe_wake_sleepers` triggers, at which point it
+    /// flips faction, infects its host neighborhood, and the field
+    /// is cleared. None means the node is exactly what it appears
+    /// to be.
+    pub sleeper_true_faction: Option<u8>,
 }
 
 impl Node {
@@ -275,6 +282,7 @@ impl Node {
             death_echo: 0,
             children_spawned: 0,
             legendary_name: u16::MAX,
+            sleeper_true_faction: None,
         }
     }
 }

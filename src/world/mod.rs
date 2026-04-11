@@ -212,6 +212,54 @@ impl World {
         }
     }
 
+    /// Probabilistically wake any active sleeper agents. A waking
+    /// sleeper flips its visible faction to its hidden true faction,
+    /// gets a mutated_flash, and seeds an infection on its host
+    /// node so the betrayal lands with weight. Logs the reveal.
+    fn maybe_wake_sleepers(&mut self) {
+        if self.cfg.sleeper_wake_chance <= 0.0 {
+            return;
+        }
+        let mut to_wake: Vec<NodeId> = Vec::new();
+        for (id, n) in self.nodes.iter().enumerate() {
+            if n.sleeper_true_faction.is_none() {
+                continue;
+            }
+            if !matches!(n.state, State::Alive) || n.dying_in > 0 {
+                continue;
+            }
+            if self.rng.gen_bool(self.cfg.sleeper_wake_chance as f64) {
+                to_wake.push(id);
+            }
+        }
+        let cure_resist = self.cfg.virus_cure_resist;
+        for id in to_wake {
+            let Some(true_f) = self.nodes[id].sleeper_true_faction else {
+                continue;
+            };
+            let old_faction = self.nodes[id].faction;
+            let pos = self.nodes[id].pos;
+            self.nodes[id].faction = true_f;
+            self.nodes[id].sleeper_true_faction = None;
+            self.nodes[id].mutated_flash = 12;
+            // Plant a fresh strain on the host as the act of
+            // sabotage so the betrayal has a visible mechanical
+            // effect, not just a faction recolor.
+            if self.nodes[id].infection.is_none() {
+                let strain = self.rng.gen_range(0..STRAIN_COUNT as u8);
+                self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
+            }
+            // The reveal feeds the rivalry between the host's old
+            // faction and its true faction.
+            self.bump_rivalry(old_faction, true_f, 12);
+            let (a, b) = octet_pair(pos);
+            self.push_log(format!(
+                "✦ sleeper ✦ F{} mole revealed in F{} @ 10.0.{}.{}",
+                true_f, old_faction, a, b
+            ));
+        }
+    }
+
     /// Scan for nodes that have earned legendary status and assign
     /// them a stable name from LEGENDARY_NAME_POOL. The promotion
     /// rule is "alive + long-lived + reproductively successful":
@@ -563,6 +611,11 @@ impl World {
         self.advance_wormholes();
         self.maybe_isp_outage();
         self.advance_outages();
+        if self.cfg.sleeper_wake_period > 0
+            && self.tick.is_multiple_of(self.cfg.sleeper_wake_period)
+        {
+            self.maybe_wake_sleepers();
+        }
         self.maybe_assimilate();
         self.maybe_alliance();
         self.maybe_border_skirmish();

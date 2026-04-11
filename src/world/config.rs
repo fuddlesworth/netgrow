@@ -101,6 +101,14 @@ pub struct Config {
     /// Side length range (Chebyshev) of an ISP outage rectangle.
     pub isp_outage_min_side: i16,
     pub isp_outage_max_side: i16,
+    /// Per-spawn chance that a freshly minted node is secretly a
+    /// sleeper agent loyal to a different faction. Stays dormant
+    /// until `maybe_wake_sleepers` rolls a wake.
+    pub sleeper_spawn_chance: f32,
+    /// Tick period between sleeper wake rolls. Each active sleeper
+    /// rolls once per period at `sleeper_wake_chance`.
+    pub sleeper_wake_period: u64,
+    pub sleeper_wake_chance: f32,
     /// Maximum Chebyshev distance from any C2 at which a Tower may
     /// spawn. Spawns rolling a Tower role beyond this distance fall
     /// back to Relay, so fortified cores stay near their faction hub.
@@ -228,6 +236,9 @@ impl Default for Config {
             isp_outage_life_ticks: 180,
             isp_outage_min_side: 6,
             isp_outage_max_side: 14,
+            sleeper_spawn_chance: 0.012,
+            sleeper_wake_period: 200,
+            sleeper_wake_chance: 0.18,
             tower_spawn_radius: 10,
             tower_pwn_resist: 2,
             ransom_chance: 0.15,

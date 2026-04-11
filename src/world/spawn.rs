@@ -396,6 +396,24 @@ impl World {
         if role == Role::Tower {
             node.pwn_resist = self.cfg.tower_pwn_resist;
         }
+        // Sleeper agent: rare chance the node is secretly loyal to a
+        // different faction. Only viable when at least two factions
+        // exist and the role isn't a stealth/specialist that already
+        // has its own deception (Honeypot/Decoy/Defender/Tower/Beacon).
+        let faction_count = self.faction_stats.len() as u8;
+        let role_eligible = matches!(role, Role::Relay | Role::Scanner | Role::Exfil | Role::Proxy);
+        if faction_count >= 2
+            && role_eligible
+            && self.cfg.sleeper_spawn_chance > 0.0
+            && self.rng.gen_bool(self.cfg.sleeper_spawn_chance as f64)
+        {
+            // Pick any other faction uniformly.
+            let mut true_f = self.rng.gen_range(0..faction_count);
+            if true_f == faction {
+                true_f = (true_f + 1) % faction_count;
+            }
+            node.sleeper_true_faction = Some(true_f);
+        }
         self.nodes.push(node);
         if let Some(s) = self.faction_stats.get_mut(faction as usize) {
             s.spawned += 1;
