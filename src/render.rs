@@ -424,8 +424,23 @@ pub fn draw_summary(frame: &mut Frame, world: &World, meta: &SummaryMeta<'_>) {
     frame.render_widget(summary_meta_block(meta, world), mid_cols[0]);
     frame.render_widget(summary_totals_block(world), mid_cols[1]);
 
-    // 4. Leaderboard.
-    frame.render_widget(summary_leaderboard_block(world), rows[3]);
+    // 4. Leaderboard + optional legendary roll call beneath.
+    let legend_count = world
+        .nodes
+        .iter()
+        .filter(|n| matches!(n.state, State::Alive) && n.legendary_name != u16::MAX)
+        .count();
+    if legend_count > 0 {
+        let inner = Layout::vertical([
+            Constraint::Min(3),
+            Constraint::Length((legend_count as u16 + 2).min(8)),
+        ])
+        .split(rows[3]);
+        frame.render_widget(summary_leaderboard_block(world), inner[0]);
+        frame.render_widget(summary_legends_block(world), inner[1]);
+    } else {
+        frame.render_widget(summary_leaderboard_block(world), rows[3]);
+    }
 
     // 5. Footer prompt.
     let footer = Line::from(vec![
@@ -554,6 +569,39 @@ fn summary_totals_block(world: &World) -> Paragraph<'static> {
             " totals ",
             Style::default().fg(th.frame_accent).add_modifier(Modifier::BOLD),
         ));
+    Paragraph::new(lines).block(block)
+}
+
+fn summary_legends_block(world: &World) -> Paragraph<'static> {
+    let th = theme();
+    let block = Block::bordered()
+        .border_style(Style::default().fg(th.frame))
+        .title(Span::styled(
+            " legends ",
+            Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
+        ));
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (id, n) in world.nodes.iter().enumerate() {
+        if !matches!(n.state, State::Alive) || n.legendary_name == u16::MAX {
+            continue;
+        }
+        let hue = faction_hue(world, n.faction);
+        let bio = legendary_bio(world, n, id);
+        lines.push(Line::from(vec![
+            Span::styled(" ✦ ", Style::default().fg(th.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                bio,
+                Style::default().fg(hue).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  F{}", n.faction),
+                Style::default().fg(th.stat_label),
+            ),
+        ]));
+        if lines.len() >= 6 {
+            break;
+        }
+    }
     Paragraph::new(lines).block(block)
 }
 
@@ -1238,6 +1286,42 @@ fn legend_block() -> Paragraph<'static> {
     Paragraph::new(lines).block(block)
 }
 
+/// Generate a one-line biographical flavor string for a legendary
+/// node. Deterministic: the template and any randomized details are
+/// seeded by the node id + a base pool so the same node always
+/// produces the same bio within a run, and across restarts with
+/// the same seed.
+fn legendary_bio(world: &World, node: &Node, node_id: usize) -> String {
+    let pool = crate::world::LEGENDARY_NAME_POOL;
+    let name = pool[(node.legendary_name as usize) % pool.len()];
+    let age_ticks = world.tick.saturating_sub(node.born);
+    let age = if age_ticks >= 1000 {
+        format!("{:.1}kt", age_ticks as f32 / 1000.0)
+    } else {
+        format!("{}t", age_ticks)
+    };
+    let role = node.role.display_name();
+    let children = node.children_spawned;
+    // Templates keyed by node id modulo. Each template must fit in
+    // the inspector panel's ~30-char value budget to avoid wrapping.
+    let templates: [&str; 6] = [
+        "{name} — {age} witness",
+        "{name} — {role} of b{branch}",
+        "{name} — sired {kids}",
+        "{name} — veteran {role}",
+        "{name} — b{branch} progenitor",
+        "{name} — {age} elder, {kids} kin",
+    ];
+    let idx = (node_id.wrapping_mul(2654435761)) % templates.len();
+    let template = templates[idx];
+    template
+        .replace("{name}", name)
+        .replace("{age}", &age)
+        .replace("{role}", role)
+        .replace("{kids}", &children.to_string())
+        .replace("{branch}", &node.branch_id.to_string())
+}
+
 fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
     let th = theme();
     let block = bordered_block(" inspect ");
@@ -1268,9 +1352,12 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
         Some(n) => {
             lines.push(row("ip", node_ip(pos)));
             if n.legendary_name != u16::MAX {
-                let pool = crate::world::LEGENDARY_NAME_POOL;
-                let name = pool[(n.legendary_name as usize) % pool.len()];
-                lines.push(row("legend", name.to_string()));
+                // Show the generated biographical line instead of
+                // just the bare name so legendary nodes read as
+                // actual characters.
+                let node_id = world.nodes.iter().position(|x| x.pos == pos).unwrap_or(0);
+                let bio = legendary_bio(world, n, node_id);
+                lines.push(row("legend", bio));
             }
             let role_name = if n.parent.is_none() {
                 "C2"
