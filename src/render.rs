@@ -1303,24 +1303,23 @@ impl<'a> Widget for MeshWidget<'a> {
             if node_cells.contains(&cell) {
                 continue;
             }
-            // Manually dim the hue in RGB space instead of using
-            // Modifier::DIM — many terminals (notably on darker
-            // panel backgrounds like aretha-dark) render DIM as
-            // an aggressive desaturation that clips green-heavy
-            // hues like emerald all the way to black.
+            // Day brightens the base faction hue (blend toward
+            // white) so territory reads as "lit up"; night uses
+            // the base hue unchanged so it stays at the same
+            // brightness as the header bar and leaderboard,
+            // without risking a dim variant that disappears on
+            // dark-panel themes like aretha-dark.
             let base_hue = faction_hue(w, fac);
             let resolved = if night || storming {
-                dim_rgb(base_hue, 0.55)
-            } else {
                 base_hue
+            } else {
+                brighten_rgb(base_hue, 0.3)
             };
-            put(
-                buf,
-                area,
-                cell,
-                TERRITORY_GLYPH,
-                Style::default().fg(resolved),
-            );
+            let mut style = Style::default().fg(resolved);
+            if !night && !storming {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            put(buf, area, cell, TERRITORY_GLYPH, style);
         }
 
         // 0a-bis. ISP outage zones — dim hatched fill across the
@@ -2061,19 +2060,19 @@ fn strain_hue(strain: u8) -> Color {
     palette[(strain as usize) % palette.len()]
 }
 
-/// Scale an RGB color by `factor` (0.0–1.0). Named color variants
-/// pass through unchanged since we can't introspect their channels
-/// at runtime — the night territory tint always seeds from
-/// `faction_hue`, which in every shipped theme returns an
-/// explicit `Color::Rgb`, so the pass-through case isn't hit in
-/// practice.
-fn dim_rgb(c: Color, factor: f32) -> Color {
+/// Blend an RGB color toward white by `factor` (0.0–1.0). Used to
+/// brighten the daytime faction territory tint so day reads as
+/// "lit up" against the base-color night. Named color variants
+/// pass through unchanged; in practice every shipped theme's
+/// faction_palette is explicit Color::Rgb so the pass-through
+/// branch isn't hit.
+fn brighten_rgb(c: Color, factor: f32) -> Color {
     let f = factor.clamp(0.0, 1.0);
     match c {
         Color::Rgb(r, g, b) => Color::Rgb(
-            (r as f32 * f) as u8,
-            (g as f32 * f) as u8,
-            (b as f32 * f) as u8,
+            (r as f32 + (255.0 - r as f32) * f) as u8,
+            (g as f32 + (255.0 - g as f32) * f) as u8,
+            (b as f32 + (255.0 - b as f32) * f) as u8,
         ),
         other => other,
     }
