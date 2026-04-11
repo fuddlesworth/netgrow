@@ -43,6 +43,7 @@ pub struct FileConfig {
     pub mutate_rate: Option<f32>,
     pub zero_day_chance: Option<f32>,
     pub ransom_chance: Option<f32>,
+    pub carrier_chance: Option<f32>,
     pub cross_faction_bridge_chance: Option<f32>,
     pub assimilation_period: Option<u64>,
     pub disable_virus: Option<bool>,

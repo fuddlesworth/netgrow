@@ -140,6 +140,12 @@ pub struct Infection {
     /// Terminal stage, and is immune to patch waves — only defender
     /// pulses can clear it.
     pub is_ransom: bool,
+    /// Carrier variant: host never progresses to Terminal, keeping
+    /// the infection endemic indefinitely. Carriers still spread
+    /// through their neighbors, but the host itself is stable —
+    /// cure = safety assumption fails on any mesh with a carrier
+    /// in it. Spawned rarely via seeding and zero-day outbreaks.
+    pub is_carrier: bool,
     /// Number of patch-wave hits this infection has already absorbed
     /// without being cured. Every `VETERAN_WAVE_THRESHOLD` survivals
     /// promote the infection — baseline `cure_resist` bumps up by
@@ -162,6 +168,7 @@ impl Infection {
             cure_resist,
             terminal_ticks: 0,
             is_ransom: false,
+            is_carrier: false,
             wave_survivals: 0,
             veteran_rank: 0,
         }
@@ -175,6 +182,21 @@ impl Infection {
             cure_resist,
             terminal_ticks: 0,
             is_ransom: true,
+            is_carrier: false,
+            wave_survivals: 0,
+            veteran_rank: 0,
+        }
+    }
+
+    pub fn seeded_carrier(strain: u8, cure_resist: u8) -> Self {
+        Self {
+            strain,
+            stage: InfectionStage::Incubating,
+            age: 0,
+            cure_resist: cure_resist.saturating_add(2),
+            terminal_ticks: 0,
+            is_ransom: false,
+            is_carrier: true,
             wave_survivals: 0,
             veteran_rank: 0,
         }

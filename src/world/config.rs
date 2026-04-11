@@ -125,6 +125,9 @@ pub struct Config {
     /// Chance that a newly seeded or injected infection is a ransomware
     /// variant — immune to patch waves, only cleared by defender pulses.
     pub ransom_chance: f32,
+    /// Chance that a newly seeded infection is a carrier variant —
+    /// endemic, never terminal, keeps re-infecting its neighbors.
+    pub carrier_chance: f32,
     /// Chance that a reconnect pick may bridge two DIFFERENT factions
     /// instead of the default same-faction-only rule. When a cross-
     /// faction bridge forms, worms can travel between factions,
@@ -252,6 +255,7 @@ impl Default for Config {
             tower_spawn_radius: 10,
             tower_pwn_resist: 2,
             ransom_chance: 0.15,
+            carrier_chance: 0.10,
             cross_faction_bridge_chance: 0.2,
             assimilation_period: 250,
             assimilation_threshold: 6,

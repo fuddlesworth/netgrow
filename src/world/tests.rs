@@ -238,6 +238,7 @@ fn infection_spreads_along_parent_edges() {
         cure_resist: 3,
         terminal_ticks: 0,
         is_ransom: false,
+        is_carrier: false,
         wave_survivals: 0,
         veteran_rank: 0,
     });
@@ -267,6 +268,7 @@ fn infection_skips_c2() {
         cure_resist: 3,
         terminal_ticks: 0,
         is_ransom: false,
+        is_carrier: false,
         wave_survivals: 0,
         veteran_rank: 0,
     });
@@ -301,6 +303,7 @@ fn patch_wave_cures_infected_node_within_radius() {
         cure_resist: 1,
         terminal_ticks: 0,
         is_ransom: false,
+        is_carrier: false,
         wave_survivals: 0,
         veteran_rank: 0,
     });
@@ -380,6 +383,7 @@ fn terminal_infection_forces_loss() {
         cure_resist: 3,
         terminal_ticks: 1,
         is_ransom: false,
+        is_carrier: false,
         wave_survivals: 0,
         veteran_rank: 0,
     });
@@ -488,6 +492,7 @@ fn infection_spread_skips_honeypots() {
         cure_resist: 4,
         terminal_ticks: 0,
         is_ransom: false,
+        is_carrier: false,
         wave_survivals: 0,
         veteran_rank: 0,
     });
@@ -520,6 +525,7 @@ fn defender_pulse_cures_nearby_infection() {
         cure_resist: 1,
         terminal_ticks: 0,
         is_ransom: false,
+        is_carrier: false,
         wave_survivals: 0,
         veteran_rank: 0,
     });
@@ -547,6 +553,7 @@ fn defender_immune_to_infection() {
         cure_resist: 4,
         terminal_ticks: 0,
         is_ransom: false,
+        is_carrier: false,
         wave_survivals: 0,
         veteran_rank: 0,
     });

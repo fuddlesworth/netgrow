@@ -122,6 +122,10 @@ struct Cli {
     /// Ransomware is immune to patch waves; only defender pulses clear it.
     #[arg(long, default_value_t = 0.15)]
     ransom_chance: f32,
+    /// Chance that a newly seeded infection is a carrier variant —
+    /// never terminal, keeps re-infecting neighbors indefinitely.
+    #[arg(long, default_value_t = 0.10)]
+    carrier_chance: f32,
     /// Chance that a reconnect attempt bridges two different factions
     /// instead of the default same-faction rule. Enables viral warfare
     /// via worms crossing the border.
@@ -322,6 +326,7 @@ fn main() -> io::Result<()> {
     let mutate_rate = pick_f32("mutate_rate", cli.mutate_rate, file.mutate_rate);
     let zero_day_chance = pick_f32("zero_day_chance", cli.zero_day_chance, file.zero_day_chance);
     let ransom_chance = pick_f32("ransom_chance", cli.ransom_chance, file.ransom_chance);
+    let carrier_chance = pick_f32("carrier_chance", cli.carrier_chance, file.carrier_chance);
     let cross_faction_bridge_chance = pick_f32(
         "cross_faction_bridge_chance",
         cli.cross_faction_bridge_chance,
@@ -384,6 +389,7 @@ fn main() -> io::Result<()> {
         mutate_rate,
         zero_day_chance,
         ransom_chance,
+        carrier_chance,
         cross_faction_bridge_chance,
         assimilation_period,
         c2_spawn_bias,

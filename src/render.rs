@@ -1550,7 +1550,13 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
                     InfectionStage::Active => "act",
                     InfectionStage::Terminal => "term",
                 };
-                let kind = if inf.is_ransom { " RANSOM" } else { "" };
+                let kind = if inf.is_ransom {
+                    " RANSOM"
+                } else if inf.is_carrier {
+                    " CARRIER"
+                } else {
+                    ""
+                };
                 let vet = if inf.veteran_rank > 0 {
                     format!(" v{}", inf.veteran_rank)
                 } else {
@@ -1717,6 +1723,15 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default().fg(th.log_strain).add_modifier(Modifier::BOLD)
     } else if node_suffix == Some("symptomatic") {
         Style::default().fg(th.log_worm).add_modifier(Modifier::BOLD)
+    } else if s.contains(" CARRIER at ") {
+        Style::default()
+            .fg(th.header_brand_fg)
+            .bg(th.log_strain)
+            .add_modifier(Modifier::BOLD)
+    } else if s.contains(" ransom at ") {
+        Style::default()
+            .fg(th.log_strain)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
     } else if s.contains(" detected at ") {
         Style::default().fg(th.log_strain)
     } else if node_suffix == Some("cured") || node_suffix == Some("patched") {

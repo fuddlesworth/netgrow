@@ -120,18 +120,24 @@ impl World {
                     }
                 }
                 InfectionStage::Active => {
-                    // Ransomware freezes the host indefinitely instead
-                    // of progressing to a terminal crash — the whole
-                    // point of the variant.
-                    if !inf.is_ransom && inf.age >= incubation + active_len {
+                    // Ransomware and carrier variants both freeze
+                    // the host indefinitely instead of progressing
+                    // to terminal crash — ransomware by locking the
+                    // system, carriers by staying stable and
+                    // endemic so they can keep re-infecting
+                    // neighbors forever.
+                    if !inf.is_ransom && !inf.is_carrier
+                        && inf.age >= incubation + active_len
+                    {
                         inf.stage = InfectionStage::Terminal;
                         inf.terminal_ticks = terminal_len;
                     }
                 }
                 InfectionStage::Terminal => {
-                    if inf.is_ransom {
-                        // Defensive: if a ransom infection somehow
-                        // landed in Terminal, freeze it back to Active.
+                    if inf.is_ransom || inf.is_carrier {
+                        // Defensive: if a ransom or carrier infection
+                        // somehow landed in Terminal, freeze it back
+                        // to Active.
                         inf.stage = InfectionStage::Active;
                     } else if inf.terminal_ticks <= 1 {
                         to_pwn.push(id);
@@ -341,9 +347,16 @@ impl World {
         let id = candidates[self.rng.gen_range(0..candidates.len())];
         let strain = self.rng.gen_range(0..STRAIN_COUNT as u8);
         let cure_resist = self.cfg.virus_cure_resist;
-        let is_ransom = self.cfg.ransom_chance > 0.0
+        // Carrier branch is checked before ransom because carriers
+        // and ransomware are mutually exclusive variants.
+        let is_carrier = self.cfg.carrier_chance > 0.0
+            && self.rng.gen_bool(self.cfg.carrier_chance as f64);
+        let is_ransom = !is_carrier
+            && self.cfg.ransom_chance > 0.0
             && self.rng.gen_bool(self.cfg.ransom_chance as f64);
-        self.nodes[id].infection = Some(if is_ransom {
+        self.nodes[id].infection = Some(if is_carrier {
+            Infection::seeded_carrier(strain, cure_resist)
+        } else if is_ransom {
             Infection::seeded_ransom(strain, cure_resist)
         } else {
             Infection::seeded(strain, cure_resist)
@@ -351,7 +364,13 @@ impl World {
         let pos = self.nodes[id].pos;
         let (a, b) = octet_pair(pos);
         let name = self.strain_name(strain);
-        let label = if is_ransom { "ransom" } else { "detected" };
+        let label = if is_carrier {
+            "CARRIER"
+        } else if is_ransom {
+            "ransom"
+        } else {
+            "detected"
+        };
         self.push_log(format!("{} {} at 10.0.{}.{}", name, label, a, b));
     }
 
