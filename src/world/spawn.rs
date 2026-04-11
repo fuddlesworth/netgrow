@@ -335,6 +335,12 @@ impl World {
         if self.occupied.contains(&cand) {
             return;
         }
+        // ISP outages block any new spawn whose target cell falls
+        // inside a dead zone — the region is offline so the mesh
+        // can't route there.
+        if self.outages.iter().any(|o| o.contains(cand)) {
+            return;
+        }
         let min_gap = 2;
         for n in &self.nodes {
             let dx = (n.pos.0 - cand.0).abs();

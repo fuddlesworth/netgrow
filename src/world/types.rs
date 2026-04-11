@@ -368,6 +368,29 @@ pub struct Wormhole {
     pub life: u16,
 }
 
+/// Rare environmental event — a rectangular dead zone where new
+/// spawns are blocked and any alive node inside has its role
+/// cooldowns continuously spiked. Simulates an upstream provider
+/// outage cutting off a region of the mesh. Lasts `life` ticks
+/// then dissolves.
+#[derive(Clone, Debug)]
+pub struct IspOutage {
+    /// Inclusive top-left and bottom-right cells of the dead zone.
+    pub min: (i16, i16),
+    pub max: (i16, i16),
+    pub age: u16,
+    pub life: u16,
+}
+
+impl IspOutage {
+    pub fn contains(&self, pos: (i16, i16)) -> bool {
+        pos.0 >= self.min.0
+            && pos.0 <= self.max.0
+            && pos.1 >= self.min.1
+            && pos.1 <= self.max.1
+    }
+}
+
 /// Rare sweeping event — a line of "hostile traffic" that moves across
 /// the mesh from one edge to the opposite edge, spiking role cooldowns
 /// on any node it passes over.

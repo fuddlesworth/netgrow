@@ -882,6 +882,51 @@ impl<'a> Widget for MeshWidget<'a> {
             put(buf, area, cell, shade, style);
         }
 
+        // 0a-bis. ISP outage zones — dim hatched fill across the
+        // dead rectangle so the offline region reads at a glance.
+        // Drawn after territory so the outage glyph wins on overlap.
+        for outage in &w.outages {
+            for y in outage.min.1..=outage.max.1 {
+                for x in outage.min.0..=outage.max.0 {
+                    let cell = (x, y);
+                    if node_cells.contains(&cell) {
+                        continue;
+                    }
+                    let key = (x as u32).wrapping_mul(2654435761)
+                        ^ (y as u32).wrapping_mul(40503);
+                    let glyph = if (key & 0b11) == 0 { "▒" } else { "░" };
+                    put(
+                        buf,
+                        area,
+                        cell,
+                        glyph,
+                        Style::default()
+                            .fg(th.pwned_alt)
+                            .add_modifier(Modifier::DIM),
+                    );
+                }
+            }
+            // Outline corners with brackets so the rectangle reads
+            // as a deliberate boundary, not just background mush.
+            let corners = [
+                (outage.min, "┌"),
+                ((outage.max.0, outage.min.1), "┐"),
+                ((outage.min.0, outage.max.1), "└"),
+                (outage.max, "┘"),
+            ];
+            for (cell, glyph) in corners {
+                put(
+                    buf,
+                    area,
+                    cell,
+                    glyph,
+                    Style::default()
+                        .fg(th.pwned_alt)
+                        .add_modifier(Modifier::BOLD),
+                );
+            }
+        }
+
         // 0b. Storm crackle — sparse bright accent flickers scattered
         // across the mesh while a storm is active. Ties directly to
         // the `storm_until` state that otherwise only affects spawn

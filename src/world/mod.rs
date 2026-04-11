@@ -167,6 +167,11 @@ pub struct World {
     /// chances and makes cross-faction bridge rolls more likely
     /// between the rivals — feuds become sticky instead of uniform.
     pub rivalry: HashMap<(u8, u8), u16>,
+    /// Active ISP outage zones: rectangular dead regions where new
+    /// spawns are blocked and any alive nodes inside take a steady
+    /// role-cooldown spike. Spawned by `maybe_isp_outage` and
+    /// dissolved by `advance_outages`.
+    pub outages: Vec<IspOutage>,
 }
 
 impl World {
@@ -510,6 +515,7 @@ impl World {
             mythic_pandemic_seen: false,
             activity_history: VecDeque::with_capacity(ACTIVITY_HISTORY_LEN),
             rivalry: HashMap::new(),
+            outages: Vec::new(),
         }
     }
 
@@ -555,6 +561,8 @@ impl World {
         self.advance_ddos_waves();
         self.maybe_wormhole();
         self.advance_wormholes();
+        self.maybe_isp_outage();
+        self.advance_outages();
         self.maybe_assimilate();
         self.maybe_alliance();
         self.maybe_border_skirmish();

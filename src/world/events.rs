@@ -7,7 +7,7 @@
 
 use rand::Rng;
 
-use super::{Alliance, DdosWave, NodeId, State, World, Wormhole, octet_pair};
+use super::{Alliance, DdosWave, IspOutage, NodeId, State, World, Wormhole, octet_pair};
 
 impl World {
     pub(super) fn maybe_alliance(&mut self) {
@@ -268,6 +268,66 @@ impl World {
             wh.age = wh.age.saturating_add(1);
         }
         self.wormholes.retain(|w| w.age < w.life);
+    }
+
+    /// Roll for a new ISP outage zone. Picks a random rectangle on
+    /// the mesh and registers it; spawns are blocked and alive
+    /// nodes inside take a steady stun until the outage dissolves.
+    pub(super) fn maybe_isp_outage(&mut self) {
+        if !self.roll_periodic(self.cfg.isp_outage_period, self.cfg.isp_outage_chance) {
+            return;
+        }
+        let bounds = self.bounds;
+        if bounds.0 < 4 || bounds.1 < 4 {
+            return;
+        }
+        let min_side = self.cfg.isp_outage_min_side.max(2);
+        let max_side = self.cfg.isp_outage_max_side.max(min_side);
+        let w = self.rng.gen_range(min_side..=max_side).min(bounds.0 - 2);
+        let h = self.rng.gen_range(min_side..=max_side).min(bounds.1 - 2);
+        let x0 = self.rng.gen_range(0..(bounds.0 - w));
+        let y0 = self.rng.gen_range(0..(bounds.1 - h));
+        let outage = IspOutage {
+            min: (x0, y0),
+            max: (x0 + w, y0 + h),
+            age: 0,
+            life: self.cfg.isp_outage_life_ticks,
+        };
+        self.outages.push(outage);
+        self.push_log("⚠ ISP OUTAGE — region offline".to_string());
+    }
+
+    pub(super) fn advance_outages(&mut self) {
+        if self.outages.is_empty() {
+            return;
+        }
+        // Snapshot active rectangles for the per-node stun pass
+        // without aliasing self.outages.
+        let zones: Vec<(i16, i16, i16, i16)> = self
+            .outages
+            .iter()
+            .map(|o| (o.min.0, o.min.1, o.max.0, o.max.1))
+            .collect();
+        for n in self.nodes.iter_mut() {
+            if !matches!(n.state, State::Alive) {
+                continue;
+            }
+            for &(x0, y0, x1, y1) in &zones {
+                if n.pos.0 >= x0 && n.pos.0 <= x1 && n.pos.1 >= y0 && n.pos.1 <= y1 {
+                    // Mild rolling stun while inside the dead zone.
+                    n.role_cooldown = n.role_cooldown.saturating_add(4).min(500);
+                    break;
+                }
+            }
+        }
+        for o in self.outages.iter_mut() {
+            o.age = o.age.saturating_add(1);
+        }
+        let dissolved = self.outages.iter().filter(|o| o.age >= o.life).count();
+        self.outages.retain(|o| o.age < o.life);
+        if dissolved > 0 {
+            self.push_log("ISP outage cleared".to_string());
+        }
     }
 
     pub(super) fn maybe_ddos(&mut self) {

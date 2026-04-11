@@ -92,6 +92,15 @@ pub struct Config {
     pub wormhole_period: u64,
     pub wormhole_chance: f32,
     pub wormhole_life_ticks: u16,
+    /// Ticks between ISP outage rolls. A successful roll spawns a
+    /// rectangular dead zone somewhere on the mesh that blocks new
+    /// spawns and stuns alive nodes inside it.
+    pub isp_outage_period: u64,
+    pub isp_outage_chance: f32,
+    pub isp_outage_life_ticks: u16,
+    /// Side length range (Chebyshev) of an ISP outage rectangle.
+    pub isp_outage_min_side: i16,
+    pub isp_outage_max_side: i16,
     /// Maximum Chebyshev distance from any C2 at which a Tower may
     /// spawn. Spawns rolling a Tower role beyond this distance fall
     /// back to Relay, so fortified cores stay near their faction hub.
@@ -214,6 +223,11 @@ impl Default for Config {
             wormhole_period: 800,
             wormhole_chance: 0.5,
             wormhole_life_ticks: 20,
+            isp_outage_period: 2200,
+            isp_outage_chance: 0.4,
+            isp_outage_life_ticks: 180,
+            isp_outage_min_side: 6,
+            isp_outage_max_side: 14,
             tower_spawn_radius: 10,
             tower_pwn_resist: 2,
             ransom_chance: 0.15,
