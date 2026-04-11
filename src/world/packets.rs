@@ -69,9 +69,13 @@ impl World {
                     *delivery_credits.entry(pkt.link_id).or_default() += 1;
                     continue; // delivered
                 }
-                // Router absorption — this parent caches the packet
-                // instead of forwarding, relieving the upstream chain.
-                if self.nodes[parent_id].role == Role::Router {
+                // Router absorption — this parent caches most of
+                // the packets it sees, relieving the upstream
+                // chain, but lets ~35% pass through so backbones
+                // still carry traffic past the cache.
+                if self.nodes[parent_id].role == Role::Router
+                    && self.rng.gen_bool(0.65)
+                {
                     self.nodes[parent_id].pulse = 3;
                     *delivery_credits.entry(pkt.link_id).or_default() += 1;
                     continue;

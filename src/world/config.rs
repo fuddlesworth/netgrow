@@ -187,7 +187,7 @@ impl Default for Config {
             log_cap: 32,
             role_weights: RoleWeights::default(),
             scanner_ping_period: 30,
-            exfil_packet_period: 25,
+            exfil_packet_period: 18,
             hardened_after_heartbeats: 10,
             honeypot_cascade_mult: 3.0,
             reconnect_rate: 0.0,

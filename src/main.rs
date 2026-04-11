@@ -89,7 +89,7 @@ struct Cli {
     #[arg(long, default_value_t = 30)]
     scanner_ping_period: u16,
     /// Ticks between Exfil packet emissions.
-    #[arg(long, default_value_t = 25)]
+    #[arg(long, default_value_t = 18)]
     exfil_packet_period: u16,
     /// Heartbeat survivals required before a node hardens.
     #[arg(long, default_value_t = 4)]

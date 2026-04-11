@@ -30,7 +30,9 @@ const WORM_STEP_INTERVAL: u64 = 2;
 /// the exfil backpressure threshold — an exfil whose inbound link is
 /// warm or hotter skips its emission cycle and retries on a shorter
 /// cooldown, so traffic self-throttles before the chain saturates.
-pub const WARM_LINK: u8 = 6;
+/// Kept high enough above a single in-flight packet's contribution
+/// that routine traffic isn't instantly throttled.
+pub const WARM_LINK: u8 = 10;
 /// Link load threshold for the "hot" render tier: cascade color. Packets
 /// refuse to hop onto a link whose load has crossed this, and the link's
 /// `burn_ticks` counter climbs while it stays above this line.

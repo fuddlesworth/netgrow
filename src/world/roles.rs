@@ -135,7 +135,11 @@ impl World {
                     self.has_neighbor_role(exfil_pos, Role::Router);
                 let pressure_ceiling = if router_adjacent { HOT_LINK } else { WARM_LINK };
                 if link.load >= pressure_ceiling || link.quarantined > 0 {
-                    self.nodes[id].role_cooldown = (period / 2).max(1);
+                    // Quick-retry backpressure: shorter than a full
+                    // period so the exfil resumes firing as soon as
+                    // the link cools, instead of sitting idle while
+                    // the traffic has long since drained.
+                    self.nodes[id].role_cooldown = (period / 3).max(1);
                     continue;
                 }
                 self.nodes[id].role_cooldown = period;
