@@ -1910,14 +1910,15 @@ impl<'a> Widget for MeshWidget<'a> {
             } else {
                 Style::default().fg(branch_hue(b.branch_id))
             };
-            // Bake the territory bg onto every link cell so links
-            // always read as part of their faction's region
-            // instead of punching a hole through it. Uses the
-            // child endpoint's faction hue so the bg matches
-            // what the territory post-pass would draw for this
-            // same cell if it were empty.
-            let link_bg = dim_bg(faction_hue(w, b.faction));
-            let style = style.bg(link_bg);
+            // Bake the territory bg onto alive link cells so they
+            // read as part of their faction's region. Dying/dead
+            // links deliberately leave bg alone — the subtree is
+            // decaying and shouldn't still claim territory tint.
+            let style = if dying || dead {
+                style
+            } else {
+                style.bg(dim_bg(faction_hue(w, b.faction)))
+            };
             let reveal = if dying || dead {
                 link.path.len()
             } else {
@@ -2119,17 +2120,19 @@ impl<'a> Widget for MeshWidget<'a> {
         // 4. Nodes
         for node in &w.nodes {
             let (glyph, style) = node_glyph(node, w.tick, w);
-            // Bake the territory bg behind every node so nodes
-            // sit inside their faction's colored region instead
-            // of on a teal/cyan chiclet derived from their fg.
-            // Skip when the returned style already set a bg
-            // (dying flashes, cursor highlight, etc.) so event
-            // overlays keep their own look.
-            let territory_bg = dim_bg(faction_hue(w, node.faction));
-            let style = if style.bg.is_some() {
+            // Bake the territory bg behind every alive node so it
+            // sits inside its faction's colored region. Dead
+            // nodes and ghost echoes deliberately leave bg alone
+            // so they stay bg-less against whatever's underneath
+            // (dim territory for recently dead cells near live
+            // neighbors, terminal default for fully-abandoned
+            // regions). Style with an already-set bg (flashes,
+            // cursor) is never overridden.
+            let is_alive = matches!(node.state, State::Alive);
+            let style = if style.bg.is_some() || !is_alive {
                 style
             } else {
-                style.bg(territory_bg)
+                style.bg(dim_bg(faction_hue(w, node.faction)))
             };
             put(buf, area, node.pos, glyph, style);
         }
