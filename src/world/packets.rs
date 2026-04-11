@@ -201,6 +201,10 @@ impl World {
         // (src_faction, dst_faction) — cross-faction worm crossings
         // bump the rivalry tracker so feuds escalate over time.
         let mut rivalries: Vec<(u8, u8)> = Vec::new();
+        // C2 nodes that took a cross-faction worm strike this tick.
+        // Processed after the move loop so we can schedule the
+        // subtree-cascade if the strike cracks the reservoir.
+        let mut c2_strikes: Vec<(NodeId, u8)> = Vec::new();
         for mut worm in std::mem::take(&mut self.worms) {
             let (link_a, link_b, link_len) = {
                 let link = &self.links[worm.link_id];
@@ -239,13 +243,22 @@ impl World {
                     let dst = self.nodes[target].faction;
                     let alive_target = matches!(self.nodes[target].state, State::Alive);
                     let allied_block = blocked_by_alliance(self, src, dst);
-                    if !c2_set.contains(&target) && alive_target && !allied_block {
-                        match self.nodes[target].infection {
-                            None => arrivals
-                                .push((target, worm.strain, self.nodes[target].pos)),
-                            Some(existing) if existing.strain != worm.strain => merges
-                                .push((target, worm.strain, existing.strain)),
-                            _ => {}
+                    if alive_target && !allied_block {
+                        if c2_set.contains(&target) {
+                            // Cross-faction worms crack the C2's
+                            // reservoir; same-faction worms are
+                            // silently absorbed.
+                            if src != dst {
+                                c2_strikes.push((target, src));
+                            }
+                        } else {
+                            match self.nodes[target].infection {
+                                None => arrivals
+                                    .push((target, worm.strain, self.nodes[target].pos)),
+                                Some(existing) if existing.strain != worm.strain => merges
+                                    .push((target, worm.strain, existing.strain)),
+                                _ => {}
+                            }
                         }
                         if src != dst {
                             rivalries.push((src, dst));
@@ -261,13 +274,19 @@ impl World {
                     let dst = self.nodes[target].faction;
                     let alive_target = matches!(self.nodes[target].state, State::Alive);
                     let allied_block = blocked_by_alliance(self, src, dst);
-                    if !c2_set.contains(&target) && alive_target && !allied_block {
-                        match self.nodes[target].infection {
-                            None => arrivals
-                                .push((target, worm.strain, self.nodes[target].pos)),
-                            Some(existing) if existing.strain != worm.strain => merges
-                                .push((target, worm.strain, existing.strain)),
-                            _ => {}
+                    if alive_target && !allied_block {
+                        if c2_set.contains(&target) {
+                            if src != dst {
+                                c2_strikes.push((target, src));
+                            }
+                        } else {
+                            match self.nodes[target].infection {
+                                None => arrivals
+                                    .push((target, worm.strain, self.nodes[target].pos)),
+                                Some(existing) if existing.strain != worm.strain => merges
+                                    .push((target, worm.strain, existing.strain)),
+                                _ => {}
+                            }
                         }
                         if src != dst {
                             rivalries.push((src, dst));
@@ -294,6 +313,41 @@ impl World {
         // the same name.
         for (a, b) in rivalries {
             self.bump_rivalry(a, b, 4);
+        }
+        // Cross-faction worm strikes on C2 nodes drain the defender
+        // reservoir. When a strike cracks the last point, schedule
+        // the C2's entire subtree to cascade and log the fall.
+        for (c2_id, attacker) in c2_strikes {
+            let c2_faction = self.nodes[c2_id].faction;
+            let remaining =
+                self.nodes[c2_id].pwn_resist.saturating_sub(super::C2_WORM_DAMAGE);
+            self.nodes[c2_id].pwn_resist = remaining;
+            self.nodes[c2_id].shield_flash = 8;
+            // Keep the rivalry boiling as the siege continues.
+            self.bump_rivalry(attacker, c2_faction, 8);
+            if remaining == 0
+                && matches!(self.nodes[c2_id].state, State::Alive)
+                && self.nodes[c2_id].dying_in == 0
+            {
+                let pos = self.nodes[c2_id].pos;
+                let (ia, ib) = octet_pair(pos);
+                self.push_log(format!(
+                    "✦ FALL ✦ c2 F{} cracked by F{} @ 10.0.{}.{}",
+                    c2_faction, attacker, ia, ib
+                ));
+                self.schedule_subtree_death(c2_id, 1.5);
+                self.nodes[c2_id].dying_in = 3;
+                self.nodes[c2_id].death_echo = super::GHOST_ECHO_TICKS;
+            } else if remaining > 0 && remaining.is_multiple_of(32) {
+                // Progress beacon so the viewer can watch the
+                // reservoir drain instead of seeing a silent
+                // surprise at zero.
+                let pos = self.nodes[c2_id].pos;
+                self.log_node(
+                    pos,
+                    &format!("c2 F{} hp {}", c2_faction, remaining),
+                );
+            }
         }
         for (target, incoming, existing) in merges {
             let existing_resist =

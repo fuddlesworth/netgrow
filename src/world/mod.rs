@@ -67,6 +67,15 @@ const LINK_QUARANTINE_TICKS: u8 = 40;
 /// instantly clearing.
 pub const GHOST_ECHO_TICKS: u8 = 60;
 
+/// Starting `pwn_resist` reservoir for a C2 node. Enemy worms that
+/// cross into a C2's cell drain this pool each time they deliver;
+/// when it hits zero the C2 falls and its whole subtree cascades.
+pub const C2_INITIAL_HP: u8 = 200;
+/// Amount drained from a C2's pwn_resist by each cross-faction worm
+/// that successfully delivers to its cell. Tuned so it takes several
+/// dozen hostile deliveries to crack a C2.
+pub const C2_WORM_DAMAGE: u8 = 8;
+
 /// How many patch-wave survivals an infection needs to absorb before
 /// it gets a veteran rank bump and a permanent `cure_resist` bonus.
 pub const VETERAN_WAVE_THRESHOLD: u8 = 2;
@@ -594,6 +603,11 @@ impl World {
             });
             let mut node = Node::fresh(pos, None, 0, Role::Relay, 0);
             node.faction = i as u8;
+            // C2s ship with a big pwn_resist reservoir that enemy
+            // worm strikes drain; at zero the C2 collapses and its
+            // whole subtree cascades. This is the primary path to
+            // seeing a C2 actually fall during a run.
+            node.pwn_resist = C2_INITIAL_HP;
             let id = nodes.len();
             nodes.push(node);
             occupied.insert(pos);
