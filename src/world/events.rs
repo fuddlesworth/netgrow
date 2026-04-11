@@ -93,8 +93,14 @@ impl World {
             };
             // Rivalry-amplified chance: an old feud's pressure adds
             // up to a 2x multiplier on the base skirmish_chance.
+            // An active open war declaration stacks an additional
+            // flat 3x on top so declared wars feel hotter than
+            // background feuds.
             let pressure = self.rivalry_pressure(faction, enemy_faction);
-            let amp = 1.0 + (pressure as f32 / super::RIVALRY_CAP as f32);
+            let mut amp = 1.0 + (pressure as f32 / super::RIVALRY_CAP as f32);
+            if self.at_war(faction, enemy_faction) {
+                amp *= 3.0;
+            }
             let effective = (chance * amp).min(1.0);
             if self.rng.gen_bool(effective as f64) {
                 victims.push((id, enemy_faction));

@@ -307,29 +307,55 @@ pub fn draw_summary(frame: &mut Frame, world: &World, meta: &SummaryMeta<'_>) {
         .iter()
         .filter(|n| matches!(n.state, State::Alive))
         .count();
-    let subtitle = Line::from(vec![
-        Span::styled(
-            format!("t={}", with_commas(world.tick)),
-            Style::default().fg(th.label),
-        ),
-        Span::raw("  ·  "),
-        Span::styled(
-            meta.elapsed.clone(),
-            Style::default().fg(th.value).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  ·  "),
-        Span::styled(
-            format!("{} factions", world.faction_stats.len()),
-            Style::default().fg(th.label),
-        ),
-        Span::raw("  ·  "),
-        Span::styled(
-            format!("{} alive", alive),
-            Style::default().fg(th.label),
-        ),
-    ]);
+    let subtitle_spans = if let Some(winner) = world.winner_faction {
+        let hue = faction_hue(world, winner);
+        let persona = world
+            .personas
+            .get(winner as usize)
+            .copied()
+            .map(|p| p.display_name())
+            .unwrap_or("?");
+        vec![
+            Span::styled(
+                "✦ DOMINANCE ✦  F".to_string(),
+                Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{}", winner),
+                Style::default().fg(hue).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {}", persona),
+                Style::default().fg(hue),
+            ),
+            Span::raw("  ·  "),
+            Span::styled(
+                meta.elapsed.clone(),
+                Style::default().fg(th.value).add_modifier(Modifier::BOLD),
+            ),
+        ]
+    } else {
+        vec![
+            Span::styled(
+                format!("t={}", with_commas(world.tick)),
+                Style::default().fg(th.label),
+            ),
+            Span::raw("  ·  "),
+            Span::styled(
+                meta.elapsed.clone(),
+                Style::default().fg(th.value).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  ·  "),
+            Span::styled(
+                format!("{} factions", world.faction_stats.len()),
+                Style::default().fg(th.label),
+            ),
+            Span::raw("  ·  "),
+            Span::styled(format!("{} alive", alive), Style::default().fg(th.label)),
+        ]
+    };
     frame.render_widget(
-        Paragraph::new(subtitle).alignment(Alignment::Center),
+        Paragraph::new(Line::from(subtitle_spans)).alignment(Alignment::Center),
         rows[1],
     );
 

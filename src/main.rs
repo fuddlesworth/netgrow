@@ -558,6 +558,14 @@ fn main() -> io::Result<()> {
         if !paused {
             world.tick(mesh_bounds);
         }
+        // Dominance victory: once the sim has set a victory_tick,
+        // keep drawing for VICTORY_LAP_TICKS worth of celebration
+        // ticks then exit to the summary screen automatically.
+        if let Some(exit_at) = world.victory_tick {
+            if world.tick >= exit_at {
+                break;
+            }
+        }
 
         let ui = UiState {
             paused,

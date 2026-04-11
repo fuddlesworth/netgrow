@@ -95,6 +95,24 @@ pub const LEGENDARY_MIN_CHILDREN: u16 = 8;
 /// even ancient feuds eventually plateau instead of melting events.
 pub const RIVALRY_CAP: u16 = 200;
 
+/// Rivalry pressure threshold that promotes a feud to an open war
+/// declaration. Crossing it emits a mythic log line and applies a
+/// flat 3x skirmish chance multiplier on top of the rivalry amp.
+pub const WAR_DECLARATION_THRESHOLD: u16 = 100;
+/// Duration in ticks that an open war stays active after being
+/// declared. Keeps the amplification window bounded so wars don't
+/// consume the whole run.
+pub const WAR_DURATION_TICKS: u64 = 500;
+
+/// Fraction of total alive nodes a single faction needs to hold
+/// to trigger a dominance victory. Floating since it's compared
+/// against a ratio computed per sample.
+pub const VICTORY_ALIVE_FRACTION: f32 = 0.60;
+/// Ticks the sim keeps running after a dominance victory fires,
+/// so the player gets a brief celebration window before the
+/// summary screen takes over.
+pub const VICTORY_LAP_TICKS: u64 = 300;
+
 /// Number of successful packet deliveries a Parent link must carry
 /// before it gets promoted to a backbone link with an inflated HOT
 /// ceiling and a thicker glyph.
@@ -203,6 +221,19 @@ pub struct World {
     /// colors from the palette instead of F0 always being hue[0],
     /// F1 always being hue[1], etc.
     pub faction_colors: Vec<usize>,
+    /// Active open-war declarations. Key is the canonical
+    /// rivalry pair (min, max); value is the tick at which the
+    /// war window expires. While a pair is at war, border
+    /// skirmish chance gets an extra 3x multiplier on top of the
+    /// rivalry pressure amp.
+    pub wars: HashMap<(u8, u8), u64>,
+    /// Tick at which the run should exit if a dominance victory
+    /// has fired. `None` means no winner yet; `Some(t)` means
+    /// main.rs should break the tick loop once `tick >= t`.
+    pub victory_tick: Option<u64>,
+    /// Faction id that won if `victory_tick` is set. Surfaced in
+    /// the summary screen's banner.
+    pub winner_faction: Option<u8>,
 }
 
 impl World {
@@ -295,6 +326,109 @@ impl World {
                 from.display_name(),
                 to.display_name()
             ));
+        }
+    }
+
+    /// True if the given faction pair is currently in an active
+    /// open-war state, i.e. their rivalry crossed
+    /// `WAR_DECLARATION_THRESHOLD` within the last
+    /// `WAR_DURATION_TICKS` ticks.
+    pub fn at_war(&self, a: u8, b: u8) -> bool {
+        Self::rivalry_key(a, b)
+            .and_then(|k| self.wars.get(&k).copied())
+            .map(|exp| exp > self.tick)
+            .unwrap_or(false)
+    }
+
+    /// Scan rivalry pairs for newly-crossed war declarations and
+    /// promote them. A pair only declares once per rivalry lifetime
+    /// — after a declaration fires, the rivalry has to fully decay
+    /// below the threshold and re-climb to trigger another.
+    fn maybe_declare_wars(&mut self) {
+        let mut new_wars: Vec<(u8, u8)> = Vec::new();
+        for (&(a, b), &pressure) in &self.rivalry {
+            if pressure < WAR_DECLARATION_THRESHOLD {
+                continue;
+            }
+            // Skip if already at war — avoids re-declaring every
+            // sample period while the rivalry stays above threshold.
+            if self.wars.contains_key(&(a, b)) {
+                continue;
+            }
+            new_wars.push((a, b));
+        }
+        for (a, b) in new_wars {
+            self.wars.insert((a, b), self.tick + WAR_DURATION_TICKS);
+            self.push_log(format!(
+                "✦ WAR ✦ F{} declares open hostilities on F{}",
+                a, b
+            ));
+        }
+    }
+
+    /// Check whether one faction has crossed the dominance
+    /// threshold (≥ VICTORY_ALIVE_FRACTION of all alive nodes, or
+    /// is the last faction with any alive C2 and more than one
+    /// faction ever existed). Fires a mythic log and sets the
+    /// `victory_tick` so the main loop exits after
+    /// VICTORY_LAP_TICKS more ticks.
+    fn maybe_declare_victory(&mut self) {
+        if self.victory_tick.is_some() {
+            return;
+        }
+        if self.faction_stats.len() < 2 {
+            return;
+        }
+        // Count alive per faction.
+        let mut counts = vec![0usize; self.faction_stats.len()];
+        let mut total_alive: usize = 0;
+        for n in &self.nodes {
+            if matches!(n.state, State::Alive) {
+                total_alive += 1;
+                if let Some(slot) = counts.get_mut(n.faction as usize) {
+                    *slot += 1;
+                }
+            }
+        }
+        if total_alive < 20 {
+            return;
+        }
+        // Last-C2-standing: only one faction still has an alive C2.
+        let alive_c2s: Vec<u8> = self
+            .c2_nodes
+            .iter()
+            .filter_map(|&id| {
+                if matches!(self.nodes[id].state, State::Alive) {
+                    Some(self.nodes[id].faction)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if alive_c2s.len() == 1 {
+            let winner = alive_c2s[0];
+            self.victory_tick = Some(self.tick + VICTORY_LAP_TICKS);
+            self.winner_faction = Some(winner);
+            self.push_log(format!(
+                "✦ DOMINANCE ✦ F{} is the last C2 standing",
+                winner
+            ));
+            return;
+        }
+        // Alive-majority: one faction holds >= VICTORY_ALIVE_FRACTION.
+        let threshold = (total_alive as f32 * VICTORY_ALIVE_FRACTION) as usize;
+        if let Some((winner_idx, _)) =
+            counts.iter().enumerate().max_by_key(|(_, &c)| c)
+        {
+            if counts[winner_idx] >= threshold {
+                self.victory_tick = Some(self.tick + VICTORY_LAP_TICKS);
+                self.winner_faction = Some(winner_idx as u8);
+                self.push_log(format!(
+                    "✦ DOMINANCE ✦ F{} controls {:.0}% of the mesh",
+                    winner_idx,
+                    (counts[winner_idx] as f32 / total_alive as f32) * 100.0
+                ));
+            }
         }
     }
 
@@ -804,6 +938,9 @@ impl World {
             outages: Vec::new(),
             personas,
             faction_colors,
+            wars: HashMap::new(),
+            victory_tick: None,
+            winner_faction: None,
         }
     }
 
@@ -872,7 +1009,14 @@ impl World {
                 *v = v.saturating_sub(2);
                 *v > 0
             });
+            // Promote any rivalry that crossed the war threshold
+            // to an open war declaration.
+            self.maybe_declare_wars();
+            // Check for a dominance victory condition.
+            self.maybe_declare_victory();
         }
+        // Expire any wars whose windows have elapsed.
+        self.wars.retain(|_, exp| *exp > self.tick);
 
         // Phase 1: growth — add new nodes and extend link animations.
         self.try_spawn();
