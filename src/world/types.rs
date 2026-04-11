@@ -130,6 +130,17 @@ pub struct Infection {
     /// Terminal stage, and is immune to patch waves — only defender
     /// pulses can clear it.
     pub is_ransom: bool,
+    /// Number of patch-wave hits this infection has already absorbed
+    /// without being cured. Every `VETERAN_WAVE_THRESHOLD` survivals
+    /// promote the infection — baseline `cure_resist` bumps up by
+    /// one (up to `VETERAN_CURE_RESIST_CAP`), so strains that stick
+    /// around become harder to clear. Resets on promotion so the
+    /// counter ticks cleanly toward the next promotion.
+    pub wave_survivals: u8,
+    /// Promotion rank earned via veteran wave survivals. Purely a
+    /// readout for the inspector / log lines — the mechanical
+    /// effect is already baked into the inflated `cure_resist`.
+    pub veteran_rank: u8,
 }
 
 impl Infection {
@@ -141,6 +152,8 @@ impl Infection {
             cure_resist,
             terminal_ticks: 0,
             is_ransom: false,
+            wave_survivals: 0,
+            veteran_rank: 0,
         }
     }
 
@@ -152,6 +165,8 @@ impl Infection {
             cure_resist,
             terminal_ticks: 0,
             is_ransom: true,
+            wave_survivals: 0,
+            veteran_rank: 0,
         }
     }
 }

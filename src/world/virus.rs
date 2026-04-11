@@ -12,8 +12,8 @@ use rand::Rng;
 
 use super::{
     octet_pair, Infection, InfectionStage, NodeId, Role, State, World, STRAIN_COUNT,
-    ZERO_DAY_MIN_ALIVE, ZERO_DAY_OUTBREAK_MAX, ZERO_DAY_OUTBREAK_MIN,
-    ZERO_DAY_OUTBREAK_WEIGHT, ZERO_DAY_PATCH_WEIGHT,
+    VETERAN_CURE_RESIST_CAP, VETERAN_WAVE_THRESHOLD, ZERO_DAY_MIN_ALIVE, ZERO_DAY_OUTBREAK_MAX,
+    ZERO_DAY_OUTBREAK_MIN, ZERO_DAY_OUTBREAK_WEIGHT, ZERO_DAY_PATCH_WEIGHT,
 };
 
 impl World {
@@ -32,6 +32,7 @@ impl World {
             .map(|w| (w.origin.0, w.origin.1, w.radius))
             .collect();
         let mut cured: Vec<((i16, i16), u8)> = Vec::new();
+        let mut promoted: Vec<((i16, i16), u8, u8)> = Vec::new();
         for n in self.nodes.iter_mut() {
             if n.infection.is_none() {
                 continue;
@@ -56,6 +57,19 @@ impl World {
                         break;
                     } else {
                         inf.cure_resist -= 1;
+                        // Veteran promotion: every Nth wave survived
+                        // bumps baseline cure_resist by one, so a
+                        // strain that keeps hanging on becomes
+                        // progressively harder to clear.
+                        inf.wave_survivals = inf.wave_survivals.saturating_add(1);
+                        if inf.wave_survivals >= VETERAN_WAVE_THRESHOLD
+                            && inf.cure_resist < VETERAN_CURE_RESIST_CAP
+                        {
+                            inf.wave_survivals = 0;
+                            inf.cure_resist = inf.cure_resist.saturating_add(1);
+                            inf.veteran_rank = inf.veteran_rank.saturating_add(1);
+                            promoted.push((n.pos, inf.strain, inf.veteran_rank));
+                        }
                     }
                 }
             }
@@ -66,6 +80,14 @@ impl World {
             if let Some(s) = self.faction_stats.get_mut(faction as usize) {
                 s.infections_cured += 1;
             }
+        }
+        for (pos, strain, rank) in promoted {
+            let name = self.strain_name(strain);
+            let (a, b) = octet_pair(pos);
+            self.push_log(format!(
+                "{} veteran rank {} @ 10.0.{}.{}",
+                name, rank, a, b
+            ));
         }
     }
 

@@ -65,6 +65,13 @@ const LINK_QUARANTINE_TICKS: u8 = 40;
 /// instantly clearing.
 pub const GHOST_ECHO_TICKS: u8 = 60;
 
+/// How many patch-wave survivals an infection needs to absorb before
+/// it gets a veteran rank bump and a permanent `cure_resist` bonus.
+pub const VETERAN_WAVE_THRESHOLD: u8 = 2;
+/// Maximum `cure_resist` a veteran infection can reach via survivals.
+/// Caps the escalation so veterans are harder but never immortal.
+pub const VETERAN_CURE_RESIST_CAP: u8 = 6;
+
 /// Duration in ticks of a scanner's ping pulse. Adjacent links brighten
 /// to the scanner color for this many ticks — no strobe, no reversed
 /// fill, just a quiet lift over the branch hue.

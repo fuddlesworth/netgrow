@@ -232,6 +232,8 @@ fn infection_spreads_along_parent_edges() {
         cure_resist: 3,
         terminal_ticks: 0,
         is_ransom: false,
+        wave_survivals: 0,
+        veteran_rank: 0,
     });
     // Run a few ticks: spread probability is 1.0 so b should catch it fast.
     for _ in 0..5 {
@@ -259,6 +261,8 @@ fn infection_skips_c2() {
         cure_resist: 3,
         terminal_ticks: 0,
         is_ransom: false,
+        wave_survivals: 0,
+        veteran_rank: 0,
     });
     for _ in 0..20 {
         w.tick((80, 30));
@@ -291,6 +295,8 @@ fn patch_wave_cures_infected_node_within_radius() {
         cure_resist: 1,
         terminal_ticks: 0,
         is_ransom: false,
+        wave_survivals: 0,
+        veteran_rank: 0,
     });
     // Seed a patch wave directly and tick it forward until the front hits.
     w.patch_waves.push(PatchWave {
@@ -365,6 +371,8 @@ fn terminal_infection_forces_loss() {
         cure_resist: 3,
         terminal_ticks: 1,
         is_ransom: false,
+        wave_survivals: 0,
+        veteran_rank: 0,
     });
     // One tick drains terminal_ticks and flips to Pwned.
     w.tick((80, 30));
@@ -471,6 +479,8 @@ fn infection_spread_skips_honeypots() {
         cure_resist: 4,
         terminal_ticks: 0,
         is_ransom: false,
+        wave_survivals: 0,
+        veteran_rank: 0,
     });
     for _ in 0..20 {
         w.tick((80, 30));
@@ -501,6 +511,8 @@ fn defender_pulse_cures_nearby_infection() {
         cure_resist: 1,
         terminal_ticks: 0,
         is_ransom: false,
+        wave_survivals: 0,
+        veteran_rank: 0,
     });
     w.fire_defender_pulses();
     assert!(w.nodes[victim].infection.is_none(), "defender should clear infection in radius");
@@ -526,6 +538,8 @@ fn defender_immune_to_infection() {
         cure_resist: 4,
         terminal_ticks: 0,
         is_ransom: false,
+        wave_survivals: 0,
+        veteran_rank: 0,
     });
     for _ in 0..20 {
         w.tick((80, 30));
