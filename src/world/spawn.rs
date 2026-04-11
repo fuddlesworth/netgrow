@@ -117,6 +117,8 @@ impl World {
             breach_ttl: 0,
             burn_ticks: 0,
             quarantined: 0,
+            packets_delivered: 0,
+            is_backbone: false,
         });
         if self.nodes[a].faction != self.nodes[b].faction {
             self.push_log(format!(
@@ -398,6 +400,8 @@ impl World {
             breach_ttl: 0,
             burn_ticks: 0,
             quarantined: 0,
+            packets_delivered: 0,
+            is_backbone: false,
         });
 
         let h = (cand.0 as u32).wrapping_mul(2654435761) ^ (cand.1 as u32).wrapping_mul(40503);

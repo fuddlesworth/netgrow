@@ -80,6 +80,15 @@ pub const LEGENDARY_MIN_AGE: u64 = 1200;
 /// qualify for a legendary name.
 pub const LEGENDARY_MIN_CHILDREN: u16 = 8;
 
+/// Number of successful packet deliveries a Parent link must carry
+/// before it gets promoted to a backbone link with an inflated HOT
+/// ceiling and a thicker glyph.
+pub const BACKBONE_PROMOTION_THRESHOLD: u16 = 30;
+/// Inflated HOT_LINK ceiling for backbone links. Higher than the
+/// regular HOT_LINK so backbones can carry more concurrent traffic
+/// before refusing packets.
+pub const BACKBONE_HOT_LINK: u8 = 28;
+
 /// Duration in ticks of a scanner's ping pulse. Adjacent links brighten
 /// to the scanner color for this many ticks — no strobe, no reversed
 /// fill, just a quiet lift over the branch hue.

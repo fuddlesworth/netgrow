@@ -324,6 +324,8 @@ impl World {
                     breach_ttl: 0,
                     burn_ticks: 0,
                     quarantined: 0,
+                    packets_delivered: 0,
+                    is_backbone: false,
                 });
                 revealed += 1;
                 self.log_node(b_pos, "backdoor revealed");

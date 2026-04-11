@@ -315,6 +315,18 @@ pub struct Link {
     /// `decay_link_load`. Purely a gating counter — the visible effect
     /// is the flushed traffic and stunned endpoints.
     pub quarantined: u8,
+    /// Lifetime count of exfil packets successfully delivered via
+    /// this link (i.e. reached a Router cache or the final C2 hop
+    /// without being dropped). Once this crosses
+    /// `BACKBONE_PROMOTION_THRESHOLD` on a Parent link, the link
+    /// earns backbone status: inflated HOT_LINK ceiling, distinct
+    /// glyph, and cosmetic brightness.
+    pub packets_delivered: u16,
+    /// True once a Parent link has delivered enough traffic to
+    /// qualify as a backbone. Flipped permanently — backbones stay
+    /// backbones even if traffic dries up, so the label reads as
+    /// "this chain mattered once".
+    pub is_backbone: bool,
 }
 
 #[derive(Clone, Debug)]

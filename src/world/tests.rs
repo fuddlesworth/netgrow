@@ -84,6 +84,8 @@ fn packet_reaches_c2_and_drops() {
         breach_ttl: 0,
         burn_ticks: 0,
         quarantined: 0,
+        packets_delivered: 0,
+        is_backbone: false,
     });
     let path_ab: Vec<(i16, i16)> = (10..=14).map(|x| (x, 10)).collect();
     let len_ab = path_ab.len() as u16;
@@ -97,6 +99,8 @@ fn packet_reaches_c2_and_drops() {
         breach_ttl: 0,
         burn_ticks: 0,
         quarantined: 0,
+        packets_delivered: 0,
+        is_backbone: false,
     });
     // Force the Exfil to fire on tick 0 and then tick enough for the
     // packet to reach C2 and be dropped.
@@ -141,6 +145,8 @@ fn cross_link_saves_reachable_node_from_cascade() {
         breach_ttl: 0,
         burn_ticks: 0,
         quarantined: 0,
+        packets_delivered: 0,
+        is_backbone: false,
     });
     let cascade = w.compute_cascade(a);
     let ids: HashSet<NodeId> = cascade.iter().map(|(id, _)| *id).collect();
@@ -337,6 +343,8 @@ fn worm_delivered_to_alive_neighbor() {
         breach_ttl: 0,
         burn_ticks: 0,
         quarantined: 0,
+        packets_delivered: 0,
+        is_backbone: false,
     });
     // Launch a worm from a → b manually and tick the worm advance step
     // enough times for it to reach the far end.
@@ -649,6 +657,8 @@ fn link_load_accumulates_and_decays() {
         breach_ttl: 0,
         burn_ticks: 0,
         quarantined: 0,
+        packets_delivered: 0,
+        is_backbone: false,
     });
     // Park a packet on the link and tick the motion phase a few times.
     w.packets.push(Packet {

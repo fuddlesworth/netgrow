@@ -992,11 +992,27 @@ impl<'a> Widget for MeshWidget<'a> {
                         "⣶"
                     } else if link.load >= WARM_LINK {
                         "⣤"
+                    } else if link.is_backbone {
+                        // Idle backbone — thicker box-drawing glyph
+                        // hint that this wire has earned its keep.
+                        glyph_for_backbone(prev, cell, next)
                     } else {
                         glyph_for(prev, cell, next)
                     }
                 } else {
                     glyph_for(prev, cell, next)
+                };
+                // Backbones brighten by one notch when idle so the
+                // matured chain reads as bolder than a fresh wire,
+                // even before any traffic colors it warm/hot.
+                let style = if link.is_backbone
+                    && !dying
+                    && !dead
+                    && link.load < WARM_LINK
+                {
+                    style.add_modifier(Modifier::BOLD)
+                } else {
+                    style
                 };
                 put(buf, area, cell, glyph, style);
             }
@@ -1358,6 +1374,46 @@ fn glyph_for(prev: Option<(i16, i16)>, cur: (i16, i16), next: Option<(i16, i16)>
                 "│"
             } else if d.1 == 0 {
                 "─"
+            } else {
+                "·"
+            }
+        }
+        (None, None) => "·",
+    }
+}
+
+/// Heavy-stroke variant of `glyph_for`, used for idle backbone links so
+/// matured wires read as visibly thicker than fresh ones.
+fn glyph_for_backbone(
+    prev: Option<(i16, i16)>,
+    cur: (i16, i16),
+    next: Option<(i16, i16)>,
+) -> &'static str {
+    let dir = |a: (i16, i16), b: (i16, i16)| (b.0 - a.0, b.1 - a.1);
+    match (prev, next) {
+        (Some(p), Some(n)) => {
+            let d1 = dir(p, cur);
+            let d2 = dir(cur, n);
+            if d1.0 == 0 && d2.0 == 0 {
+                "┃"
+            } else if d1.1 == 0 && d2.1 == 0 {
+                "━"
+            } else {
+                match (d1, d2) {
+                    ((1, 0), (0, 1)) | ((0, -1), (-1, 0)) => "┓",
+                    ((1, 0), (0, -1)) | ((0, 1), (-1, 0)) => "┛",
+                    ((-1, 0), (0, 1)) | ((0, -1), (1, 0)) => "┏",
+                    ((-1, 0), (0, -1)) | ((0, 1), (1, 0)) => "┗",
+                    _ => "·",
+                }
+            }
+        }
+        (None, Some(n)) | (Some(n), None) => {
+            let d = dir(cur, n);
+            if d.0 == 0 {
+                "┃"
+            } else if d.1 == 0 {
+                "━"
             } else {
                 "·"
             }

@@ -10,8 +10,9 @@ use std::collections::{HashMap, HashSet};
 use rand::Rng;
 
 use super::{
-    octet_pair, HOT_LINK, Infection, InfectionStage, LinkKind, NodeId, Packet,
-    PACKET_LOAD_INCREMENT, Role, State, WORM_LOAD_INCREMENT, WORM_STEP_INTERVAL, Worm, World,
+    octet_pair, BACKBONE_HOT_LINK, BACKBONE_PROMOTION_THRESHOLD, HOT_LINK, Infection,
+    InfectionStage, LinkKind, NodeId, Packet, PACKET_LOAD_INCREMENT, Role, State,
+    WORM_LOAD_INCREMENT, WORM_STEP_INTERVAL, Worm, World,
 };
 
 impl World {
@@ -37,6 +38,10 @@ impl World {
         let mut dropped_count: u32 = 0;
         let mut last_drop_pos: Option<(i16, i16)> = None;
         let mut rerouted_count: u32 = 0;
+        // Per-link delivery credits accumulated this tick — applied
+        // after the packet loop so we don't have to mutate links and
+        // packets in the same borrow.
+        let mut delivery_credits: HashMap<usize, u16> = HashMap::new();
         for mut pkt in std::mem::take(&mut self.packets) {
             let (link_a, link_b) = {
                 let link = &self.links[pkt.link_id];
@@ -61,18 +66,25 @@ impl World {
                 // own inbound link, or drop if parent is C2.
                 let parent_id = link_a;
                 if self.is_c2(parent_id) {
+                    *delivery_credits.entry(pkt.link_id).or_default() += 1;
                     continue; // delivered
                 }
                 // Router absorption — this parent caches the packet
                 // instead of forwarding, relieving the upstream chain.
                 if self.nodes[parent_id].role == Role::Router {
                     self.nodes[parent_id].pulse = 3;
+                    *delivery_credits.entry(pkt.link_id).or_default() += 1;
                     continue;
                 }
                 if let Some(&next_link) = inbound.get(&parent_id) {
                     let next = &self.links[next_link];
+                    let next_hot_ceiling = if next.is_backbone {
+                        BACKBONE_HOT_LINK
+                    } else {
+                        HOT_LINK
+                    };
                     let primary_usable = !next.path.is_empty()
-                        && next.load < HOT_LINK
+                        && next.load < next_hot_ceiling
                         && next.quarantined == 0;
                     if primary_usable {
                         pkt.link_id = next_link;
@@ -102,8 +114,13 @@ impl World {
                                 continue;
                             };
                             let alt_link = &self.links[alt];
+                            let alt_hot = if alt_link.is_backbone {
+                                BACKBONE_HOT_LINK
+                            } else {
+                                HOT_LINK
+                            };
                             if alt_link.path.is_empty()
-                                || alt_link.load >= HOT_LINK
+                                || alt_link.load >= alt_hot
                                 || alt_link.quarantined > 0
                             {
                                 continue;
@@ -127,6 +144,26 @@ impl World {
             keep.push(pkt);
         }
         self.packets = keep;
+        // Apply delivery credits and promote any Parent links that
+        // crossed BACKBONE_PROMOTION_THRESHOLD this tick.
+        let mut promoted_backbones: Vec<(i16, i16)> = Vec::new();
+        for (link_id, credit) in delivery_credits {
+            let link = &mut self.links[link_id];
+            link.packets_delivered = link.packets_delivered.saturating_add(credit);
+            if !link.is_backbone
+                && link.kind == LinkKind::Parent
+                && link.packets_delivered >= BACKBONE_PROMOTION_THRESHOLD
+            {
+                link.is_backbone = true;
+                let mid_idx = link.path.len() / 2;
+                if let Some(pos) = link.path.get(mid_idx).copied() {
+                    promoted_backbones.push(pos);
+                }
+            }
+        }
+        for pos in promoted_backbones {
+            self.log_node(pos, "backbone link forged");
+        }
         // Collapse drops into a single log line on heavy bursts so
         // congested cores don't spam the log. Quiet trickles still get
         // a normal per-node line so a single lost packet stays visible.
