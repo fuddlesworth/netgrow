@@ -1862,7 +1862,16 @@ impl<'a> Widget for MeshWidget<'a> {
         }
 
         // 1. Links
-        for link in &w.links {
+        //
+        // Track which cells have been drawn by the link pass so far,
+        // keyed by the link index that owned them. When a second
+        // link lands on the same cell we know it's a genuine
+        // crossing and swap in a '┼' crosshair. Using explicit
+        // ownership avoids false positives from pre-existing
+        // glyphs (dying wires, legacy draws, etc.).
+        let mut drawn_link_cells: std::collections::HashMap<(i16, i16), usize> =
+            std::collections::HashMap::new();
+        for (link_idx, link) in w.links.iter().enumerate() {
             let a = &w.nodes[link.a];
             let b = &w.nodes[link.b];
             let dying = a.dying_in > 0 || b.dying_in > 0;
@@ -1972,32 +1981,21 @@ impl<'a> Widget for MeshWidget<'a> {
                 } else {
                     style
                 };
-                // If this cell already holds a link glyph from a
-                // previously-drawn wire (because the two paths
-                // cross here), swap in a crossroad char so the
-                // intersection reads as a proper crosshair
-                // instead of one glyph punching through the other.
-                let cx = area.x as i32 + cell.0 as i32;
-                let cy = area.y as i32 + cell.1 as i32;
-                if cx >= area.x as i32
-                    && cy >= area.y as i32
-                    && cx < area.right() as i32
-                    && cy < area.bottom() as i32
-                {
-                    if let Some(existing) = buf.cell_mut((cx as u16, cy as u16)) {
-                        let sym = existing.symbol();
-                        let is_link_glyph = matches!(
-                            sym,
-                            "─" | "│" | "┌" | "┐" | "└" | "┘"
-                                | "━" | "┃" | "┏" | "┓" | "┗" | "┛"
-                        );
-                        if is_link_glyph {
-                            existing.set_symbol("┼").set_style(style);
-                            continue;
-                        }
+                // Only swap in a '┼' when ANOTHER link already
+                // owns this cell — the drawn_link_cells map tracks
+                // which link_idx wrote which cell during this
+                // pass, so self-overlaps and non-link glyphs
+                // (ghost echoes, pre-existing frame chars, etc.)
+                // don't trigger false crossings.
+                let owner = drawn_link_cells.get(&cell).copied();
+                if let Some(prev_owner) = owner {
+                    if prev_owner != link_idx {
+                        put(buf, area, cell, "┼", style);
+                        continue;
                     }
                 }
                 put(buf, area, cell, glyph, style);
+                drawn_link_cells.insert(cell, link_idx);
             }
         }
 
