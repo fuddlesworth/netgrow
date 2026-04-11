@@ -1862,16 +1862,7 @@ impl<'a> Widget for MeshWidget<'a> {
         }
 
         // 1. Links
-        //
-        // Track which cells have been drawn by the link pass so far,
-        // keyed by the link index that owned them. When a second
-        // link lands on the same cell we know it's a genuine
-        // crossing and swap in a '┼' crosshair. Using explicit
-        // ownership avoids false positives from pre-existing
-        // glyphs (dying wires, legacy draws, etc.).
-        let mut drawn_link_cells: std::collections::HashMap<(i16, i16), usize> =
-            std::collections::HashMap::new();
-        for (link_idx, link) in w.links.iter().enumerate() {
+        for link in w.links.iter() {
             let a = &w.nodes[link.a];
             let b = &w.nodes[link.b];
             let dying = a.dying_in > 0 || b.dying_in > 0;
@@ -1981,21 +1972,7 @@ impl<'a> Widget for MeshWidget<'a> {
                 } else {
                     style
                 };
-                // Only swap in a '┼' when ANOTHER link already
-                // owns this cell — the drawn_link_cells map tracks
-                // which link_idx wrote which cell during this
-                // pass, so self-overlaps and non-link glyphs
-                // (ghost echoes, pre-existing frame chars, etc.)
-                // don't trigger false crossings.
-                let owner = drawn_link_cells.get(&cell).copied();
-                if let Some(prev_owner) = owner {
-                    if prev_owner != link_idx {
-                        put(buf, area, cell, "┼", style);
-                        continue;
-                    }
-                }
                 put(buf, area, cell, glyph, style);
-                drawn_link_cells.insert(cell, link_idx);
             }
         }
 
