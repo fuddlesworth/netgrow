@@ -689,10 +689,11 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
             lines.push(row("faction", format!("{} {}", n.faction, persona)));
             lines.push(row("branch", format!("{}", n.branch_id)));
             let age = world.tick.saturating_sub(n.born);
-            lines.push(row(
-                "age",
-                format!("{}t · kids {}", age, n.children_spawned),
-            ));
+            lines.push(row("age", format!("{}t", age)));
+            lines.push(row("kids", format!("{}", n.children_spawned)));
+            if n.pwn_resist > 0 {
+                lines.push(row("resist", format!("{}", n.pwn_resist)));
+            }
             // Dedicated infection row so strain + stage + resist +
             // veteran rank all live in one place instead of being
             // squashed into the flags line.
@@ -722,13 +723,11 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
             }
             // Flags: bool and counter badges worth surfacing. Only
             // shows the ones that are currently meaningful so an
-            // idle relay's flag row stays short.
+            // idle relay's flag row stays short. resist/kids live
+            // on their own dedicated rows now.
             let mut tags: Vec<String> = Vec::new();
             if n.hardened {
                 tags.push("hardened".into());
-            }
-            if n.pwn_resist > 0 {
-                tags.push(format!("resist {}", n.pwn_resist));
             }
             if n.role_cooldown > 0 {
                 tags.push(format!("cd {}", n.role_cooldown));
