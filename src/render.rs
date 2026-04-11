@@ -2949,18 +2949,39 @@ fn node_glyph(node: &Node, tick: u64, world: &World) -> (&'static str, Style) {
             ("◉", st)
         }
         State::Dead => {
-            // While the ghost echo is still counting down, keep
-            // rendering the node's old role glyph dimmed so the kill
-            // reads as a fading trace instead of instantly clearing.
-            if node.death_echo > 0 {
+            // Legendary dead nodes are permanent tombstones —
+            // they never decay away and keep a bold '†' glyph on
+            // the mesh so the viewer can find their bio in the
+            // inspector after the fall.
+            if node.legendary_name != u16::MAX {
+                return (
+                    "†",
+                    Style::default()
+                        .fg(th.accent)
+                        .add_modifier(Modifier::BOLD),
+                );
+            }
+            // Non-legendary ghost decay stages, driven by the
+            // death_echo countdown:
+            //
+            //   > GHOST_FADE_TICKS  → old role glyph, dim ghost
+            //   1..=GHOST_FADE_TICKS → faint `·` ghost
+            //   0                    → nothing (empty cell); the
+            //                          cleanup pass has already
+            //                          released the cell from
+            //                          `occupied` so new traffic
+            //                          can reclaim it.
+            if node.death_echo > crate::world::GHOST_FADE_TICKS {
                 (
                     node.role.base_glyph(),
                     Style::default()
                         .fg(th.ghost)
                         .add_modifier(Modifier::DIM),
                 )
+            } else if node.death_echo > 0 {
+                ("·", Style::default().fg(th.ghost).add_modifier(Modifier::DIM))
             } else {
-                ("·", Style::default().fg(th.ghost))
+                (" ", Style::default())
             }
         }
     }

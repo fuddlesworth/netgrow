@@ -461,6 +461,7 @@ impl World {
         if newly_dead.is_empty() {
             return;
         }
+        let mut fallen_legends: Vec<(NodeId, (i16, i16), u16, u8)> = Vec::new();
         for id in &newly_dead {
             let faction = self.nodes[*id].faction;
             // Don't double-count: if the node was already in
@@ -476,6 +477,26 @@ impl World {
                     s.lost += 1;
                 }
             }
+            // Legendary nodes become permanent tombstones. Log
+            // the fall loudly so the viewer catches the death
+            // of a named character.
+            if self.nodes[*id].legendary_name != u16::MAX {
+                fallen_legends.push((
+                    *id,
+                    self.nodes[*id].pos,
+                    self.nodes[*id].legendary_name,
+                    faction,
+                ));
+            }
+        }
+        for (_, pos, name_idx, faction) in fallen_legends {
+            let pool = super::LEGENDARY_NAME_POOL;
+            let name = pool[(name_idx as usize) % pool.len()];
+            let (a, b) = octet_pair(pos);
+            self.push_log(format!(
+                "✦ legend ✦ {} falls @ 10.0.{}.{} (F{})",
+                name, a, b, faction
+            ));
         }
         // Resurrection rolls now happen at schedule_subtree_death
         // time, where the whole cascade cohort is visible — by the
@@ -509,6 +530,20 @@ impl World {
         for n in &self.nodes {
             if !matches!(n.state, State::Dead) {
                 self.occupied.insert(n.pos);
+            }
+        }
+        // Ghost cleanup: non-legendary dead nodes whose death_echo
+        // has fully expired release their cell from `occupied`
+        // so new spawns and routing can reclaim the space.
+        // Legendary dead nodes keep their cell held as permanent
+        // tombstones — the cell stays occupied and the render
+        // pass keeps drawing a tombstone glyph there.
+        for n in &self.nodes {
+            if matches!(n.state, State::Dead)
+                && n.death_echo == 0
+                && n.legendary_name == u16::MAX
+            {
+                self.occupied.remove(&n.pos);
             }
         }
     }

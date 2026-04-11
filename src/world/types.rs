@@ -229,7 +229,7 @@ pub struct Node {
     /// at its last position in a dim color so the corpse is visible as
     /// a fading trace before the cell clears. Set when the node first
     /// transitions into `State::Dead`; decays in advance_role_cooldowns.
-    pub death_echo: u8,
+    pub death_echo: u16,
     /// Number of nodes spawned directly from this node as their
     /// parent. Feeds the legendary-node promotion rule along with
     /// the node's age — long-lived, heavily-reproductive nodes get

@@ -65,7 +65,12 @@ const LINK_QUARANTINE_TICKS: u8 = 40;
 /// dim "ghost echo" before the render pass falls back to the plain
 /// dead marker. Makes deaths visible as fading traces instead of
 /// instantly clearing.
-pub const GHOST_ECHO_TICKS: u8 = 60;
+pub const GHOST_ECHO_TICKS: u16 = 600;
+/// Decay thresholds — ghosts cross these as their echo counter
+/// ticks down. Above `GHOST_FADE_TICKS` they render as the old
+/// role glyph dimmed; below that they render as a faint `·`;
+/// at 0 they're cleaned up.
+pub const GHOST_FADE_TICKS: u16 = 200;
 
 /// Starting `pwn_resist` reservoir for a C2 node. Enemy worms that
 /// cross into a C2's cell drain this pool each time they deliver;
