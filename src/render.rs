@@ -1924,6 +1924,10 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default().fg(th.pwned_alt).add_modifier(Modifier::BOLD)
     } else if s.starts_with("✦ diplo") {
         Style::default().fg(th.log_cured)
+    } else if s.contains("defector") {
+        Style::default()
+            .fg(th.log_bridge)
+            .add_modifier(Modifier::BOLD | Modifier::ITALIC)
     } else if s.starts_with("✦ tech") {
         Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
     } else if s.starts_with("handshake") {

@@ -202,6 +202,95 @@ impl World {
         ));
     }
 
+    /// Roll for a defector event. Picks a random non-C2 alive
+    /// node, flips its `faction` to a random rival, reparents it
+    /// to the nearest alive node of the new faction (so it
+    /// doesn't get immediately cascaded by losing its parent
+    /// chain), and credits the receiving faction with
+    /// `defector_intel_reward` intel as "topology memory carried
+    /// across the lines." Logs a mythic defector line with the
+    /// old → new faction arrow and the defector's IP.
+    pub(super) fn maybe_defector(&mut self) {
+        if !self.roll_periodic(self.cfg.defector_period, self.cfg.defector_chance) {
+            return;
+        }
+        if self.c2_nodes.len() < 2 {
+            return;
+        }
+        // Candidate defectors: alive, non-C2, and the defector's
+        // faction must have at least one **other** faction alive
+        // for the pool to make sense.
+        let candidates: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                if !matches!(n.state, State::Alive) || self.is_c2(i) {
+                    return None;
+                }
+                Some(i)
+            })
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let defector = candidates[self.rng.gen_range(0..candidates.len())];
+        let old_faction = self.nodes[defector].faction;
+        let old_pos = self.nodes[defector].pos;
+        // Rival factions: any faction id other than the defector's
+        // current one whose C2 is still Alive.
+        let rivals: Vec<u8> = self
+            .c2_nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &cid)| {
+                if i as u8 == old_faction {
+                    return None;
+                }
+                matches!(self.nodes[cid].state, State::Alive).then_some(i as u8)
+            })
+            .collect();
+        if rivals.is_empty() {
+            return;
+        }
+        let new_faction = rivals[self.rng.gen_range(0..rivals.len())];
+        // Find the nearest alive node of the new faction — that's
+        // the reparent anchor. Fall back to the new faction's C2.
+        let anchor = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                if n.faction == new_faction && matches!(n.state, State::Alive) && i != defector
+                {
+                    let d = (n.pos.0 - old_pos.0).abs().max((n.pos.1 - old_pos.1).abs());
+                    Some((i, d))
+                } else {
+                    None
+                }
+            })
+            .min_by_key(|(_, d)| *d)
+            .map(|(i, _)| i)
+            .unwrap_or(self.c2_nodes[new_faction as usize]);
+        // Flip the defector.
+        {
+            let n = &mut self.nodes[defector];
+            n.faction = new_faction;
+            n.parent = Some(anchor);
+            n.mutated_flash = 12;
+        }
+        // Credit the receiving faction with topology memory.
+        let reward = self.cfg.defector_intel_reward;
+        if let Some(s) = self.faction_stats.get_mut(new_faction as usize) {
+            s.intel = s.intel.saturating_add(reward);
+        }
+        let (oa, ob) = octet_pair(old_pos);
+        self.push_log(format!(
+            "✦ MYTHIC ✦ F{} → F{} defector @ 10.0.{}.{} (+{} intel)",
+            old_faction, new_faction, oa, ob, reward
+        ));
+    }
+
     pub(super) fn maybe_wormhole(&mut self) {
         if !self.roll_periodic(self.cfg.wormhole_period, self.cfg.wormhole_chance) {
             return;

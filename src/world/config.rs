@@ -140,6 +140,18 @@ pub struct Config {
     /// drought is active. Higher values produce more brutal
     /// traffic prioritization.
     pub drought_hot_penalty: u8,
+    /// Ticks between defector event rolls. A defection picks a
+    /// non-C2 alive node, flips it to a rival faction, reparents
+    /// it to the nearest recipient node, and credits the
+    /// receiving faction with `defector_intel_reward` intel as
+    /// "topology memory carried across the lines." Set to 0 to
+    /// disable.
+    pub defector_period: u64,
+    pub defector_chance: f32,
+    /// Intel bump awarded to the receiving faction when a
+    /// defector lands, modeling the partial topology knowledge
+    /// they brought with them.
+    pub defector_intel_reward: u32,
     /// Chance that a reconnect pick may bridge two DIFFERENT factions
     /// instead of the default same-faction-only rule. When a cross-
     /// faction bridge forms, worms can travel between factions,
@@ -268,6 +280,9 @@ impl Default for Config {
             drought_chance: 0.35,
             drought_duration: 180,
             drought_hot_penalty: 6,
+            defector_period: 900,
+            defector_chance: 0.35,
+            defector_intel_reward: 12,
             cross_faction_bridge_chance: 0.2,
             assimilation_period: 250,
             assimilation_threshold: 6,

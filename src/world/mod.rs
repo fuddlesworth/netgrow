@@ -2631,6 +2631,7 @@ impl World {
             self.maybe_wake_sleepers();
         }
         self.maybe_assimilate();
+        self.maybe_defector();
         self.maybe_border_skirmish();
 
         // Sample faction alive counts for the header sparkline.

@@ -903,6 +903,47 @@ fn diplomacy_pressure_escalates_to_cold_war_then_open_war() {
 }
 
 #[test]
+fn defector_flips_faction_and_credits_intel() {
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        c2_count: 2,
+        defector_period: 1, // fire every tick
+        defector_chance: 1.0,
+        ..Config::default()
+    };
+    let mut w = World::new(5, (80, 30), cfg);
+    // Plant a single alive F0 node that's the only possible
+    // defection candidate so we can assert its fate deterministically.
+    let target = w.nodes.len();
+    let mut n = Node::fresh((20, 15), Some(w.c2()), 0, Role::Relay, 1);
+    n.faction = 0;
+    w.nodes.push(n);
+    let f1_intel_before = w.faction_stats[1].intel;
+    let reward = w.cfg.defector_intel_reward;
+    // roll_periodic returns false at tick 0, so advance one tick
+    // before firing the defector roll.
+    w.tick = 1;
+    w.maybe_defector();
+    // Node should have flipped to F1 (the only rival with an
+    // alive C2).
+    assert_eq!(w.nodes[target].faction, 1);
+    // F1 should have received the intel reward.
+    assert_eq!(w.faction_stats[1].intel, f1_intel_before + reward);
+    // Parent should point at an alive F1 node (either the C2
+    // or a same-faction sibling).
+    let parent = w.nodes[target].parent.expect("defector should have parent");
+    assert_eq!(w.nodes[parent].faction, 1);
+    // Mythic log fired.
+    let logged = w
+        .logs
+        .iter()
+        .any(|(s, _)| s.contains("defector"));
+    assert!(logged);
+}
+
+#[test]
 fn ghost_packet_delivers_without_crediting_intel() {
     let mut w = World::new(3, (80, 30), Config::default());
     w.cfg.p_spawn = 0.0;

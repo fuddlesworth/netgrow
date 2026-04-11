@@ -192,6 +192,22 @@ Brainstormed unshipped items from earlier rounds, rough scope markers:
 
 ### Economy / scarcity
 
+- ✅ **Bandwidth Drought** — periodic event (`maybe_drought`) that
+  tightens the effective HOT_LINK ceiling by `drought_hot_penalty`
+  so routing refuses moderately-loaded links and exfils throttle
+  sooner. `effective_hot_link(link)` helper centralizes the
+  ceiling calculation across packet routing. Render shows a
+  `⚠ drought (Nt)` row in the events panel.
+- ✅ **Ghost Packets** — `Packet.ghost` flag. Opportunist exfils
+  emit decoys 25% of the time, Plague 20%. Decoys add link load
+  and pollute Router caches but skip the intel reward on delivery.
+  Render draws ghosts in the ghost palette color without BOLD.
+- ✅ **Defector Events** — periodic `maybe_defector` picks a non-C2
+  alive node, flips it to a random rival faction, reparents to the
+  nearest same-faction anchor, and credits the receiving faction
+  with `defector_intel_reward` (default 12) intel as "topology
+  memory carried across the lines." Log mythic formatted as
+  `✦ MYTHIC ✦ F{a} → F{b} defector @ 10.0.x.y (+N intel)`.
 - **Mercenary Nodes** *(small)* — unaffiliated auction-bidding nodes that
   sell to the highest bidder each cycle. Compounds faction dominance.
 - ✅ **Strain Patents** — `World.strain_patents: Vec<Option<u8>>`
