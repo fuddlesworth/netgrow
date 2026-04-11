@@ -86,7 +86,7 @@ impl World {
             // Aggressor Tier 2 scales scanner period down, so
             // recon fires more often for tech-advanced factions.
             let period = ((base_period as f32)
-                * self.tech_scanner_period_mult(faction))
+                * self.tech_effects(faction).scanner_period_mult)
             .max(1.0) as u16;
             let n = &mut self.nodes[id];
             n.role_cooldown = period;
@@ -320,7 +320,7 @@ impl World {
             // cure radius so fortified factions feel decisively
             // more antiviral as they tech up.
             let faction = self.nodes[id].faction;
-            let radius = base_radius + self.tech_defender_radius_bonus(faction);
+            let radius = base_radius + self.tech_effects(faction).defender_radius_bonus;
             self.nodes[id].role_cooldown = period;
             self.nodes[id].pulse = 2;
             // Scan for infected neighbors within radius and decrement

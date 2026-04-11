@@ -515,6 +515,49 @@ impl Default for Relation {
     }
 }
 
+/// Resolved per-faction tech-tree bonuses. Computed once by
+/// `World::tech_effects(faction)` and then read at each call site
+/// as plain field lookups. Collapses five previously-scattered
+/// helper methods (`tech_role_intensity`, `tech_defender_radius_bonus`,
+/// `tech_scanner_period_mult`, `tech_worm_spawn_mult`,
+/// `tech_bridge_mult`) into a single struct so new tech effects can
+/// be added in one place without fanning helper methods across the
+/// impl block. All fields default to "no effect" (1.0× or 0 bonus)
+/// so the struct doubles as a safe fallback when a faction has no
+/// stats entry.
+#[derive(Clone, Copy, Debug)]
+pub struct TechEffects {
+    /// Role-weight intensity — pushes each persona multiplier away
+    /// from 1.0 by this factor in `roll_role`. 1.0 means baseline,
+    /// 1.35 amplifies 35%, 1.6 amplifies 60%. Plateaus at T2 by
+    /// design (T3's reward is the active ability).
+    pub role_intensity: f32,
+    /// Fortress T2 bonus added to each defender's cure pulse radius.
+    pub defender_radius_bonus: i16,
+    /// Aggressor T2 scalar on scanner ping period. <1.0 means
+    /// scanners fire more often; 1.0 is baseline.
+    pub scanner_period_mult: f32,
+    /// Plague T2 scalar on worm spawn rate. >1.0 means more worms
+    /// per sample tick from the faction's infected hosts.
+    pub worm_spawn_mult: f32,
+    /// Opportunist T2 scalar on cross-faction bridge roll chance.
+    /// Values above 1.0 mean bridges form more often when this
+    /// faction is the source of the bridge attempt.
+    pub bridge_mult: f32,
+}
+
+impl Default for TechEffects {
+    fn default() -> Self {
+        Self {
+            role_intensity: 1.0,
+            defender_radius_bonus: 0,
+            scanner_period_mult: 1.0,
+            worm_spawn_mult: 1.0,
+            bridge_mult: 1.0,
+        }
+    }
+}
+
 impl DiplomaticState {
     /// Short label for render panels — exactly 4 chars wide so
     /// the diplomacy panel's columns line up row-to-row. The

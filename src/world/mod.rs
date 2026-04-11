@@ -1034,18 +1034,20 @@ impl World {
         if faction_count == 0 {
             return;
         }
-        // Alive counts for the base income term.
-        let mut counts = vec![0u32; faction_count];
-        for n in &self.nodes {
-            if matches!(n.state, State::Alive) {
-                if let Some(slot) = counts.get_mut(n.faction as usize) {
-                    *slot += 1;
-                }
-            }
-        }
-        // Per-faction diplomatic multiplier: +25% per Trade partner,
-        // +50% per Alliance. Computed before the income pass so the
-        // per-faction loop can apply a single scalar.
+        let counts = self.faction_alive_counts();
+        let diplo_mult = self.research_diplo_multipliers(faction_count);
+        let mut incomes = self.compute_research_incomes(&counts, &diplo_mult);
+        self.apply_vassalage_tribute_skim(&mut incomes);
+        self.apply_research_incomes(&incomes);
+        self.promote_tech_tiers();
+    }
+
+    /// Build the per-faction diplomatic multiplier vector for this
+    /// research pass. +25% per Trade partner, +50% per Alliance,
+    /// +10% per NonAggression. Partners of a given faction stack
+    /// additively into the scalar that `compute_research_incomes`
+    /// then applies to the faction's raw income.
+    fn research_diplo_multipliers(&self, faction_count: usize) -> Vec<f32> {
         let mut diplo_mult = vec![1.0f32; faction_count];
         for (&(a, b), rel) in &self.relations {
             let bonus = match rel.state {
@@ -1063,20 +1065,24 @@ impl World {
                 }
             }
         }
-        // Compute income per faction into a side buffer so we can
-        // also skim vassal income over to the overlord before
-        // applying anything.
+        diplo_mult
+    }
+
+    /// Compute raw research income per faction into a side buffer.
+    /// Fully-dead factions (alive == 0) earn nothing but still have
+    /// their `last_*_sample` refreshed so a future resurrection
+    /// sees a clean delta. The side buffer lets
+    /// `apply_vassalage_tribute_skim` move income between factions
+    /// before it touches persistent state.
+    fn compute_research_incomes(
+        &mut self,
+        counts: &[u32],
+        diplo_mult: &[f32],
+    ) -> Vec<u32> {
+        let faction_count = self.faction_stats.len();
         let mut incomes = vec![0u32; faction_count];
         for (i, stats) in self.faction_stats.iter_mut().enumerate() {
-            let alive = counts[i];
-            // Fully-dead factions earn nothing this pass. Previously
-            // the guard was `alive == 0 && research == 0`, which
-            // meant a faction that accumulated research before
-            // losing its mesh would keep earning the flat base
-            // forever — free progress toward tiers while having
-            // zero presence. Now: no alive nodes → no income, and
-            // `last_*_sample` is refreshed so a future resurrection
-            // starts with a clean delta.
+            let alive = counts.get(i).copied().unwrap_or(0);
             if alive == 0 {
                 stats.last_intel_sample = stats.intel;
                 stats.last_cures_sample = stats.infections_cured;
@@ -1088,22 +1094,22 @@ impl World {
                 .saturating_sub(stats.last_cures_sample);
             stats.last_intel_sample = stats.intel;
             stats.last_cures_sample = stats.infections_cured;
-            // Base: 1 flat + 1 per 12 alive. Tuned so a 25-alive
-            // faction earns ~3/sample before deltas, pushing T1
-            // unlock to roughly tick 2000 under passive play.
+            // Base: 1 flat + 1 per 12 alive. A 25-alive faction
+            // earns ~3/sample before deltas, pushing T1 unlock to
+            // roughly tick 2000 under passive play.
             let base = 1 + alive / 12;
-            // Intel and cures each contribute a modest per-event
-            // bump — previously +3/+2 per delta, which let active
-            // Plague/Aggressor factions hit T2 by tick 1900 and
-            // undercut the "late-game specialization" feel.
             let earned = base + intel_delta + cures_delta;
-            let scaled = (earned as f32 * diplo_mult[i]).round() as u32;
-            incomes[i] = scaled;
+            let mult = diplo_mult.get(i).copied().unwrap_or(1.0);
+            incomes[i] = (earned as f32 * mult).round() as u32;
         }
-        // Vassalage tribute: each Vassalage relation skims 30% of
-        // the vassal's income and adds it to the overlord's bucket.
-        // Keeps vassals productive but tilts the ledger toward the
-        // overlord to make subordination meaningful.
+        incomes
+    }
+
+    /// Skim 30% of each vassal's income over to its overlord.
+    /// Keeps vassals productive but tilts the ledger toward the
+    /// overlord to make subordination meaningful. Pure side-buffer
+    /// mutation — the actual research counters aren't touched yet.
+    fn apply_vassalage_tribute_skim(&self, incomes: &mut [u32]) {
         let vassal_pairs: Vec<(u8, u8)> = self
             .relations
             .iter()
@@ -1124,12 +1130,23 @@ impl World {
                 incomes[o_idx] = incomes[o_idx].saturating_add(skim);
             }
         }
-        // Apply the computed incomes and check for tier promotions.
+    }
+
+    /// Fold the computed incomes into each faction's persistent
+    /// `research` counter. Intentionally separate from the
+    /// promotion check so `push_log` in the next step can run
+    /// without aliasing `faction_stats.iter_mut()`.
+    fn apply_research_incomes(&mut self, incomes: &[u32]) {
         for (i, stats) in self.faction_stats.iter_mut().enumerate() {
-            stats.research = stats.research.saturating_add(incomes[i]);
+            let income = incomes.get(i).copied().unwrap_or(0);
+            stats.research = stats.research.saturating_add(income);
         }
-        // Tier promotions + log lines. Split from the income pass so
-        // `push_log` doesn't alias `faction_stats.iter_mut()`.
+    }
+
+    /// Check each faction's research against the tier thresholds
+    /// and promote when it crosses one. Emits a `✦ tech ✦` log
+    /// line with persona-flavored effect text on every promotion.
+    fn promote_tech_tiers(&mut self) {
         let mut promotions: Vec<(usize, u8)> = Vec::new();
         for (i, stats) in self.faction_stats.iter().enumerate() {
             let new_tier = if stats.research >= TECH_TIER_3_COST {
@@ -1357,110 +1374,53 @@ impl World {
         ));
     }
 
-    /// Persona role-weight multiplier bonus granted at Tier 1+.
-    /// Intensifies the faction's persona bias by pushing each
-    /// per-role multiplier away from 1.0. Deliberately plateaus at
-    /// Tier 2 — Tier 3's reward is the active ability in
-    /// `advance_tech_actives`, not further role-weight escalation.
-    /// `roll_role` reads this and blends the amplified multipliers
-    /// with the base weights.
-    pub fn tech_role_intensity(&self, faction: u8) -> f32 {
-        let tier = self
-            .faction_stats
+    /// Resolve the per-faction tech bonuses for this faction into
+    /// a single `TechEffects` struct. Call sites read one scalar
+    /// from the returned struct (e.g. `self.tech_effects(f).role_intensity`)
+    /// instead of calling five separate helper methods. Unknown
+    /// factions (no stats entry) return `TechEffects::default()`
+    /// — all fields resolve to their no-op values.
+    ///
+    /// Effect table:
+    /// - T1+ (all personas): `role_intensity` rises above 1.0.
+    ///   Deliberately plateaus at T2 — T3's reward is the active
+    ///   ability in `advance_tech_actives`, not stronger role bias.
+    /// - T2+ Fortress: `defender_radius_bonus = 2`.
+    /// - T2+ Aggressor: `scanner_period_mult = 0.65`.
+    /// - T2+ Plague: `worm_spawn_mult = 2.0`.
+    /// - T2+ Opportunist: `bridge_mult = 2.0`.
+    pub fn tech_effects(&self, faction: u8) -> TechEffects {
+        let Some(stats) = self.faction_stats.get(faction as usize) else {
+            return TechEffects::default();
+        };
+        let tier = stats.tech_tier;
+        let persona = self
+            .personas
             .get(faction as usize)
-            .map(|s| s.tech_tier)
-            .unwrap_or(0);
-        match tier {
+            .copied()
+            .unwrap_or(Persona::Opportunist);
+        let role_intensity = match tier {
             0 => 1.0,
             1 => 1.35,
-            // Tiers 2 and 3 share this value by design — T3 gets
-            // its own reward via the active ability dispatcher.
             _ => 1.6,
-        }
-    }
-
-    /// Tier 2+ defender-radius bonus. Fortress factions add +2 to
-    /// their cure pulse radius; other personas add 0. Read from
-    /// `fire_defender_pulses` when computing the effective radius
-    /// for each firing defender's faction.
-    pub fn tech_defender_radius_bonus(&self, faction: u8) -> i16 {
-        let tier = self
-            .faction_stats
-            .get(faction as usize)
-            .map(|s| s.tech_tier)
-            .unwrap_or(0);
-        let persona = self
-            .personas
-            .get(faction as usize)
-            .copied()
-            .unwrap_or(Persona::Opportunist);
-        if tier >= 2 && matches!(persona, Persona::Fortress) {
-            2
-        } else {
-            0
-        }
-    }
-
-    /// Tier 2+ scanner period multiplier. Aggressor factions at
-    /// T2 cut their scanner ping period by 35% so recon fires
-    /// more often; other personas use the baseline.
-    pub fn tech_scanner_period_mult(&self, faction: u8) -> f32 {
-        let tier = self
-            .faction_stats
-            .get(faction as usize)
-            .map(|s| s.tech_tier)
-            .unwrap_or(0);
-        let persona = self
-            .personas
-            .get(faction as usize)
-            .copied()
-            .unwrap_or(Persona::Opportunist);
-        if tier >= 2 && matches!(persona, Persona::Aggressor) {
-            0.65
-        } else {
-            1.0
-        }
-    }
-
-    /// Tier 2+ worm-spawn multiplier. Plague factions at T2
-    /// double their worm generation rate so viral pressure ramps
-    /// visibly with their tech. Other personas read 1.0.
-    pub fn tech_worm_spawn_mult(&self, faction: u8) -> f32 {
-        let tier = self
-            .faction_stats
-            .get(faction as usize)
-            .map(|s| s.tech_tier)
-            .unwrap_or(0);
-        let persona = self
-            .personas
-            .get(faction as usize)
-            .copied()
-            .unwrap_or(Persona::Opportunist);
-        if tier >= 2 && matches!(persona, Persona::Plague) {
-            2.0
-        } else {
-            1.0
-        }
-    }
-
-    /// Tier 2+ cross-faction bridge multiplier. Opportunist
-    /// factions at T2 roll bridges twice as often as the
-    /// baseline. Other personas read 1.0.
-    pub fn tech_bridge_mult(&self, faction: u8) -> f32 {
-        let tier = self
-            .faction_stats
-            .get(faction as usize)
-            .map(|s| s.tech_tier)
-            .unwrap_or(0);
-        let persona = self
-            .personas
-            .get(faction as usize)
-            .copied()
-            .unwrap_or(Persona::Opportunist);
-        if tier >= 2 && matches!(persona, Persona::Opportunist) {
-            2.0
-        } else {
-            1.0
+        };
+        let (defender_radius_bonus, scanner_period_mult, worm_spawn_mult, bridge_mult) =
+            if tier >= 2 {
+                match persona {
+                    Persona::Fortress => (2, 1.0, 1.0, 1.0),
+                    Persona::Aggressor => (0, 0.65, 1.0, 1.0),
+                    Persona::Plague => (0, 1.0, 2.0, 1.0),
+                    Persona::Opportunist => (0, 1.0, 1.0, 2.0),
+                }
+            } else {
+                (0, 1.0, 1.0, 1.0)
+            };
+        TechEffects {
+            role_intensity,
+            defender_radius_bonus,
+            scanner_period_mult,
+            worm_spawn_mult,
+            bridge_mult,
         }
     }
 

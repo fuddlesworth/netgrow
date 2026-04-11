@@ -57,7 +57,7 @@ impl World {
             .max()
             .unwrap_or(0);
         let amp = 1.0 + (max_pressure as f32 / super::RIVALRY_CAP as f32);
-        let tech_bridge = self.tech_bridge_mult(a_faction);
+        let tech_bridge = self.tech_effects(a_faction).bridge_mult;
         let cross_chance = (self.cfg.cross_faction_bridge_chance
             * amp
             * self.era_rules.bridge_mult
@@ -202,7 +202,7 @@ impl World {
         // `1.0 + (2.0 - 1.0) * 1.6 = 2.6`. Opportunist's all-1.0
         // weights are untouched because there's no deviation to
         // amplify.
-        let intensity = self.tech_role_intensity(faction);
+        let intensity = self.tech_effects(faction).role_intensity;
         let amp = |m: f32| 1.0 + (m - 1.0) * intensity;
         let m_relay = amp(m_relay);
         let m_scan = amp(m_scan);

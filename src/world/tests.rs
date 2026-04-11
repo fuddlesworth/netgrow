@@ -832,39 +832,42 @@ fn tech_research_accrues_and_unlocks_tier_1() {
 fn tech_role_intensity_amplifies_persona_at_tier_1_plus() {
     let mut w = World::new(1, (80, 30), Config::default());
     // Baseline: tier 0 → intensity 1.0.
-    assert_eq!(w.tech_role_intensity(0), 1.0);
+    assert_eq!(w.tech_effects(0).role_intensity, 1.0);
     // Bump tier directly and confirm the intensity climbs.
     w.faction_stats[0].tech_tier = 1;
-    assert!((w.tech_role_intensity(0) - 1.35).abs() < 1e-6);
+    assert!((w.tech_effects(0).role_intensity - 1.35).abs() < 1e-6);
     w.faction_stats[0].tech_tier = 2;
-    assert!((w.tech_role_intensity(0) - 1.6).abs() < 1e-6);
+    assert!((w.tech_effects(0).role_intensity - 1.6).abs() < 1e-6);
     w.faction_stats[0].tech_tier = 3;
-    assert!((w.tech_role_intensity(0) - 1.6).abs() < 1e-6);
+    assert!((w.tech_effects(0).role_intensity - 1.6).abs() < 1e-6);
 }
 
 #[test]
 fn tech_persona_passives_gate_on_tier_and_match() {
     let mut w = World::new(1, (80, 30), Config::default());
     // T0: no bonuses anywhere.
-    assert_eq!(w.tech_defender_radius_bonus(0), 0);
-    assert_eq!(w.tech_scanner_period_mult(0), 1.0);
-    assert_eq!(w.tech_worm_spawn_mult(0), 1.0);
-    assert_eq!(w.tech_bridge_mult(0), 1.0);
+    let t0 = w.tech_effects(0);
+    assert_eq!(t0.defender_radius_bonus, 0);
+    assert_eq!(t0.scanner_period_mult, 1.0);
+    assert_eq!(t0.worm_spawn_mult, 1.0);
+    assert_eq!(t0.bridge_mult, 1.0);
     // T2 Fortress → defender radius bonus.
     w.faction_stats[0].tech_tier = 2;
     w.personas[0] = Persona::Fortress;
-    assert_eq!(w.tech_defender_radius_bonus(0), 2);
-    assert_eq!(w.tech_worm_spawn_mult(0), 1.0);
+    let t2_fortress = w.tech_effects(0);
+    assert_eq!(t2_fortress.defender_radius_bonus, 2);
+    assert_eq!(t2_fortress.worm_spawn_mult, 1.0);
     // T2 Plague → worm spawn bonus instead.
     w.personas[0] = Persona::Plague;
-    assert_eq!(w.tech_defender_radius_bonus(0), 0);
-    assert!((w.tech_worm_spawn_mult(0) - 2.0).abs() < 1e-6);
+    let t2_plague = w.tech_effects(0);
+    assert_eq!(t2_plague.defender_radius_bonus, 0);
+    assert!((t2_plague.worm_spawn_mult - 2.0).abs() < 1e-6);
     // T2 Aggressor → scanner period cut.
     w.personas[0] = Persona::Aggressor;
-    assert!((w.tech_scanner_period_mult(0) - 0.65).abs() < 1e-6);
+    assert!((w.tech_effects(0).scanner_period_mult - 0.65).abs() < 1e-6);
     // T2 Opportunist → bridge mult.
     w.personas[0] = Persona::Opportunist;
-    assert!((w.tech_bridge_mult(0) - 2.0).abs() < 1e-6);
+    assert!((w.tech_effects(0).bridge_mult - 2.0).abs() < 1e-6);
 }
 
 #[test]
@@ -896,6 +899,141 @@ fn diplomacy_pressure_escalates_to_cold_war_then_open_war() {
     // Order-insensitive lookups.
     assert!(w.at_war(1, 0));
     assert_eq!(w.relation_state(1, 0), DiplomaticState::OpenWar);
+}
+
+#[test]
+fn diplomacy_vassalage_derivation_is_correct_under_both_key_orderings() {
+    // The canonical pair key is `(min(a,b), max(a,b))`, so for a
+    // Vassalage the overlord can be either `a` (when overlord has
+    // the smaller faction id) or `b` (when it has the larger).
+    // `advance_relation_transitions` derives the subordinate via
+    // `if overlord == a { b } else { a }` — this test pins both
+    // orderings so a future refactor that breaks the derivation
+    // is caught immediately.
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        c2_count: 3,
+        epoch_period: 0,
+        ..Config::default()
+    };
+    let mut w = World::new(1, (80, 30), cfg);
+    assert_eq!(w.c2_nodes.len(), 3);
+    // Case A: overlord = F0 (the smaller id). Canonical key = (0, 2).
+    w.relations.insert(
+        (0, 2),
+        Relation {
+            state: DiplomaticState::Vassalage { overlord: 0 },
+            pressure: 0,
+            trust: 0,
+            entered_tick: 0,
+            expires_tick: 0,
+        },
+    );
+    // Case B: overlord = F2 (the larger id). Canonical key = (1, 2).
+    w.relations.insert(
+        (1, 2),
+        Relation {
+            state: DiplomaticState::Vassalage { overlord: 2 },
+            pressure: 0,
+            trust: 0,
+            entered_tick: 0,
+            expires_tick: 0,
+        },
+    );
+    let f0_intel_before = w.faction_stats[0].intel;
+    let f2_intel_before = w.faction_stats[2].intel;
+    w.advance_diplomacy();
+    // Case A: F0 is overlord, so F0 collects tribute.
+    assert!(
+        w.faction_stats[0].intel > f0_intel_before,
+        "overlord in case A (F0, the smaller id) should collect tribute"
+    );
+    // Case B: F2 is overlord, so F2 collects tribute (not F1).
+    assert!(
+        w.faction_stats[2].intel > f2_intel_before,
+        "overlord in case B (F2, the larger id) should collect tribute"
+    );
+    // Both relations should still exist and report their correct
+    // Vassalage state after the transition pass.
+    assert_eq!(
+        w.relation_state(0, 2),
+        DiplomaticState::Vassalage { overlord: 0 }
+    );
+    assert_eq!(
+        w.relation_state(1, 2),
+        DiplomaticState::Vassalage { overlord: 2 }
+    );
+}
+
+#[test]
+fn diplomacy_rebirth_produces_a_clean_relation_slate_for_the_new_faction() {
+    // When a faction dies and the rebirth path spawns a new C2,
+    // the new faction gets a brand-new faction id (the length
+    // of c2_nodes at the time of the push). That means no
+    // existing relation can reference it, and the dead faction's
+    // relations are purged by the next sweep. This test walks
+    // through that sequence manually.
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        c2_count: 2,
+        epoch_period: 0,
+        ..Config::default()
+    };
+    let mut w = World::new(1, (80, 30), cfg);
+    // Plant a heavily-loaded relation between F0 and F1: active
+    // Vassalage, stale trust, non-zero pressure. This is exactly
+    // the kind of state that would be bad to inherit.
+    w.relations.insert(
+        (0, 1),
+        Relation {
+            state: DiplomaticState::Vassalage { overlord: 0 },
+            pressure: 150,
+            trust: -50,
+            entered_tick: 0,
+            expires_tick: 0,
+        },
+    );
+    // Kill F1's C2 directly (assimilation-style path).
+    let f1_c2 = w.c2_nodes[1];
+    w.nodes[f1_c2].state = State::Dead;
+    // Simulate rebirth by allocating a new faction slot — this
+    // is what maybe_resurrect_c2_from_cascade does internally
+    // when it picks a doomed node to promote.
+    let new_faction_id = w.c2_nodes.len() as u8;
+    let new_branch = w.alloc_branch_id();
+    w.nodes.push(Node::fresh(
+        (40, 20),
+        None,
+        0,
+        Role::Relay,
+        new_branch,
+    ));
+    let new_c2 = w.nodes.len() - 1;
+    w.nodes[new_c2].faction = new_faction_id;
+    w.c2_nodes.push(new_c2);
+    w.faction_stats.push(FactionStats::default());
+    w.personas.push(Persona::Opportunist);
+    w.faction_colors.push(0);
+    // Run the diplomacy pass. The sweep should drop the stale
+    // (0, 1) relation and the reborn faction at `new_faction_id`
+    // should start with zero relations.
+    w.advance_diplomacy();
+    assert!(
+        !w.relations.contains_key(&(0, 1)),
+        "stale relation involving dead F1 should be purged"
+    );
+    // Reborn faction has a fresh stats entry — tier 0, no research.
+    assert_eq!(w.faction_stats[new_faction_id as usize].tech_tier, 0);
+    assert_eq!(w.faction_stats[new_faction_id as usize].research, 0);
+    // And no relation references the new id.
+    for &(a, b) in w.relations.keys() {
+        assert_ne!(a, new_faction_id);
+        assert_ne!(b, new_faction_id);
+    }
 }
 
 #[test]

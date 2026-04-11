@@ -491,7 +491,8 @@ impl World {
             // Plague Tier 2 doubles its hosts' worm spawn chance,
             // so Plague factions feel progressively more viral
             // as they tech up.
-            let rate = (base_rate * self.tech_worm_spawn_mult(faction)).clamp(0.0, 1.0);
+            let rate =
+                (base_rate * self.tech_effects(faction).worm_spawn_mult).clamp(0.0, 1.0);
             if !self.rng.gen_bool(rate as f64) {
                 continue;
             }
