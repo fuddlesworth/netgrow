@@ -14,9 +14,9 @@ use crate::world::{
 };
 
 /// Chebyshev radius a territory tint spreads from an alive node into
-/// empty background cells. Kept tight so the mesh still breathes;
-/// larger values would paint the whole grid at dense populations.
-const TERRITORY_RADIUS: i16 = 4;
+/// empty background cells. Generous enough that territory blobs
+/// merge into continuous regions around clustered factions.
+const TERRITORY_RADIUS: i16 = 6;
 /// Solid block char used for the faction territory background tint.
 /// Day and night both use this shade — only the style modifier
 /// changes (DIM at night) so the territory always reads as the
@@ -2298,6 +2298,41 @@ impl<'a> Widget for MeshWidget<'a> {
             }
             if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
                 c.set_bg(bg);
+            }
+        }
+        // Link path extension: the territory BFS only reaches
+        // cells within TERRITORY_RADIUS of an alive node, so link
+        // paths between far-apart nodes have middle cells that
+        // never land in the territory map and end up rendering
+        // against the default bg. Walk every drawn Parent link
+        // and stamp its path cells with the child endpoint's
+        // faction bg so every link reads as its region's color.
+        for link in &w.links {
+            if link.kind != LinkKind::Parent {
+                continue;
+            }
+            let reveal = (link.drawn as usize).min(link.path.len());
+            if reveal == 0 {
+                continue;
+            }
+            let b_node = &w.nodes[link.b];
+            if !matches!(b_node.state, State::Alive) {
+                continue;
+            }
+            let bg = dim_bg(faction_hue(w, b_node.faction));
+            for &cell in link.path.iter().take(reveal) {
+                let cx = area.x as i32 + cell.0 as i32;
+                let cy = area.y as i32 + cell.1 as i32;
+                if cx < area.x as i32
+                    || cy < area.y as i32
+                    || cx >= area.right() as i32
+                    || cy >= area.bottom() as i32
+                {
+                    continue;
+                }
+                if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
+                    c.set_bg(bg);
+                }
             }
         }
         // Hotspot bg tint: slightly brighter than territory so the
