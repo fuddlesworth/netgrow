@@ -2091,16 +2091,13 @@ impl<'a> Widget for MeshWidget<'a> {
                 // Warming up — accent color, no dim.
                 Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(branch_hue(b.branch_id))
-            };
-            // Bake the territory bg onto alive link cells so they
-            // read as part of their faction's region. Dying/dead
-            // links deliberately leave bg alone — the subtree is
-            // decaying and shouldn't still claim territory tint.
-            let style = if dying || dead {
-                style
-            } else {
-                style.bg(dim_bg(faction_hue(w, b.faction)))
+                // Links take their color from the child
+                // endpoint's faction hue — a faction's whole
+                // subtree reads as one color band instead of
+                // random branch hues. Main mesh no longer
+                // paints a bg wash, so territory identification
+                // relies entirely on the shared fg color.
+                Style::default().fg(faction_hue(w, b.faction))
             };
             let reveal = if dying || dead {
                 link.path.len()
@@ -2303,20 +2300,6 @@ impl<'a> Widget for MeshWidget<'a> {
         // 4. Nodes
         for node in &w.nodes {
             let (glyph, style) = node_glyph(node, w.tick, w);
-            // Bake the territory bg behind every alive node so it
-            // sits inside its faction's colored region. Dead
-            // nodes and ghost echoes deliberately leave bg alone
-            // so they stay bg-less against whatever's underneath
-            // (dim territory for recently dead cells near live
-            // neighbors, terminal default for fully-abandoned
-            // regions). Style with an already-set bg (flashes,
-            // cursor) is never overridden.
-            let is_alive = matches!(node.state, State::Alive);
-            let style = if style.bg.is_some() || !is_alive {
-                style
-            } else {
-                style.bg(dim_bg(faction_hue(w, node.faction)))
-            };
             put(buf, area, node.pos, glyph, style);
         }
 
@@ -2459,28 +2442,33 @@ impl<'a> Widget for MeshWidget<'a> {
             }
         }
 
-        // 4b. Ambient background post-pass. Merge territory,
-        // hotspots, and outages into a single per-cell bg
-        // decision BEFORE applying, so priorities compose
-        // correctly — previous passes each ran sequentially and
-        // the earlier one (territory) filled cells that the
-        // later ones (hotspot, outage) then skipped because of
-        // the Color::Reset guard. Priority here is:
+        // 4b. Ambient background post-pass.
         //
-        //     outage > hotspot > territory
+        // The main mesh no longer paints a territory bg wash —
+        // factions are identified by the fg color of their nodes
+        // and links instead, so every cell stays fg-only.
         //
-        // and any cell that already has a baked bg from a
-        // node/link/event foreground draw is left alone.
-        let mut cell_bg: std::collections::HashMap<(i16, i16), Color> =
-            std::collections::HashMap::new();
-        for (&cell, &fac) in &territory {
-            cell_bg.insert(cell, dim_bg(faction_hue(w, fac)));
-        }
+        // Hotspots and outages still get bg tints because they
+        // mark fixed strategic terrain the viewer needs to see
+        // regardless of who currently owns the region.
         let hotspot_color = hotspot_bg(th.frame_accent);
         for hot in &w.hotspots {
             for y in hot.min.1..=hot.max.1 {
                 for x in hot.min.0..=hot.max.0 {
-                    cell_bg.insert((x, y), hotspot_color);
+                    let cx = area.x as i32 + x as i32;
+                    let cy = area.y as i32 + y as i32;
+                    if cx < area.x as i32
+                        || cy < area.y as i32
+                        || cx >= area.right() as i32
+                        || cy >= area.bottom() as i32
+                    {
+                        continue;
+                    }
+                    if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
+                        if c.bg == Color::Reset {
+                            c.set_bg(hotspot_color);
+                        }
+                    }
                 }
             }
         }
@@ -2488,26 +2476,22 @@ impl<'a> Widget for MeshWidget<'a> {
         for outage in &w.outages {
             for y in outage.min.1..=outage.max.1 {
                 for x in outage.min.0..=outage.max.0 {
-                    cell_bg.insert((x, y), outage_color);
+                    let cx = area.x as i32 + x as i32;
+                    let cy = area.y as i32 + y as i32;
+                    if cx < area.x as i32
+                        || cy < area.y as i32
+                        || cx >= area.right() as i32
+                        || cy >= area.bottom() as i32
+                    {
+                        continue;
+                    }
+                    if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
+                        c.set_bg(outage_color);
+                    }
                 }
             }
         }
-        for (&cell, &bg) in &cell_bg {
-            let cx = area.x as i32 + cell.0 as i32;
-            let cy = area.y as i32 + cell.1 as i32;
-            if cx < area.x as i32
-                || cy < area.y as i32
-                || cx >= area.right() as i32
-                || cy >= area.bottom() as i32
-            {
-                continue;
-            }
-            if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
-                if c.bg == Color::Reset {
-                    c.set_bg(bg);
-                }
-            }
-        }
+        let _ = &territory; // map still used by minimap via compute_territory
 
         // 5. Inspector cursor — drawn last so it sits above everything else.
         // We draw a 5-cell crosshair around the cursor: a reverse-video cell
@@ -2792,14 +2776,6 @@ fn faction_hue_legend() -> Color {
         .unwrap_or(Color::Cyan)
 }
 
-fn branch_hue(branch_id: u16) -> Color {
-    let palette = &theme().branch_palette;
-    if palette.is_empty() {
-        return Color::Green;
-    }
-    palette[(branch_id as usize) % palette.len()]
-}
-
 fn node_glyph(node: &Node, tick: u64, world: &World) -> (&'static str, Style) {
     let th = theme();
     if node.dying_in > 0 && !matches!(node.state, State::Dead) {
@@ -2859,7 +2835,7 @@ fn node_glyph(node: &Node, tick: u64, world: &World) -> (&'static str, Style) {
             if let Some(inf) = node.infection {
                 return infected_glyph(node, &inf, tick);
             }
-            let hue = branch_hue(node.branch_id);
+            let hue = faction_hue(world, node.faction);
             let pulse_boost = node.pulse > 0;
             let (glyph, base_style) = match node.role {
                 Role::Relay => {
