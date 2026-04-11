@@ -2304,6 +2304,10 @@ impl<'a> Widget for MeshWidget<'a> {
         // foreground. This makes the whole region read as a
         // solid color wash underneath the mesh instead of a
         // loose scatter of shade glyphs on empty ground.
+        // Only stamp territory bg on cells that don't already
+        // carry a bg — nodes and links already baked their own
+        // brighter bg in at draw time, and we don't want to
+        // clobber them here.
         for (&cell, &fac) in &territory {
             let bg = dim_bg(faction_hue(w, fac));
             let cx = area.x as i32 + cell.0 as i32;
@@ -2316,47 +2320,15 @@ impl<'a> Widget for MeshWidget<'a> {
                 continue;
             }
             if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
-                c.set_bg(bg);
-            }
-        }
-        // Link path extension: the territory BFS only reaches
-        // cells within TERRITORY_RADIUS of an alive node, so link
-        // paths between far-apart nodes have middle cells that
-        // never land in the territory map and end up rendering
-        // against the default bg. Walk every drawn Parent link
-        // and stamp its path cells with the child endpoint's
-        // faction bg so every link reads as its region's color.
-        for link in &w.links {
-            if link.kind != LinkKind::Parent {
-                continue;
-            }
-            let reveal = (link.drawn as usize).min(link.path.len());
-            if reveal == 0 {
-                continue;
-            }
-            let b_node = &w.nodes[link.b];
-            if !matches!(b_node.state, State::Alive) {
-                continue;
-            }
-            let bg = dim_bg(faction_hue(w, b_node.faction));
-            for &cell in link.path.iter().take(reveal) {
-                let cx = area.x as i32 + cell.0 as i32;
-                let cy = area.y as i32 + cell.1 as i32;
-                if cx < area.x as i32
-                    || cy < area.y as i32
-                    || cx >= area.right() as i32
-                    || cy >= area.bottom() as i32
-                {
-                    continue;
-                }
-                if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
+                if c.bg == Color::Reset {
                     c.set_bg(bg);
                 }
             }
         }
-        // Hotspot bg tint: slightly brighter than territory so the
-        // fiber zone reads through regardless of whose territory
-        // it sits inside.
+        // Hotspot bg tint: only paints empty / territory-colored
+        // cells; nodes and links keep their own bg so fiber zones
+        // don't blot out the mesh content inside them.
+        let hotspot_color = hotspot_bg(th.frame_accent);
         for hot in &w.hotspots {
             for y in hot.min.1..=hot.max.1 {
                 for x in hot.min.0..=hot.max.0 {
@@ -2370,13 +2342,20 @@ impl<'a> Widget for MeshWidget<'a> {
                         continue;
                     }
                     if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
-                        c.set_bg(hotspot_bg(th.frame_accent));
+                        // Only overwrite Reset (fully empty) or
+                        // our own dim territory bg, not node/link
+                        // bg values.
+                        if c.bg == Color::Reset {
+                            c.set_bg(hotspot_color);
+                        }
                     }
                 }
             }
         }
-        // Outage bg tint: darken cells inside an active dead zone
-        // so the offline region reads as a bruise on the mesh.
+        // Outage bg tint: same rule as hotspots — only paint
+        // cells that haven't had their bg baked in by a node or
+        // link draw already.
+        let outage_color = outage_bg(th.pwned_alt);
         for outage in &w.outages {
             for y in outage.min.1..=outage.max.1 {
                 for x in outage.min.0..=outage.max.0 {
@@ -2390,7 +2369,9 @@ impl<'a> Widget for MeshWidget<'a> {
                         continue;
                     }
                     if let Some(c) = buf.cell_mut((cx as u16, cy as u16)) {
-                        c.set_bg(outage_bg(th.pwned_alt));
+                        if c.bg == Color::Reset {
+                            c.set_bg(outage_color);
+                        }
                     }
                 }
             }
