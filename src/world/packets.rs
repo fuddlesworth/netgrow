@@ -11,7 +11,7 @@ use rand::Rng;
 
 use super::{
     octet_pair, BACKBONE_HOT_LINK, BACKBONE_PROMOTION_THRESHOLD, HOT_LINK, Infection,
-    InfectionStage, LinkKind, NodeId, Packet, PACKET_LOAD_INCREMENT, Role, State,
+    InfectionStage, LinkKind, NodeId, Packet, PACKET_LOAD_INCREMENT, Role, State, STRAIN_COUNT,
     WORM_LOAD_INCREMENT, WORM_STEP_INTERVAL, Worm, World,
 };
 
@@ -191,6 +191,9 @@ impl World {
         let c2_set: HashSet<NodeId> = self.c2_nodes.iter().copied().collect();
         let mut keep: Vec<Worm> = Vec::with_capacity(self.worms.len());
         let mut arrivals: Vec<(NodeId, u8, (i16, i16))> = Vec::new();
+        // (target, incoming_strain, existing_strain) — handled after
+        // the move loop so we can mutate target infection state.
+        let mut merges: Vec<(NodeId, u8, u8)> = Vec::new();
         for mut worm in std::mem::take(&mut self.worms) {
             let (link_a, link_b, link_len) = {
                 let link = &self.links[worm.link_id];
@@ -227,12 +230,16 @@ impl World {
                     let target = link_b;
                     let src = self.nodes[link_a].faction;
                     let dst = self.nodes[target].faction;
-                    if !c2_set.contains(&target)
-                        && matches!(self.nodes[target].state, State::Alive)
-                        && self.nodes[target].infection.is_none()
-                        && !blocked_by_alliance(self, src, dst)
-                    {
-                        arrivals.push((target, worm.strain, self.nodes[target].pos));
+                    let alive_target = matches!(self.nodes[target].state, State::Alive);
+                    let allied_block = blocked_by_alliance(self, src, dst);
+                    if !c2_set.contains(&target) && alive_target && !allied_block {
+                        match self.nodes[target].infection {
+                            None => arrivals
+                                .push((target, worm.strain, self.nodes[target].pos)),
+                            Some(existing) if existing.strain != worm.strain => merges
+                                .push((target, worm.strain, existing.strain)),
+                            _ => {}
+                        }
                     }
                     continue;
                 }
@@ -242,12 +249,16 @@ impl World {
                     let target = link_a;
                     let src = self.nodes[link_b].faction;
                     let dst = self.nodes[target].faction;
-                    if !c2_set.contains(&target)
-                        && matches!(self.nodes[target].state, State::Alive)
-                        && self.nodes[target].infection.is_none()
-                        && !blocked_by_alliance(self, src, dst)
-                    {
-                        arrivals.push((target, worm.strain, self.nodes[target].pos));
+                    let alive_target = matches!(self.nodes[target].state, State::Alive);
+                    let allied_block = blocked_by_alliance(self, src, dst);
+                    if !c2_set.contains(&target) && alive_target && !allied_block {
+                        match self.nodes[target].infection {
+                            None => arrivals
+                                .push((target, worm.strain, self.nodes[target].pos)),
+                            Some(existing) if existing.strain != worm.strain => merges
+                                .push((target, worm.strain, existing.strain)),
+                            _ => {}
+                        }
                     }
                     continue;
                 }
@@ -261,6 +272,37 @@ impl World {
             let (a, b) = octet_pair(pos);
             let name = self.strain_name(strain);
             self.push_log(format!("worm delivered {} @ 10.0.{}.{}", name, a, b));
+        }
+        // Strain merge: a worm landing on a node already infected
+        // with a different strain combines the two. The hybrid
+        // inherits the maximum cure_resist of the parents (capped at
+        // VETERAN_CURE_RESIST_CAP) and a deterministic strain id
+        // derived from the parents so the same combo always picks
+        // the same name.
+        for (target, incoming, existing) in merges {
+            let existing_resist =
+                self.nodes[target].infection.map(|i| i.cure_resist).unwrap_or(0);
+            let merged_resist = existing_resist
+                .saturating_add(1)
+                .min(super::VETERAN_CURE_RESIST_CAP);
+            let merged_strain =
+                ((incoming as u32 + existing as u32 + 1) as usize) % STRAIN_COUNT;
+            let mut merged = Infection::seeded(merged_strain as u8, merged_resist);
+            merged.veteran_rank = self.nodes[target]
+                .infection
+                .map(|i| i.veteran_rank)
+                .unwrap_or(0)
+                .saturating_add(1);
+            self.nodes[target].infection = Some(merged);
+            let pos = self.nodes[target].pos;
+            let (a, b) = octet_pair(pos);
+            let name_in = self.strain_name(incoming);
+            let name_ex = self.strain_name(existing);
+            let name_new = self.strain_name(merged_strain as u8);
+            self.push_log(format!(
+                "✦ hybrid ✦ {} × {} → {} @ 10.0.{}.{}",
+                name_in, name_ex, name_new, a, b
+            ));
         }
     }
 
