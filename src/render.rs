@@ -1933,13 +1933,13 @@ impl<'a> Widget for MeshWidget<'a> {
             } else {
                 Style::default().fg(branch_hue(b.branch_id))
             };
-            // Bake a bg block onto every link cell so links always
-            // read as colored strips, not bare foreground lines.
-            let link_bg = dim_bg(
-                style
-                    .fg
-                    .unwrap_or(branch_hue(b.branch_id)),
-            );
+            // Bake the territory bg onto every link cell so links
+            // always read as part of their faction's region
+            // instead of punching a hole through it. Uses the
+            // child endpoint's faction hue so the bg matches
+            // what the territory post-pass would draw for this
+            // same cell if it were empty.
+            let link_bg = dim_bg(faction_hue(w, b.faction));
             let style = style.bg(link_bg);
             let reveal = if dying || dead {
                 link.path.len()
@@ -2142,16 +2142,17 @@ impl<'a> Widget for MeshWidget<'a> {
         // 4. Nodes
         for node in &w.nodes {
             let (glyph, style) = node_glyph(node, w.tick, w);
-            // Bake a bg block behind every node so nodes render
-            // as highlighted chiclets instead of bare glyphs.
-            // Skip nodes that already set a bg in their style
-            // (dying flashes, cursor highlights, etc.) so we
-            // don't clobber event overlays.
-            let node_bg_color = dim_bg(style.fg.unwrap_or(theme().value));
+            // Bake the territory bg behind every node so nodes
+            // sit inside their faction's colored region instead
+            // of on a teal/cyan chiclet derived from their fg.
+            // Skip when the returned style already set a bg
+            // (dying flashes, cursor highlight, etc.) so event
+            // overlays keep their own look.
+            let territory_bg = dim_bg(faction_hue(w, node.faction));
             let style = if style.bg.is_some() {
                 style
             } else {
-                style.bg(node_bg_color)
+                style.bg(territory_bg)
             };
             put(buf, area, node.pos, glyph, style);
         }
