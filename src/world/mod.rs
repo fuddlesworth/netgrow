@@ -2375,6 +2375,63 @@ impl World {
         });
     }
 
+    /// Syndicate vote pass. When 3+ factions are alive and one
+    /// is running away with dominance (>= 45% of total alive
+    /// nodes), the remaining factions can call a "cartel vote"
+    /// that bumps pressure hard against the dominant faction
+    /// from every other faction's side and fires a one-off
+    /// skirmish wave on its border cells. Anti-dominance valve:
+    /// a soft check on runaway leaders without taking control
+    /// away from the sim.
+    fn maybe_syndicate_vote(&mut self) {
+        if !self.tick.is_multiple_of(500) || self.tick == 0 {
+            return;
+        }
+        if self.c2_nodes.len() < 3 {
+            return;
+        }
+        // Count alive per faction and find the dominant one.
+        let counts = self.faction_alive_counts();
+        let total: u32 = counts.iter().sum();
+        if total < 20 {
+            return;
+        }
+        let alive_factions: Vec<u8> = (0..counts.len() as u8)
+            .filter(|&f| {
+                let c2 = self.c2_nodes[f as usize];
+                matches!(self.nodes[c2].state, State::Alive) && counts[f as usize] > 0
+            })
+            .collect();
+        if alive_factions.len() < 3 {
+            return;
+        }
+        let dominant = alive_factions
+            .iter()
+            .copied()
+            .max_by_key(|&f| counts[f as usize])
+            .unwrap();
+        let share = counts[dominant as usize] as f32 / total as f32;
+        if share < 0.45 {
+            return;
+        }
+        // 30% roll gate so it doesn't fire every sample period.
+        if !self.rng.gen_bool(0.3) {
+            return;
+        }
+        // Apply the cartel pressure spike: every other faction
+        // bumps rivalry against the dominant faction by 35.
+        for &other in &alive_factions {
+            if other == dominant {
+                continue;
+            }
+            self.bump_rivalry(dominant, other, 35);
+        }
+        self.push_log(format!(
+            "✦ MYTHIC ✦ SYNDICATE VOTE — cartel pile-on against F{}",
+            dominant
+        ));
+    }
+
     /// Black-market link pass. Opportunist factions periodically
     /// upgrade one of their own cross-links to temporary
     /// backbone-grade capacity for a window (~500 ticks). While
@@ -3183,6 +3240,7 @@ impl World {
         self.maybe_assimilate();
         self.maybe_mercenary_auction();
         self.maybe_black_market_link();
+        self.maybe_syndicate_vote();
         self.maybe_defector();
         self.maybe_border_skirmish();
 
