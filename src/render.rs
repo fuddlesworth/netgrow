@@ -1019,33 +1019,52 @@ impl<'a> Widget for MeshWidget<'a> {
             }
         }
 
-        // 0b. Storm crackle — sparse bright accent flickers scattered
-        // across the mesh while a storm is active. Ties directly to
-        // the `storm_until` state that otherwise only affects spawn
-        // and loss rates, so the viewer can feel the storm in the
-        // empty space and not just in the stats panel.
+        // 0b. Storm crackle — a directional front rolling down from
+        // the top edge of the mesh. Each active storm picks a
+        // direction (dx, 1) at spawn, where dx ∈ {-1, 0, 1} so the
+        // front can march straight down, down-left, or down-right.
+        // The front is a thick band centered on the current advance
+        // offset; within that band a small number of cells get a
+        // random bright flicker. Cells well ahead of or behind the
+        // front stay clear so the wave reads as weather rolling in.
         if storming {
-            let density = ((bounds.0 as u32) * (bounds.1 as u32) / 180).max(4);
-            for i in 0..density {
-                let h = (w.tick as u32)
-                    .wrapping_mul(1103515245)
-                    .wrapping_add(i.wrapping_mul(2654435761))
-                    .wrapping_add(12345);
-                let cx = (h % (bounds.0 as u32)) as i16;
-                let cy = ((h / (bounds.0 as u32)) % (bounds.1 as u32)) as i16;
-                let cell = (cx, cy);
-                if node_cells.contains(&cell) {
-                    continue;
+            let elapsed = w.tick.saturating_sub(w.storm_since) as i16;
+            let (fdx, fdy) = (w.storm_dir.0 as i16, w.storm_dir.1.max(1) as i16);
+            // Front band: half-width 3 cells, perpendicular to the
+            // direction vector. We shade cells whose projection
+            // onto the direction vector lies within the band.
+            const BAND_HALF: i16 = 3;
+            for y in 0..bounds.1 {
+                for x in 0..bounds.0 {
+                    // Signed distance of this cell from the rolling
+                    // front along the (dx, dy) direction. When dx=0
+                    // this collapses to `y - elapsed`; with dx!=0
+                    // the front tilts diagonally.
+                    let dist = (y - elapsed) * fdy + (x * fdx) / 2;
+                    if dist.abs() > BAND_HALF {
+                        continue;
+                    }
+                    let cell = (x, y);
+                    if node_cells.contains(&cell) {
+                        continue;
+                    }
+                    // Sparse flicker — only ~1 in 6 band cells get a
+                    // glyph, with a tick-salted stipple so the
+                    // pattern shimmers as the front advances.
+                    let key = (x as u32).wrapping_mul(2654435761)
+                        ^ (y as u32).wrapping_mul(40503)
+                        ^ (w.tick as u32).wrapping_mul(2246822519);
+                    if !key.is_multiple_of(6) {
+                        continue;
+                    }
+                    put(
+                        buf,
+                        area,
+                        cell,
+                        "⁺",
+                        Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
+                    );
                 }
-                put(
-                    buf,
-                    area,
-                    cell,
-                    "⁺",
-                    Style::default()
-                        .fg(th.accent)
-                        .add_modifier(Modifier::DIM),
-                );
             }
         }
 

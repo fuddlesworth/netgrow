@@ -157,6 +157,14 @@ pub struct World {
     /// Tick at which the current network storm ends. 0 if no storm is
     /// active. Storms spike both spawn and loss rates for a short burst.
     pub storm_until: u64,
+    /// Tick the current storm started at. Paired with `storm_until`
+    /// so the renderer can compute the front's advance along the
+    /// storm's direction vector.
+    pub storm_since: u64,
+    /// Direction the current storm's crackle front is rolling.
+    /// Always starts at the top edge and moves downward (dy = 1),
+    /// with an optional left or right drift (dx ∈ {-1, 0, 1}).
+    pub storm_dir: (i8, i8),
     /// Display name per strain id. Selected once at World::new from
     /// STRAIN_NAME_POOL using the seeded RNG, so a fixed seed always
     /// produces the same strain identities.
@@ -681,6 +689,8 @@ impl World {
             alliances: Vec::new(),
             next_branch_id: 1,
             storm_until: 0,
+            storm_since: 0,
+            storm_dir: (0, 1),
             strain_names,
             faction_stats: vec![FactionStats::default(); count],
             mythic_pandemic_seen: false,

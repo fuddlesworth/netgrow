@@ -410,6 +410,12 @@ impl World {
             return;
         }
         self.storm_until = self.tick + self.cfg.storm_duration;
+        self.storm_since = self.tick;
+        // Storm front always rolls downward from the top edge and
+        // can drift left, straight, or right. Picked fresh for each
+        // storm so consecutive storms read as distinct weather.
+        let dx = self.rng.gen_range(-1..=1i8);
+        self.storm_dir = (dx, 1);
         self.push_log("⚡ STORM — mesh destabilizing".to_string());
     }
 }
