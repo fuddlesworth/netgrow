@@ -103,10 +103,16 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     );
 
     let inspector_height: u16 = if ui.cursor.is_some() { 11 } else { 0 };
+    // factions panel sizes to exactly fit its rows + border. Always
+    // reserve at least one content row so the border has something
+    // to frame even on a fresh single-faction run.
+    let faction_rows = world.faction_stats.len().max(1) as u16;
+    let factions_height: u16 = faction_rows + 2;
     let right_rows = Layout::vertical([
         Constraint::Length(8), // stats: 6 content rows + border
         Constraint::Length(5), // activity: 3 braille content rows + border
-        Constraint::Length(8), // roles: 6 content rows + border
+        Constraint::Length(factions_height), // per-faction prestige rows + border
+        Constraint::Length(7), // roles: 5 content rows + border
         Constraint::Length(inspector_height),
         Constraint::Min(5),
     ])
@@ -114,11 +120,12 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
 
     frame.render_widget(stats_block(&stats, world.cfg.max_nodes), right_rows[0]);
     frame.render_widget(activity_block(world, right_rows[1].width), right_rows[1]);
-    frame.render_widget(legend_block(), right_rows[2]);
+    frame.render_widget(factions_block(world), right_rows[2]);
+    frame.render_widget(legend_block(), right_rows[3]);
     if let Some(pos) = ui.cursor {
-        frame.render_widget(inspector_block(world, pos), right_rows[3]);
+        frame.render_widget(inspector_block(world, pos), right_rows[4]);
     }
-    frame.render_widget(log_block(world), right_rows[4]);
+    frame.render_widget(log_block(world), right_rows[5]);
 }
 
 fn activity_block(world: &World, panel_width: u16) -> Paragraph<'static> {
@@ -305,26 +312,16 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
     // Era indicator moved to the mesh border title — see MeshWidget.
     spans.push(sep());
     spans.push(stat_span("nodes", format!("{}", stats.alive + stats.pwned)));
-    // Prestige readout: always-on, so single-faction runs still show
-    // their one C2 and the reader can count how many C2s are alive.
-    // Each entry is score + 8-sample trend sparkline, colored by hue.
+    // Full per-faction prestige readout lives in its own right-column
+    // panel (factions_block) so it stops pushing other header stats
+    // off the right side on busy multi-faction runs. Keep a compact
+    // count here for at-a-glance awareness.
     if !world.faction_stats.is_empty() {
         spans.push(sep());
-        for (i, fs) in world.faction_stats.iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::raw(" "));
-            }
-            let hue = faction_hue(i as u8);
-            spans.push(Span::styled(
-                format!("F{}:{:+}", i, fs.score()),
-                Style::default().fg(hue).add_modifier(Modifier::BOLD),
-            ));
-            let samples: Vec<u32> = fs.history.iter().copied().collect();
-            let spark = sparkline(&samples);
-            if !spark.is_empty() {
-                spans.push(Span::styled(spark, Style::default().fg(hue)));
-            }
-        }
+        spans.push(stat_span(
+            "factions",
+            format!("{}", world.faction_stats.len()),
+        ));
     }
     spans.push(sep());
     spans.push(stat_span("branches", format!("{}", stats.branches)));
@@ -469,6 +466,36 @@ fn stats_block(s: &WorldStats, max_nodes: usize) -> Paragraph<'static> {
         row_plain("branches", s.branches, branch_color),
         row_plain("bridges", s.cross_links, th.cross_link),
     ];
+    Paragraph::new(lines).block(block)
+}
+
+fn factions_block(world: &World) -> Paragraph<'static> {
+    let th = theme();
+    let block = bordered_block(" factions ");
+    let label_style = Style::default().fg(th.label);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(world.faction_stats.len());
+    for (i, fs) in world.faction_stats.iter().enumerate() {
+        let hue = faction_hue(i as u8);
+        let samples: Vec<u32> = fs.history.iter().copied().collect();
+        let spark = sparkline(&samples);
+        let alive = samples.last().copied().unwrap_or(0);
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                format!("F{}", i),
+                Style::default().fg(hue).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(format!("{:>4}", alive), label_style),
+            Span::raw("  "),
+            Span::styled(
+                format!("{:>+5}", fs.score()),
+                Style::default().fg(hue).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(spark, Style::default().fg(hue)),
+        ]));
+    }
     Paragraph::new(lines).block(block)
 }
 
