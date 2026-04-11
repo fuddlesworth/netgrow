@@ -211,10 +211,65 @@ impl World {
             while stats.history.len() > FACTION_HISTORY_LEN {
                 stats.history.pop_front();
             }
+            if count > stats.peak_alive {
+                stats.peak_alive = count;
+            }
         }
         self.activity_history.push_back(total);
         while self.activity_history.len() > ACTIVITY_HISTORY_LEN {
             self.activity_history.pop_front();
+        }
+    }
+
+    /// Reactive persona shifts based on current vs peak vs average
+    /// alive counts. A faction that's lost most of its peak flips to
+    /// Fortress (turtle); a faction running well above the average
+    /// flips to Aggressor (expansion). Plague factions hold their
+    /// viral identity and never shift. Runs on the same slow cadence
+    /// as the faction sampler so flips read as deliberate state
+    /// changes, not jitter.
+    fn maybe_shift_personas(&mut self) {
+        if self.faction_stats.len() < 2 {
+            return;
+        }
+        let counts: Vec<u32> = self
+            .faction_stats
+            .iter()
+            .map(|fs| fs.history.back().copied().unwrap_or(0))
+            .collect();
+        let total: u32 = counts.iter().sum();
+        let avg = total as f32 / counts.len() as f32;
+        let mut shifts: Vec<(usize, Persona, Persona)> = Vec::new();
+        for (i, fs) in self.faction_stats.iter().enumerate() {
+            let cur = counts[i] as f32;
+            let peak = fs.peak_alive as f32;
+            let Some(persona) = self.personas.get(i).copied() else {
+                continue;
+            };
+            // Plague factions stay Plague — their identity is viral,
+            // not state-driven.
+            if matches!(persona, Persona::Plague) {
+                continue;
+            }
+            let target = if peak >= 8.0 && cur <= peak * 0.4 {
+                Persona::Fortress
+            } else if avg >= 4.0 && cur >= avg * 1.5 {
+                Persona::Aggressor
+            } else {
+                Persona::Opportunist
+            };
+            if target != persona {
+                shifts.push((i, persona, target));
+            }
+        }
+        for (i, from, to) in shifts {
+            self.personas[i] = to;
+            self.push_log(format!(
+                "F{} persona shift: {} → {}",
+                i,
+                from.display_name(),
+                to.display_name()
+            ));
         }
     }
 
@@ -646,6 +701,8 @@ impl World {
         // Sample faction alive counts for the header sparkline.
         if self.tick.is_multiple_of(FACTION_SAMPLE_PERIOD) {
             self.sample_faction_history();
+            // Reactive persona shifts based on current vs peak/avg.
+            self.maybe_shift_personas();
             // Check for legendary-node promotions on the same cadence.
             self.maybe_promote_legendary();
             // Slow rivalry decay so old feuds eventually fade.

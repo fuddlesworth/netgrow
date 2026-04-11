@@ -518,6 +518,10 @@ pub struct FactionStats {
     /// Sampled on a slow cadence so the header sparkline reads as a
     /// smooth trend rather than a jittering count.
     pub history: VecDeque<u32>,
+    /// Highest alive-count this faction has ever reached. Used by the
+    /// dynamic persona-shift rule: when current alive drops well
+    /// below the peak, the faction flips to a defensive persona.
+    pub peak_alive: u32,
 }
 
 impl FactionStats {
