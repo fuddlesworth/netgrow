@@ -435,6 +435,26 @@ pub struct Wormhole {
     pub life: u16,
 }
 
+/// Fixed-position fiber zone rolled at world creation. Nodes
+/// spawned inside a hotspot start with bonus pwn_resist (a small
+/// defensive head-start), and links whose cells overlap a
+/// hotspot cool faster on traffic decay. Persistent — hotspots
+/// live for the entire run so factions can fight over them.
+#[derive(Clone, Debug)]
+pub struct Hotspot {
+    pub min: (i16, i16),
+    pub max: (i16, i16),
+}
+
+impl Hotspot {
+    pub fn contains(&self, pos: (i16, i16)) -> bool {
+        pos.0 >= self.min.0
+            && pos.0 <= self.max.0
+            && pos.1 >= self.min.1
+            && pos.1 <= self.max.1
+    }
+}
+
 /// Rare environmental event — a horizontal or vertical slice
 /// through the mesh that briefly blocks traffic from crossing it.
 /// Packets and worms whose link spans both sides are dropped at

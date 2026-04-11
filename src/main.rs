@@ -499,6 +499,14 @@ fn main() -> io::Result<()> {
                     (KeyCode::Char('v'), _) => {
                         view = view.next();
                     }
+                    // Faction favoritism: press a digit 1-9 to
+                    // boost that faction's spawn rolls for a
+                    // configurable window. Out-of-range digits
+                    // no-op silently inside favor_faction.
+                    (KeyCode::Char(d @ '1'..='9'), _) => {
+                        let faction = (d as u8) - b'1';
+                        world.favor_faction(faction);
+                    }
                     (KeyCode::Left, _) if cursor.is_some() => {
                         if let Some(c) = cursor.as_mut() {
                             c.0 = (c.0 - 1).max(0);

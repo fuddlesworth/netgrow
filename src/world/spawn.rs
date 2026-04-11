@@ -334,6 +334,13 @@ impl World {
                             weight *= beacon_mult;
                         }
                     }
+                    // Faction favoritism boost: when the user has
+                    // engaged a 1-9 hotkey, multiply that faction's
+                    // candidate weight so it dominates the parent
+                    // roll for the favor window.
+                    if self.is_favored(n.faction) {
+                        weight *= super::FAVOR_WEIGHT_MULT;
+                    }
                     Some((i, weight))
                 }
                 _ => None,
@@ -441,6 +448,13 @@ impl World {
         node.faction = faction;
         if role == Role::Tower {
             node.pwn_resist = self.cfg.tower_pwn_resist;
+        }
+        // Terrain bonus: nodes spawned inside a fiber zone start
+        // with a small pwn_resist boost, giving factions that
+        // expand into a hotspot a defensive head-start.
+        if self.hotspots.iter().any(|h| h.contains(cand)) {
+            node.pwn_resist = node.pwn_resist.saturating_add(3);
+            node.mutated_flash = 4;
         }
         // Sleeper agent: rare chance the node is secretly loyal to a
         // different faction. Only viable when at least two factions

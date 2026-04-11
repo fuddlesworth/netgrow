@@ -750,6 +750,21 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
                 .add_modifier(Modifier::BOLD),
         ));
     }
+    // Active faction-favoritism boost readout. Shows the boosted
+    // faction and the remaining ticks on the window so the viewer
+    // knows when their 1-9 nudge will wear off.
+    if let Some(fav) = world.favored_faction {
+        if world.tick < world.favor_expires_tick {
+            let remaining = world.favor_expires_tick.saturating_sub(world.tick);
+            spans.push(sep());
+            spans.push(Span::styled(
+                format!("↑ F{} favored ({}t)", fav, remaining),
+                Style::default()
+                    .fg(faction_hue(world, fav))
+                    .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            ));
+        }
+    }
     spans.push(sep());
     spans.push(stat_span("branches", format!("{}", stats.branches)));
     spans.push(sep());
@@ -851,8 +866,8 @@ fn footer_bar(ui: UiState) -> Paragraph<'static> {
                 format!(" view ({}) ", ui.view.label()),
                 Style::default().fg(th.label),
             ),
-            key("i"),
-            lab(" inject "),
+            key("1-9"),
+            lab(" favor "),
         ]);
     }
     spans.push(Span::raw(" "));
@@ -1676,6 +1691,54 @@ impl<'a> Widget for MeshWidget<'a> {
                 style = style.add_modifier(Modifier::BOLD);
             }
             put(buf, area, cell, TERRITORY_GLYPH, style);
+        }
+
+        // 0a-quater. Fiber hotspot zones — persistent fixed
+        // terrain rolled at world creation. Drawn after territory
+        // (so the hotspot tint wins over faction shading) but
+        // before outages/partitions/nodes (so event overlays
+        // still sit on top). Renders as a dim accent-tinted
+        // diamond fill + bracket corners so the strategic
+        // territory reads as a deliberate box.
+        for (idx, hot) in w.hotspots.iter().enumerate() {
+            for y in hot.min.1..=hot.max.1 {
+                for x in hot.min.0..=hot.max.0 {
+                    let cell = (x, y);
+                    if node_cells.contains(&cell) {
+                        continue;
+                    }
+                    let key = (x as u32).wrapping_mul(2654435761)
+                        ^ (y as u32).wrapping_mul(40503);
+                    if !key.is_multiple_of(3) {
+                        continue;
+                    }
+                    put(
+                        buf,
+                        area,
+                        cell,
+                        "◈",
+                        Style::default().fg(th.frame_accent),
+                    );
+                }
+            }
+            let corners = [
+                (hot.min, "┏"),
+                ((hot.max.0, hot.min.1), "┓"),
+                ((hot.min.0, hot.max.1), "┗"),
+                (hot.max, "┛"),
+            ];
+            for (cell, glyph) in corners {
+                put(
+                    buf,
+                    area,
+                    cell,
+                    glyph,
+                    Style::default()
+                        .fg(th.accent)
+                        .add_modifier(Modifier::BOLD),
+                );
+            }
+            let _ = idx;
         }
 
         // 0a-bis. ISP outage zones — dim hatched fill across the

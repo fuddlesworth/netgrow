@@ -94,6 +94,13 @@ pub const IMMUNITY_DURATION_TICKS: u16 = 180;
 /// strength gap, so minor diversity doesn't get squashed.
 pub const STRAIN_OUTCOMPETE_CHANCE: f32 = 0.01;
 
+/// Ticks a favoritism boost lasts after a single 1-9 key press.
+pub const FAVOR_DURATION_TICKS: u64 = 300;
+/// Spawn-weight multiplier applied to the favored faction's parent
+/// weight while the favor window is active. 2x roughly doubles
+/// its odds of being picked as the next spawn's parent.
+pub const FAVOR_WEIGHT_MULT: f32 = 2.5;
+
 /// Minimum age (in ticks) a node needs before it can be promoted to
 /// legendary status. Combined with `LEGENDARY_MIN_CHILDREN` to gate
 /// the rare long-lived, reproductive characters.
@@ -249,6 +256,15 @@ pub struct World {
     /// Cumulative count of distinct dominance declarations fired
     /// this run, so the summary can show 'F0 crowned 3 times'.
     pub dominance_shifts: u32,
+    /// Fixed fiber-zone terrain rolled at world creation. Nodes
+    /// spawned inside a hotspot start with bonus pwn_resist so
+    /// factions have territory worth contesting.
+    pub hotspots: Vec<Hotspot>,
+    /// Currently-favored faction (via cursor-mode 1-8 hotkey).
+    /// Boost expires at `favor_expires_tick`; when elapsed, the
+    /// field clears and spawn rolls stop biasing.
+    pub favored_faction: Option<u8>,
+    pub favor_expires_tick: u64,
 }
 
 impl World {
@@ -545,6 +561,28 @@ impl World {
             let (a, b) = octet_pair(pos);
             self.push_log(format!("✦ legend ✦ {} rises @ 10.0.{}.{}", name, a, b));
         }
+    }
+
+    /// Engage faction favoritism for `faction` for
+    /// `FAVOR_DURATION_TICKS` ticks. Used by the 1-9 hotkeys.
+    /// Refuses silently when the faction id is out of range so
+    /// stray key presses don't surprise the user.
+    pub fn favor_faction(&mut self, faction: u8) {
+        if (faction as usize) >= self.faction_stats.len() {
+            return;
+        }
+        self.favored_faction = Some(faction);
+        self.favor_expires_tick = self.tick + FAVOR_DURATION_TICKS;
+        self.push_log(format!(
+            "✦ favored ✦ F{} gets a spawn boost ({}t)",
+            faction, FAVOR_DURATION_TICKS
+        ));
+    }
+
+    /// True if the given faction currently holds an active
+    /// favoritism boost.
+    pub fn is_favored(&self, faction: u8) -> bool {
+        self.favored_faction == Some(faction) && self.tick < self.favor_expires_tick
     }
 
     /// Drop a patch wave at `origin`. Uses the same geometry as
@@ -906,6 +944,37 @@ impl World {
             logs.push_back((format!("c2[{}] online @ {},{}", i, pos.0, pos.1), 1));
         }
 
+        // Roll 2-4 fixed hotspot fiber zones at world creation.
+        // Each hotspot is a rectangle in the middle of the mesh
+        // (leaving a margin on all sides) with sides in [5..9].
+        // They're placed without overlap checks — a little overlap
+        // produces double-dense "super zones" which is fine
+        // flavor.
+        let hotspot_count = rng.gen_range(2..=4);
+        let mut hotspots_init: Vec<Hotspot> = Vec::with_capacity(hotspot_count);
+        for _ in 0..hotspot_count {
+            if bounds.0 < 12 || bounds.1 < 12 {
+                break;
+            }
+            let w_side = rng.gen_range(5..=9).min(bounds.0 - 6);
+            let h_side = rng.gen_range(5..=9).min(bounds.1 - 6);
+            let x0 = rng.gen_range(3..(bounds.0 - w_side - 3));
+            let y0 = rng.gen_range(3..(bounds.1 - h_side - 3));
+            hotspots_init.push(Hotspot {
+                min: (x0, y0),
+                max: (x0 + w_side, y0 + h_side),
+            });
+        }
+        for (i, h) in hotspots_init.iter().enumerate() {
+            logs.push_back((
+                format!(
+                    "fiber zone #{} {},{}..{},{}",
+                    i, h.min.0, h.min.1, h.max.0, h.max.1
+                ),
+                1,
+            ));
+        }
+
         // Pick a persona per faction before moving rng into self.
         let personas: Vec<Persona> = (0..count)
             .map(|_| match rng.gen_range(0..4) {
@@ -969,6 +1038,9 @@ impl World {
             wars: HashMap::new(),
             current_dominant: None,
             dominance_shifts: 0,
+            hotspots: hotspots_init,
+            favored_faction: None,
+            favor_expires_tick: 0,
         }
     }
 
@@ -1047,6 +1119,10 @@ impl World {
         }
         // Expire any wars whose windows have elapsed.
         self.wars.retain(|_, exp| *exp > self.tick);
+        // Expire the faction favoritism boost.
+        if self.favored_faction.is_some() && self.tick >= self.favor_expires_tick {
+            self.favored_faction = None;
+        }
 
         // Phase 1: growth — add new nodes and extend link animations.
         self.try_spawn();
