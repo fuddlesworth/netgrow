@@ -514,6 +514,11 @@ pub struct FactionStats {
     pub lost: u32,
     pub honeys_tripped: u32,
     pub infections_cured: u32,
+    /// Cumulative exfil packets that successfully delivered to this
+    /// faction's C2 (or were absorbed by one of its Routers).
+    /// Climbs monotonically over a run and feeds into the score so
+    /// exfil deliveries have tangible long-term value.
+    pub intel: u32,
     /// Recent alive-node count samples, bounded to FACTION_HISTORY_LEN.
     /// Sampled on a slow cadence so the header sparkline reads as a
     /// smooth trend rather than a jittering count.
@@ -532,6 +537,7 @@ impl FactionStats {
         self.spawned as i32 - 3 * (self.lost as i32)
             + 5 * (self.honeys_tripped as i32)
             + 2 * (self.infections_cured as i32)
+            + 3 * (self.intel as i32)
     }
 }
 

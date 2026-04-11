@@ -67,6 +67,12 @@ impl World {
                 let parent_id = link_a;
                 if self.is_c2(parent_id) {
                     *delivery_credits.entry(pkt.link_id).or_default() += 1;
+                    // Credit the C2's faction with one unit of
+                    // intel for the successful exfil delivery.
+                    let fac = self.nodes[parent_id].faction as usize;
+                    if let Some(s) = self.faction_stats.get_mut(fac) {
+                        s.intel = s.intel.saturating_add(1);
+                    }
                     continue; // delivered
                 }
                 // Router absorption — this parent caches most of
@@ -78,6 +84,14 @@ impl World {
                 {
                     self.nodes[parent_id].pulse = 3;
                     *delivery_credits.entry(pkt.link_id).or_default() += 1;
+                    // Router caches also contribute intel to the
+                    // owning faction — the data made it to a
+                    // legitimate caching layer, not just onto the
+                    // wire.
+                    let fac = self.nodes[parent_id].faction as usize;
+                    if let Some(s) = self.faction_stats.get_mut(fac) {
+                        s.intel = s.intel.saturating_add(1);
+                    }
                     continue;
                 }
                 if let Some(&next_link) = inbound.get(&parent_id) {

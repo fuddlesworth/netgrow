@@ -419,6 +419,7 @@ fn summary_totals_block(world: &World) -> Paragraph<'static> {
     let total_lost: u32 = world.faction_stats.iter().map(|f| f.lost).sum();
     let total_honeys: u32 = world.faction_stats.iter().map(|f| f.honeys_tripped).sum();
     let total_cured: u32 = world.faction_stats.iter().map(|f| f.infections_cured).sum();
+    let total_intel: u32 = world.faction_stats.iter().map(|f| f.intel).sum();
     let total_score: i32 = world.faction_stats.iter().map(|f| f.score()).sum();
     let alive: usize = world
         .nodes
@@ -445,6 +446,7 @@ fn summary_totals_block(world: &World) -> Paragraph<'static> {
         row("lost", format!("{}", total_lost), th.pwned),
         row("cured", format!("{}", total_cured), th.defender),
         row("traps", format!("{}", total_honeys), th.accent),
+        row("intel", format!("{}", total_intel), th.stat_packets),
         row("alive", format!("{}", alive), th.value),
         row("dead", format!("{}", dead), th.ghost),
         row("branches", format!("{}", branches.len()), th.frame_accent),
@@ -522,8 +524,8 @@ fn summary_leaderboard_block(world: &World) -> Paragraph<'static> {
             Span::styled(bar, Style::default().fg(hue)),
             Span::styled(
                 format!(
-                    "  spawn {:<4} lost {:<4} traps {:<3} cured {}",
-                    fs.spawned, fs.lost, fs.honeys_tripped, fs.infections_cured
+                    "  spawn {:<4} lost {:<4} intel {:<4} cured {}",
+                    fs.spawned, fs.lost, fs.intel, fs.infections_cured
                 ),
                 Style::default().fg(th.stat_label),
             ),
