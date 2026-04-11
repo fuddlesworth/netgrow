@@ -11,6 +11,17 @@ use crate::world::{
     node_ip, InfectionStage, LinkKind, Node, Role, State, World, WorldStats, HOT_LINK, WARM_LINK,
 };
 
+/// Chebyshev radius a territory tint spreads from an alive node into
+/// empty background cells. Kept tight so the mesh still breathes;
+/// larger values would paint the whole grid at dense populations.
+const TERRITORY_RADIUS: i16 = 4;
+/// Chars used for the faction territory background tint, indexed by
+/// atmospheric mood (day/night/storm). Each is a sparser shade than
+/// the previous so the background gets progressively thinner after
+/// sundown and during a storm the lines break up entirely.
+const TERRITORY_DAY: &str = "░";
+const TERRITORY_NIGHT: &str = "·";
+
 const RIGHT_COL_WIDTH: u16 = 41;
 const HEADER_HEIGHT: u16 = 1;
 const FOOTER_HEIGHT: u16 = 1;
@@ -745,6 +756,119 @@ pub struct MeshWidget<'a> {
 impl<'a> Widget for MeshWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let w = self.world;
+        let th = theme();
+
+        // 0a. Faction territory tint — a multi-source BFS from every
+        // alive node stains empty cells within TERRITORY_RADIUS with
+        // the nearest faction's hue. Painted first so links, nodes,
+        // and every later effect overwrite it naturally. Makes
+        // borders, assimilation shifts, and skirmish frontiers
+        // visible in the background without competing with foreground
+        // mesh state.
+        let bounds = w.bounds;
+        let mut territory: std::collections::HashMap<(i16, i16), u8> =
+            std::collections::HashMap::new();
+        let mut queue: std::collections::VecDeque<((i16, i16), u8, i16)> =
+            std::collections::VecDeque::new();
+        for n in &w.nodes {
+            if !matches!(n.state, State::Alive) {
+                continue;
+            }
+            territory.insert(n.pos, n.faction);
+            queue.push_back((n.pos, n.faction, 0));
+        }
+        const NEIGH: [(i16, i16); 8] = [
+            (1, 0),
+            (-1, 0),
+            (0, 1),
+            (0, -1),
+            (1, 1),
+            (1, -1),
+            (-1, 1),
+            (-1, -1),
+        ];
+        while let Some((pos, f, d)) = queue.pop_front() {
+            if d >= TERRITORY_RADIUS {
+                continue;
+            }
+            for (dx, dy) in NEIGH {
+                let np = (pos.0 + dx, pos.1 + dy);
+                if np.0 < 0 || np.1 < 0 || np.0 >= bounds.0 || np.1 >= bounds.1 {
+                    continue;
+                }
+                if territory.contains_key(&np) {
+                    continue;
+                }
+                territory.insert(np, f);
+                queue.push_back((np, f, d + 1));
+            }
+        }
+        // Atmospheric mood drives which shade glyph the tint uses and
+        // whether we skip every other cell. Night thins the tint;
+        // storms break it up further. Both are already-tracked sim
+        // states we previously only expressed via spawn/loss rate
+        // multipliers — now they have a visible footprint too.
+        let night = w.is_night();
+        let storming = w.is_storming();
+        let shade = if night || storming {
+            TERRITORY_NIGHT
+        } else {
+            TERRITORY_DAY
+        };
+        let node_cells: std::collections::HashSet<(i16, i16)> =
+            w.nodes.iter().map(|n| n.pos).collect();
+        for (&cell, &fac) in &territory {
+            // Don't waste writes under nodes — their glyphs would
+            // overwrite us anyway and we want the tint to read as
+            // strictly surround rather than underlay.
+            if node_cells.contains(&cell) {
+                continue;
+            }
+            // Deterministic stipple based on tick + cell so the
+            // pattern gently shimmers without global flicker.
+            let key = (cell.0 as u32)
+                .wrapping_mul(2654435761)
+                ^ (cell.1 as u32).wrapping_mul(40503)
+                ^ (w.tick as u32).wrapping_mul(2246822519);
+            let thin = night || storming;
+            if thin && (key & 1) == 0 {
+                continue;
+            }
+            let style = Style::default()
+                .fg(faction_hue(fac))
+                .add_modifier(Modifier::DIM);
+            put(buf, area, cell, shade, style);
+        }
+
+        // 0b. Storm crackle — sparse bright accent flickers scattered
+        // across the mesh while a storm is active. Ties directly to
+        // the `storm_until` state that otherwise only affects spawn
+        // and loss rates, so the viewer can feel the storm in the
+        // empty space and not just in the stats panel.
+        if storming {
+            let density = ((bounds.0 as u32) * (bounds.1 as u32) / 180).max(4);
+            for i in 0..density {
+                let h = (w.tick as u32)
+                    .wrapping_mul(1103515245)
+                    .wrapping_add(i.wrapping_mul(2654435761))
+                    .wrapping_add(12345);
+                let cx = (h % (bounds.0 as u32)) as i16;
+                let cy = ((h / (bounds.0 as u32)) % (bounds.1 as u32)) as i16;
+                let cell = (cx, cy);
+                if node_cells.contains(&cell) {
+                    continue;
+                }
+                put(
+                    buf,
+                    area,
+                    cell,
+                    "⁺",
+                    Style::default()
+                        .fg(th.accent)
+                        .add_modifier(Modifier::DIM),
+                );
+            }
+        }
 
         // 1. Links
         for link in &w.links {
@@ -1452,7 +1576,21 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
             };
             ("✕", st)
         }
-        State::Dead => ("·", Style::default().fg(th.ghost)),
+        State::Dead => {
+            // While the ghost echo is still counting down, keep
+            // rendering the node's old role glyph dimmed so the kill
+            // reads as a fading trace instead of instantly clearing.
+            if node.death_echo > 0 {
+                (
+                    node.role.base_glyph(),
+                    Style::default()
+                        .fg(th.ghost)
+                        .add_modifier(Modifier::DIM),
+                )
+            } else {
+                ("·", Style::default().fg(th.ghost))
+            }
+        }
     }
 }
 

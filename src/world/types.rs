@@ -199,6 +199,12 @@ pub struct Node {
     /// C2's index. Used to keep cascade reachability and cross-link
     /// reconnects faction-isolated.
     pub faction: u8,
+    /// Countdown of "ghost echo" ticks remaining after a node dies.
+    /// While nonzero, the render pass draws the node's old role glyph
+    /// at its last position in a dim color so the corpse is visible as
+    /// a fading trace before the cell clears. Set when the node first
+    /// transitions into `State::Dead`; decays in advance_role_cooldowns.
+    pub death_echo: u8,
 }
 
 impl Node {
@@ -240,6 +246,7 @@ impl Node {
             scan_pulse: 0,
             pwn_resist: 0,
             faction: 0,
+            death_echo: 0,
         }
     }
 }

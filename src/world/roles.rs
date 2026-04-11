@@ -28,6 +28,9 @@ impl World {
             if n.scan_pulse > 0 {
                 n.scan_pulse -= 1;
             }
+            if n.death_echo > 0 {
+                n.death_echo -= 1;
+            }
         }
     }
 

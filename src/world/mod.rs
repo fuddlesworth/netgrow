@@ -59,6 +59,12 @@ const LINK_COLLAPSE_THRESHOLD: u8 = 60;
 /// can carry traffic again.
 const LINK_QUARANTINE_TICKS: u8 = 40;
 
+/// Ticks a freshly-dead node keeps rendering its old role glyph as a
+/// dim "ghost echo" before the render pass falls back to the plain
+/// dead marker. Makes deaths visible as fading traces instead of
+/// instantly clearing.
+pub const GHOST_ECHO_TICKS: u8 = 60;
+
 /// Duration in ticks of a scanner's ping pulse. Adjacent links brighten
 /// to the scanner color for this many ticks — no strobe, no reversed
 /// fill, just a quiet lift over the branch hue.

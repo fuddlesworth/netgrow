@@ -14,7 +14,7 @@ use rand::Rng;
 use crate::routing;
 
 use super::{
-    octet_pair, FactionStats, Link, LinkKind, NodeId, Role, State, World,
+    octet_pair, FactionStats, Link, LinkKind, NodeId, Role, State, World, GHOST_ECHO_TICKS,
 };
 
 impl World {
@@ -424,6 +424,7 @@ impl World {
         for id in &newly_dead {
             let faction = self.nodes[*id].faction;
             self.nodes[*id].state = State::Dead;
+            self.nodes[*id].death_echo = GHOST_ECHO_TICKS;
             if let Some(s) = self.faction_stats.get_mut(faction as usize) {
                 s.lost += 1;
             }

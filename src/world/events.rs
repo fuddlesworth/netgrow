@@ -154,6 +154,7 @@ impl World {
         let new_faction = strong_idx as u8;
         let weak_c2 = self.c2_nodes[weak_idx];
         self.nodes[weak_c2].state = State::Dead;
+        self.nodes[weak_c2].death_echo = super::GHOST_ECHO_TICKS;
 
         // Snapshot strong-faction alive positions up front so we can
         // reparent each absorbed node to its nearest strong neighbor.
