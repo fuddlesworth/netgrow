@@ -1688,17 +1688,18 @@ impl<'a> Widget for MeshWidget<'a> {
         // the top edge of the mesh. Each active storm picks a
         // direction (dx, 1) at spawn, where dx ∈ {-1, 0, 1} so the
         // front can march straight down, down-left, or down-right.
-        // The front is a thick band centered on the current advance
-        // offset; within that band a small number of cells get a
-        // random bright flicker. Cells well ahead of or behind the
-        // front stay clear so the wave reads as weather rolling in.
+        // The front wraps: once it exits the bottom it restarts at
+        // the top, so the storm keeps visibly sweeping for the full
+        // duration instead of rolling once and disappearing.
         if storming {
-            let elapsed = w.tick.saturating_sub(w.storm_since) as i16;
             let (fdx, fdy) = (w.storm_dir.0 as i16, w.storm_dir.1.max(1) as i16);
-            // Front band: half-width 3 cells, perpendicular to the
-            // direction vector. We shade cells whose projection
-            // onto the direction vector lies within the band.
             const BAND_HALF: i16 = 3;
+            // Cycle length includes the band on both sides of the
+            // mesh so the front fully exits before a new one enters,
+            // giving a brief 'quiet' gap between passes.
+            let cycle = (bounds.1 + BAND_HALF * 2).max(1);
+            let raw = w.tick.saturating_sub(w.storm_since) as i64;
+            let elapsed = (raw.rem_euclid(cycle as i64) as i16) - BAND_HALF;
             for y in 0..bounds.1 {
                 for x in 0..bounds.0 {
                     // Signed distance of this cell from the rolling
