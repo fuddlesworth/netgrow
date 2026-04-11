@@ -355,6 +355,40 @@ pub struct Worm {
     pub strain: u8,
 }
 
+/// AI personality assigned to each faction at world creation.
+/// Biases its role_weights when a node spawns under it and
+/// influences a few event rolls so factions read as distinct
+/// players instead of interchangeable colored swarms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Persona {
+    /// Information-gathering attacker. Higher Scanner / Exfil
+    /// weights, lower Defender / Tower so its defenses are thin
+    /// but its eyes are everywhere.
+    Aggressor,
+    /// Turtle defender. Higher Tower / Defender / Beacon weights,
+    /// suppressed Exfil so the chain is fortified but quiet.
+    Fortress,
+    /// Viral spreader. Higher Exfil / Proxy weights, slightly
+    /// suppressed Defender, and a virus_seed_rate multiplier so
+    /// it leaks infections faster than the others.
+    Plague,
+    /// Balanced opportunist. Default weights, no per-role
+    /// modifiers — the boring control case that keeps multi-
+    /// faction runs from feeling like every faction is loud.
+    Opportunist,
+}
+
+impl Persona {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Persona::Aggressor => "aggressor",
+            Persona::Fortress => "fortress",
+            Persona::Plague => "plague",
+            Persona::Opportunist => "opportunist",
+        }
+    }
+}
+
 /// Two factions temporarily at peace. During the alliance, border
 /// skirmishes between them are suppressed and cross-faction bridge
 /// rolls between them don't fire. Purely a period of non-aggression.

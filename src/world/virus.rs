@@ -231,9 +231,29 @@ impl World {
         if self.nodes.iter().any(|n| n.infection.is_some()) {
             return;
         }
-        if !self.rng.gen_bool(self.cfg.virus_seed_rate as f64) {
+        // Plague-persona factions seed about twice as fast as the
+        // base rate. We approximate this by boosting the roll by the
+        // share of factions running Plague — so a run with one of
+        // four Plague factions gets a +25% nudge.
+        let plague_share = if self.personas.is_empty() {
+            0.0
+        } else {
+            let n = self
+                .personas
+                .iter()
+                .filter(|p| matches!(p, super::Persona::Plague))
+                .count() as f32
+                / self.personas.len() as f32;
+            n
+        };
+        let seed_rate = (self.cfg.virus_seed_rate * (1.0 + plague_share)) as f64;
+        if !self.rng.gen_bool(seed_rate.min(1.0)) {
             return;
         }
+        // Bias candidate selection toward Plague-faction hosts when
+        // any exist, so the persona's "viral spreader" identity has
+        // a visible effect — Plague factions become outbreak
+        // epicenters more often.
         let candidates: Vec<NodeId> = self
             .nodes
             .iter()

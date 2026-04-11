@@ -172,6 +172,12 @@ pub struct World {
     /// role-cooldown spike. Spawned by `maybe_isp_outage` and
     /// dissolved by `advance_outages`.
     pub outages: Vec<IspOutage>,
+    /// Per-faction AI personality. Indexed in lockstep with
+    /// `c2_nodes` and `faction_stats`. Picked at World::new and
+    /// when a faction is birthed via resurrection. Drives
+    /// per-faction role-weight biases in roll_role and a few
+    /// event rolls so factions feel distinct.
+    pub personas: Vec<Persona>,
 }
 
 impl World {
@@ -538,6 +544,22 @@ impl World {
             logs.push_back((format!("c2[{}] online @ {},{}", i, pos.0, pos.1), 1));
         }
 
+        // Pick a persona per faction before moving rng into self.
+        let personas: Vec<Persona> = (0..count)
+            .map(|_| match rng.gen_range(0..4) {
+                0 => Persona::Aggressor,
+                1 => Persona::Fortress,
+                2 => Persona::Plague,
+                _ => Persona::Opportunist,
+            })
+            .collect();
+        for (i, p) in personas.iter().enumerate() {
+            logs.push_back((
+                format!("c2[{}] persona = {}", i, p.display_name()),
+                1,
+            ));
+        }
+
         Self {
             nodes,
             links: Vec::new(),
@@ -564,6 +586,7 @@ impl World {
             activity_history: VecDeque::with_capacity(ACTIVITY_HISTORY_LEN),
             rivalry: HashMap::new(),
             outages: Vec::new(),
+            personas,
         }
     }
 

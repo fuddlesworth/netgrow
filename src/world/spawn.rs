@@ -142,52 +142,89 @@ impl World {
         }
     }
 
-    fn roll_role(&mut self) -> Role {
-        let w = &self.cfg.role_weights;
-        let total = w.relay
-            + w.scanner
-            + w.exfil
-            + w.honeypot
-            + w.defender
-            + w.tower
-            + w.beacon
-            + w.proxy
-            + w.decoy
-            + w.router;
+    /// Roll a role for a new node belonging to `faction`. The
+    /// faction's Persona biases the base role weights so different
+    /// factions feel like distinct players. Falls back to the raw
+    /// cfg weights for Opportunist or when no persona is set.
+    fn roll_role(&mut self, faction: u8) -> Role {
+        let base = &self.cfg.role_weights;
+        let persona = self
+            .personas
+            .get(faction as usize)
+            .copied()
+            .unwrap_or(super::Persona::Opportunist);
+        // Per-persona multipliers applied to base weights. Each
+        // persona shifts emphasis without ever zeroing a role out
+        // so the role pool stays diverse for every faction.
+        let (m_relay, m_scan, m_exfil, m_def, m_tow, m_bea, m_prox, m_router) =
+            match persona {
+                super::Persona::Aggressor => {
+                    (1.0, 1.8, 1.6, 0.5, 0.5, 0.7, 1.2, 0.8)
+                }
+                super::Persona::Fortress => {
+                    (0.9, 0.7, 0.5, 1.8, 2.0, 1.6, 0.7, 1.4)
+                }
+                super::Persona::Plague => {
+                    (1.0, 1.0, 1.4, 0.6, 0.6, 0.9, 1.6, 1.0)
+                }
+                super::Persona::Opportunist => {
+                    (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+                }
+            };
+        let w_relay = base.relay * m_relay;
+        let w_scanner = base.scanner * m_scan;
+        let w_exfil = base.exfil * m_exfil;
+        let w_honeypot = base.honeypot;
+        let w_defender = base.defender * m_def;
+        let w_tower = base.tower * m_tow;
+        let w_beacon = base.beacon * m_bea;
+        let w_proxy = base.proxy * m_prox;
+        let w_decoy = base.decoy;
+        let w_router = base.router * m_router;
+        let total = w_relay
+            + w_scanner
+            + w_exfil
+            + w_honeypot
+            + w_defender
+            + w_tower
+            + w_beacon
+            + w_proxy
+            + w_decoy
+            + w_router;
         let mut r = self.rng.gen::<f32>() * total.max(f32::EPSILON);
-        if r < w.relay {
+        if r < w_relay {
             return Role::Relay;
         }
-        r -= w.relay;
-        if r < w.scanner {
+        r -= w_relay;
+        if r < w_scanner {
             return Role::Scanner;
         }
-        r -= w.scanner;
-        if r < w.exfil {
+        r -= w_scanner;
+        if r < w_exfil {
             return Role::Exfil;
         }
-        r -= w.exfil;
-        if r < w.honeypot {
+        r -= w_exfil;
+        if r < w_honeypot {
             return Role::Honeypot;
         }
-        r -= w.honeypot;
-        if r < w.defender {
+        r -= w_honeypot;
+        if r < w_defender {
             return Role::Defender;
         }
-        r -= w.defender;
-        if r < w.tower {
+        r -= w_defender;
+        if r < w_tower {
             return Role::Tower;
         }
-        r -= w.tower;
-        if r < w.beacon {
+        r -= w_tower;
+        if r < w_beacon {
             return Role::Beacon;
         }
-        r -= w.beacon;
-        if r < w.proxy {
+        r -= w_beacon;
+        if r < w_proxy {
             return Role::Proxy;
         }
-        r -= w.proxy;
-        if r < w.decoy {
+        r -= w_proxy;
+        if r < w_decoy {
             return Role::Decoy;
         }
         Role::Router
@@ -373,8 +410,8 @@ impl World {
         } else {
             self.nodes[parent_id].branch_id
         };
-        let mut role = self.roll_role();
         let faction = self.nodes[parent_id].faction;
+        let mut role = self.roll_role(faction);
 
         // Towers only spawn near their faction's C2. If we rolled Tower
         // but the candidate cell is too far from any C2, fall back to

@@ -487,20 +487,31 @@ fn factions_block(world: &World) -> Paragraph<'static> {
             .next()
             .unwrap_or_default();
         let alive = samples.last().copied().unwrap_or(0);
+        let persona = world
+            .personas
+            .get(i)
+            .copied()
+            .map(|p| p.display_name())
+            .unwrap_or("?");
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled(
                 format!("F{}", i),
                 Style::default().fg(hue).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  "),
+            Span::raw(" "),
+            Span::styled(
+                format!("{:<10}", persona),
+                Style::default().fg(hue),
+            ),
+            Span::raw(" "),
             Span::styled(format!("{:>4}", alive), label_style),
-            Span::raw("  "),
+            Span::raw(" "),
             Span::styled(
                 format!("{:>+5}", fs.score()),
                 Style::default().fg(hue).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  "),
+            Span::raw(" "),
             Span::styled(spark, Style::default().fg(hue)),
         ]));
     }

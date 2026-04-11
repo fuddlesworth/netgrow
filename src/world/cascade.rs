@@ -381,6 +381,15 @@ impl World {
         // Register the new C2 and faction.
         self.c2_nodes.push(reborn);
         self.faction_stats.push(FactionStats::default());
+        // Reborn factions roll a fresh persona too. Pick uniformly
+        // so the resurrected colony reads as its own player.
+        let persona = match self.rng.gen_range(0..4u8) {
+            0 => super::Persona::Aggressor,
+            1 => super::Persona::Fortress,
+            2 => super::Persona::Plague,
+            _ => super::Persona::Opportunist,
+        };
+        self.personas.push(persona);
         let (a, b) = octet_pair(pos);
         self.push_log(format!(
             "✦ MYTHIC ✦ REBIRTH — c2[{}] rises @ 10.0.{}.{}",
