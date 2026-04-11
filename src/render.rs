@@ -213,7 +213,8 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
                 + world.partitions.len()
                 + war_count
                 + world.ddos_waves.len()
-                + if world.is_storming() { 1 } else { 0 })
+                + if world.is_storming() { 1 } else { 0 }
+                + if world.is_droughted() { 1 } else { 0 })
                 .min(6) as u16;
             let events_height = event_count.max(1) + 2;
             let right_rows = Layout::vertical([
@@ -1392,6 +1393,10 @@ fn events_block(world: &World) -> Paragraph<'static> {
         let remaining = world.storm_until.saturating_sub(world.tick);
         lines.push(row("⚡", format!("storm ({}t)", remaining), th.pwned));
     }
+    if world.is_droughted() {
+        let remaining = world.drought_until.saturating_sub(world.tick);
+        lines.push(row("⚠", format!("drought ({}t)", remaining), th.pwned_alt));
+    }
     for wave in &world.ddos_waves {
         let axis = if wave.horizontal { "horiz" } else { "vert" };
         lines.push(row("↯", format!("ddos {} pos {}", axis, wave.pos), th.accent));
@@ -1915,6 +1920,8 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default()
             .fg(th.log_cured)
             .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("⚠ DROUGHT") || s.starts_with("drought lifts") {
+        Style::default().fg(th.pwned_alt).add_modifier(Modifier::BOLD)
     } else if s.starts_with("✦ diplo") {
         Style::default().fg(th.log_cured)
     } else if s.starts_with("✦ tech") {

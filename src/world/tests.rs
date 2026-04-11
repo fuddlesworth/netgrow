@@ -902,6 +902,46 @@ fn diplomacy_pressure_escalates_to_cold_war_then_open_war() {
 }
 
 #[test]
+fn drought_tightens_effective_hot_link_while_active() {
+    let mut w = World::new(1, (80, 30), Config::default());
+    // Baseline: the effective hot ceiling matches HOT_LINK for a
+    // non-backbone link and BACKBONE_HOT_LINK for backbones.
+    let link = Link {
+        a: 0,
+        b: 0,
+        path: vec![],
+        drawn: 0,
+        kind: LinkKind::Parent,
+        load: 0,
+        breach_ttl: 0,
+        burn_ticks: 0,
+        quarantined: 0,
+        packets_delivered: 0,
+        is_backbone: false,
+        latent: false,
+    };
+    assert!(!w.is_droughted());
+    assert_eq!(w.effective_hot_link(&link), HOT_LINK);
+    // Activate a drought and confirm the ceiling drops by the
+    // configured penalty.
+    w.drought_until = w.tick + 100;
+    assert!(w.is_droughted());
+    assert_eq!(
+        w.effective_hot_link(&link),
+        HOT_LINK - w.cfg.drought_hot_penalty
+    );
+    // Backbone links get the same penalty off their inflated base.
+    let backbone = Link {
+        is_backbone: true,
+        ..link
+    };
+    assert_eq!(
+        w.effective_hot_link(&backbone),
+        BACKBONE_HOT_LINK - w.cfg.drought_hot_penalty
+    );
+}
+
+#[test]
 fn fission_splits_a_divergent_branch_into_new_faction() {
     let cfg = Config {
         p_spawn: 0.0,

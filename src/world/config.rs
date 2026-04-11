@@ -128,6 +128,18 @@ pub struct Config {
     /// Chance that a newly seeded infection is a carrier variant —
     /// endemic, never terminal, keeps re-infecting its neighbors.
     pub carrier_chance: f32,
+    /// Ticks between bandwidth-drought rolls. During an active
+    /// drought, the effective HOT_LINK / BACKBONE_HOT_LINK
+    /// ceiling drops by `drought_hot_penalty`, so packet routing
+    /// refuses moderately-loaded links and exfils throttle
+    /// sooner. Set to 0 to disable.
+    pub drought_period: u64,
+    pub drought_chance: f32,
+    pub drought_duration: u64,
+    /// Amount subtracted from the hot-link ceiling while a
+    /// drought is active. Higher values produce more brutal
+    /// traffic prioritization.
+    pub drought_hot_penalty: u8,
     /// Chance that a reconnect pick may bridge two DIFFERENT factions
     /// instead of the default same-faction-only rule. When a cross-
     /// faction bridge forms, worms can travel between factions,
@@ -252,6 +264,10 @@ impl Default for Config {
             tower_pwn_resist: 2,
             ransom_chance: 0.15,
             carrier_chance: 0.10,
+            drought_period: 2600,
+            drought_chance: 0.35,
+            drought_duration: 180,
+            drought_hot_penalty: 6,
             cross_faction_bridge_chance: 0.2,
             assimilation_period: 250,
             assimilation_threshold: 6,

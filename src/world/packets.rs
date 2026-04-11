@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use rand::Rng;
 
 use super::{
-    octet_pair, BACKBONE_HOT_LINK, BACKBONE_PROMOTION_THRESHOLD, HOT_LINK, Infection,
+    octet_pair, BACKBONE_PROMOTION_THRESHOLD, Infection,
     InfectionStage, LinkKind, NodeId, Packet, PACKET_LOAD_INCREMENT, Role, State, STRAIN_COUNT,
     WORM_LOAD_INCREMENT, WORM_STEP_INTERVAL, Worm, World,
 };
@@ -109,11 +109,7 @@ impl World {
                 }
                 if let Some(&next_link) = inbound.get(&parent_id) {
                     let next = &self.links[next_link];
-                    let next_hot_ceiling = if next.is_backbone {
-                        BACKBONE_HOT_LINK
-                    } else {
-                        HOT_LINK
-                    };
+                    let next_hot_ceiling = self.effective_hot_link(next);
                     let primary_usable = !next.path.is_empty()
                         && next.load < next_hot_ceiling
                         && next.quarantined == 0;
@@ -145,11 +141,7 @@ impl World {
                                 continue;
                             };
                             let alt_link = &self.links[alt];
-                            let alt_hot = if alt_link.is_backbone {
-                                BACKBONE_HOT_LINK
-                            } else {
-                                HOT_LINK
-                            };
+                            let alt_hot = self.effective_hot_link(alt_link);
                             if alt_link.path.is_empty()
                                 || alt_link.load >= alt_hot
                                 || alt_link.quarantined > 0

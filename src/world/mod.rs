@@ -366,6 +366,12 @@ pub struct World {
     /// the relevant multiplier from this struct and fold it into the
     /// existing cfg-derived values.
     pub era_rules: EraRules,
+    /// Tick at which the current bandwidth-drought ends. Zero
+    /// means no drought is active. While set, the effective hot
+    /// ceiling for packet routing decisions is tightened by
+    /// `cfg.drought_hot_penalty`, so exfils throttle sooner and
+    /// packets refuse to hop onto moderately-loaded links.
+    pub drought_until: u64,
     /// First tick on which the mesh was detected as fully extinct
     /// (zero alive factions). Cleared as soon as any faction regains
     /// an alive presence. When this stays set for at least
@@ -690,6 +696,52 @@ impl World {
             }
         }
         counts
+    }
+
+    /// True while a bandwidth drought is in effect. Packet
+    /// routing and exfil throttling read this to apply the
+    /// tighter hot-link ceiling.
+    pub fn is_droughted(&self) -> bool {
+        self.drought_until > self.tick
+    }
+
+    /// Effective hot-link ceiling for a given link, folding in
+    /// backbone status and any active bandwidth drought. Packet
+    /// routing, exfil backpressure, and router upgrade logic all
+    /// read this so a drought brings visible throttling across
+    /// every traffic subsystem in one edit.
+    pub fn effective_hot_link(&self, link: &Link) -> u8 {
+        let base = if link.is_backbone {
+            BACKBONE_HOT_LINK
+        } else {
+            HOT_LINK
+        };
+        if self.is_droughted() {
+            base.saturating_sub(self.cfg.drought_hot_penalty)
+        } else {
+            base
+        }
+    }
+
+    /// Roll for a bandwidth drought start and log the state
+    /// transition on either end. Modeled after `maybe_storm`:
+    /// rolls only when no drought is active, logs onset and
+    /// dissipation on separate ticks so the log taxonomy is
+    /// readable.
+    fn maybe_drought(&mut self) {
+        if self.drought_until > 0 && self.tick >= self.drought_until {
+            self.drought_until = 0;
+            self.push_log("drought lifts — bandwidth restored".to_string());
+            return;
+        }
+        if self.drought_until > 0 {
+            return;
+        }
+        if !self.roll_periodic(self.cfg.drought_period, self.cfg.drought_chance) {
+            return;
+        }
+        self.drought_until = self.tick + self.cfg.drought_duration;
+        self.push_log("⚠ DROUGHT — bandwidth collapsing".to_string());
     }
 
     /// Civil-war / faction-fission pass. Walks every (faction,
@@ -2510,6 +2562,7 @@ impl World {
             strain_patents: vec![None; STRAIN_COUNT],
             era_rules: era_rules_for(0).0,
             extinction_since_tick: None,
+            drought_until: 0,
         }
     }
 
@@ -2563,6 +2616,7 @@ impl World {
         // a short window. Logged at start and end so the phase reads
         // clearly in the log.
         self.maybe_storm();
+        self.maybe_drought();
         self.maybe_ddos();
         self.advance_ddos_waves();
         self.maybe_wormhole();
