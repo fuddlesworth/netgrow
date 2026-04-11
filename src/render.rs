@@ -697,8 +697,6 @@ fn footer_bar(ui: UiState) -> Paragraph<'static> {
         spans.extend([
             key("⇥"),
             lab(" exit cursor "),
-            key("←↑↓→"),
-            lab(" move "),
             key("i"),
             lab(" infect "),
             key("p"),
