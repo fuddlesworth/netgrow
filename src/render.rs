@@ -18,6 +18,52 @@ use crate::world::{
 /// merge into continuous regions around clustered factions.
 const TERRITORY_RADIUS: i16 = 6;
 
+/// Compute the faction territory BFS: for each alive node, seed
+/// its cell with its faction id and expand outward via 8-way
+/// Chebyshev steps up to `TERRITORY_RADIUS`. First-arrival wins
+/// on contention. Used by both the main mesh render and the
+/// minimap so their coverage matches exactly.
+fn compute_territory(world: &World) -> std::collections::HashMap<(i16, i16), u8> {
+    use std::collections::{HashMap, VecDeque};
+    let mut territory: HashMap<(i16, i16), u8> = HashMap::new();
+    let mut queue: VecDeque<((i16, i16), u8, i16)> = VecDeque::new();
+    for n in &world.nodes {
+        if !matches!(n.state, State::Alive) {
+            continue;
+        }
+        territory.insert(n.pos, n.faction);
+        queue.push_back((n.pos, n.faction, 0));
+    }
+    const NEIGH: [(i16, i16); 8] = [
+        (1, 0),
+        (-1, 0),
+        (0, 1),
+        (0, -1),
+        (1, 1),
+        (1, -1),
+        (-1, 1),
+        (-1, -1),
+    ];
+    let (bx, by) = world.bounds;
+    while let Some((pos, f, d)) = queue.pop_front() {
+        if d >= TERRITORY_RADIUS {
+            continue;
+        }
+        for (dx, dy) in NEIGH {
+            let np = (pos.0 + dx, pos.1 + dy);
+            if np.0 < 0 || np.1 < 0 || np.0 >= bx || np.1 >= by {
+                continue;
+            }
+            if territory.contains_key(&np) {
+                continue;
+            }
+            territory.insert(np, f);
+            queue.push_back((np, f, d + 1));
+        }
+    }
+    territory
+}
+
 const RIGHT_COL_WIDTH: u16 = 41;
 const HEADER_HEIGHT: u16 = 1;
 const FOOTER_HEIGHT: u16 = 1;
@@ -1057,20 +1103,21 @@ fn minimap_block(world: &World, panel_width: u16) -> Paragraph<'static> {
     let cols = panel_width.saturating_sub(2).max(1) as usize;
     let rows = 8usize;
     let (bx, by) = (world.bounds.0.max(1) as usize, world.bounds.1.max(1) as usize);
-    // Per-cell bucket of (faction_id → count) so we can pick the
-    // dominant faction for each visual cell. Using a Vec indexed by
-    // faction id keeps allocation minimal.
+    // Minimap mirrors the mesh territory wash: run the same BFS
+    // the main render uses, then bucket every tagged cell into
+    // the visual grid. Each bucket picks the most common
+    // faction, so a cluster of F0 nodes with their surrounding
+    // BFS radius paints a solid F0 block in the minimap instead
+    // of just the single-cell node positions.
+    let territory = compute_territory(world);
     let fac_count = world.faction_stats.len().max(1);
     let mut buckets: Vec<Vec<u32>> = vec![vec![0u32; fac_count]; cols * rows];
-    for n in &world.nodes {
-        if !matches!(n.state, State::Alive) {
-            continue;
-        }
-        let mx = (n.pos.0 as usize * cols) / bx.max(1);
-        let my = (n.pos.1 as usize * rows) / by.max(1);
+    for (&(px, py), &fac) in &territory {
+        let mx = (px as usize * cols) / bx.max(1);
+        let my = (py as usize * rows) / by.max(1);
         let idx = my * cols + mx;
         if let Some(b) = buckets.get_mut(idx) {
-            if let Some(slot) = b.get_mut(n.faction as usize) {
+            if let Some(slot) = b.get_mut(fac as usize) {
                 *slot += 1;
             }
         }
@@ -1089,10 +1136,12 @@ fn minimap_block(world: &World, panel_width: u16) -> Paragraph<'static> {
                     if best_count == 0 {
                         Span::styled(" ", Style::default().fg(th.ghost))
                     } else {
-                        Span::styled(
-                            "█",
-                            Style::default().fg(faction_hue(world, best as u8)),
-                        )
+                        let hue = faction_hue(world, best as u8);
+                        // Paint as a bg-filled cell (space + bg)
+                        // instead of a █ glyph so the minimap
+                        // renders flat solid blocks matching the
+                        // main mesh's bg-wash style.
+                        Span::styled(" ", Style::default().bg(dim_bg(hue)).fg(hue))
                     }
                 })
                 .collect();
@@ -1608,54 +1657,13 @@ impl<'a> Widget for MeshWidget<'a> {
         let w = self.world;
         let th = theme();
 
-        // 0a. Faction territory — a multi-source BFS from every
-        // alive node records which faction owns each cell within
-        // TERRITORY_RADIUS. We build the map here and skip the
-        // foreground glyph pass entirely: the actual coloring is
-        // done by the bg post-pass below (for empty cells) and
-        // by bg values baked into every node and link style at
-        // draw time (for occupied cells). Merging those two
-        // sources into a single uniform bg makes the territory
-        // read as one solid colored region with the brighter
-        // fg glyphs sitting inside.
+        // 0a. Faction territory — built via the shared
+        // compute_territory helper so the mesh render and the
+        // minimap cover the exact same cells. The fg is handled
+        // by bg bakes on nodes/links at draw time; the bg
+        // post-pass below fills in the empty cells.
         let bounds = w.bounds;
-        let mut territory: std::collections::HashMap<(i16, i16), u8> =
-            std::collections::HashMap::new();
-        let mut queue: std::collections::VecDeque<((i16, i16), u8, i16)> =
-            std::collections::VecDeque::new();
-        for n in &w.nodes {
-            if !matches!(n.state, State::Alive) {
-                continue;
-            }
-            territory.insert(n.pos, n.faction);
-            queue.push_back((n.pos, n.faction, 0));
-        }
-        const NEIGH: [(i16, i16); 8] = [
-            (1, 0),
-            (-1, 0),
-            (0, 1),
-            (0, -1),
-            (1, 1),
-            (1, -1),
-            (-1, 1),
-            (-1, -1),
-        ];
-        while let Some((pos, f, d)) = queue.pop_front() {
-            if d >= TERRITORY_RADIUS {
-                continue;
-            }
-            for (dx, dy) in NEIGH {
-                let np = (pos.0 + dx, pos.1 + dy);
-                if np.0 < 0 || np.1 < 0 || np.0 >= bounds.0 || np.1 >= bounds.1 {
-                    continue;
-                }
-                if territory.contains_key(&np) {
-                    continue;
-                }
-                territory.insert(np, f);
-                queue.push_back((np, f, d + 1));
-            }
-        }
+        let territory = compute_territory(w);
         let night = w.is_night();
         let storming = w.is_storming();
         let node_cells: std::collections::HashSet<(i16, i16)> =
