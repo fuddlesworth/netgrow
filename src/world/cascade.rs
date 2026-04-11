@@ -524,6 +524,15 @@ impl World {
             // entries clogging the wars map.
             self.wars
                 .retain(|&(a, b), _| !dead_factions.iter().any(|&f| a == f || b == f));
+            // Release any strain patents held by the dead
+            // factions — dead factions don't collect royalties.
+            for slot in self.strain_patents.iter_mut() {
+                if let Some(owner) = *slot {
+                    if dead_factions.contains(&owner) {
+                        *slot = None;
+                    }
+                }
+            }
         }
         // Resurrection rolls now happen at schedule_subtree_death
         // time, where the whole cascade cohort is visible — by the

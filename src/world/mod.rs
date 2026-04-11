@@ -278,6 +278,13 @@ pub struct World {
     /// spawned inside a hotspot start with bonus pwn_resist so
     /// factions have territory worth contesting.
     pub hotspots: Vec<Hotspot>,
+    /// Per-strain "patent" ownership. When a strain is produced
+    /// via hybrid merging, the faction whose node hosted the
+    /// merge claims the patent. Every sample period, rival
+    /// factions carrying an owned strain pay the owner a trickle
+    /// of intel — viral ecology becomes a passive income vector
+    /// for the faction that first crossed the strains.
+    pub strain_patents: Vec<Option<u8>>,
     /// Currently-favored faction (via cursor-mode 1-8 hotkey).
     /// Boost expires at `favor_expires_tick`; when elapsed, the
     /// field clears and spawn rolls stop biasing.
@@ -393,6 +400,39 @@ impl World {
     /// promote them. A pair only declares once per rivalry lifetime
     /// — after a declaration fires, the rivalry has to fully decay
     /// below the threshold and re-climb to trigger another.
+    /// Strain patent royalties — every sample period, each
+    /// faction that owns a patented strain collects +1 intel per
+    /// rival-faction host currently carrying that strain. Creates
+    /// passive income from viral ecology: mutating a hybrid
+    /// creates a long-tail revenue stream as long as the strain
+    /// stays circulating among rival factions.
+    fn collect_strain_patents(&mut self) {
+        // Tally count of rival hosts per (strain, owner) pair.
+        let mut royalties: HashMap<u8, u32> = HashMap::new();
+        for n in &self.nodes {
+            if !matches!(n.state, State::Alive) {
+                continue;
+            }
+            let Some(inf) = n.infection else { continue };
+            let Some(owner) = self
+                .strain_patents
+                .get(inf.strain as usize)
+                .and_then(|&o| o)
+            else {
+                continue;
+            };
+            if owner == n.faction {
+                continue; // own-faction hosts don't pay royalties
+            }
+            *royalties.entry(owner).or_insert(0) += 1;
+        }
+        for (owner, amount) in royalties {
+            if let Some(s) = self.faction_stats.get_mut(owner as usize) {
+                s.intel = s.intel.saturating_add(amount);
+            }
+        }
+    }
+
     /// Scorched-earth protocol — when a faction has fallen
     /// below `SCORCHED_EARTH_TRIGGER_FRACTION` of its peak,
     /// each sample period rolls a small chance that it defies
@@ -1137,6 +1177,7 @@ impl World {
             hotspots: hotspots_init,
             favored_faction: None,
             favor_expires_tick: 0,
+            strain_patents: vec![None; STRAIN_COUNT],
         }
     }
 
@@ -1215,6 +1256,8 @@ impl World {
             // Let any critically-weakened faction trigger its
             // scorched-earth protocol as a last defiance.
             self.maybe_scorched_earth();
+            // Collect strain-patent royalties from rival hosts.
+            self.collect_strain_patents();
         }
         // Expire any wars whose windows have elapsed.
         self.wars.retain(|_, exp| *exp > self.tick);

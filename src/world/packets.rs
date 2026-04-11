@@ -433,6 +433,7 @@ impl World {
                 .map(|i| i.veteran_rank)
                 .unwrap_or(0)
                 .saturating_add(1);
+            let target_faction = self.nodes[target].faction;
             self.nodes[target].infection = Some(merged);
             let pos = self.nodes[target].pos;
             let (a, b) = octet_pair(pos);
@@ -443,6 +444,21 @@ impl World {
                 "✦ hybrid ✦ {} × {} → {} @ 10.0.{}.{}",
                 name_in, name_ex, name_new, a, b
             ));
+            // Strain patent: the faction that hosted the merge
+            // claims ownership of the resulting hybrid strain.
+            // If the strain was already patented by another
+            // faction, the new claim wins (the newest mutation
+            // resets the IP).
+            if let Some(slot) = self.strain_patents.get_mut(merged_strain) {
+                let prev = *slot;
+                *slot = Some(target_faction);
+                if prev != Some(target_faction) {
+                    self.push_log(format!(
+                        "✦ patent ✦ F{} files claim on {}",
+                        target_faction, name_new
+                    ));
+                }
+            }
         }
     }
 

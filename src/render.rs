@@ -1699,6 +1699,10 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default()
             .fg(th.log_mutated)
             .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("✦ patent") {
+        Style::default()
+            .fg(th.stat_packets)
+            .add_modifier(Modifier::BOLD)
     } else if s.starts_with("✦") {
         // Generic catch-all for any other ✦-prefixed mythic event
         // so nothing in that tier falls through to log_default.
