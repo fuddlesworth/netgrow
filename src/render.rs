@@ -15,12 +15,11 @@ use crate::world::{
 /// empty background cells. Kept tight so the mesh still breathes;
 /// larger values would paint the whole grid at dense populations.
 const TERRITORY_RADIUS: i16 = 4;
-/// Chars used for the faction territory background tint, indexed by
-/// atmospheric mood (day/night/storm). Each is a sparser shade than
-/// the previous so the background gets progressively thinner after
-/// sundown and during a storm the lines break up entirely.
-const TERRITORY_DAY: &str = "░";
-const TERRITORY_NIGHT: &str = "·";
+/// Solid block char used for the faction territory background tint.
+/// Day and night both use this shade — only the style modifier
+/// changes (DIM at night) so the territory always reads as the
+/// same shape, just darker after sundown.
+const TERRITORY_GLYPH: &str = "░";
 
 const RIGHT_COL_WIDTH: u16 = 41;
 const HEADER_HEIGHT: u16 = 1;
@@ -857,18 +856,13 @@ impl<'a> Widget for MeshWidget<'a> {
                 queue.push_back((np, f, d + 1));
             }
         }
-        // Atmospheric mood drives which shade glyph the tint uses and
-        // whether we skip every other cell. Night thins the tint;
-        // storms break it up further. Both are already-tracked sim
-        // states we previously only expressed via spawn/loss rate
-        // multipliers — now they have a visible footprint too.
+        // Atmospheric mood drives the modifier on the territory
+        // tint. Day uses the raw faction hue (matching the header
+        // bar exactly); night layers DIM on top so the territory
+        // visibly darkens at sundown. The glyph itself stays the
+        // same solid block in both states.
         let night = w.is_night();
         let storming = w.is_storming();
-        let shade = if night || storming {
-            TERRITORY_NIGHT
-        } else {
-            TERRITORY_DAY
-        };
         let node_cells: std::collections::HashSet<(i16, i16)> =
             w.nodes.iter().map(|n| n.pos).collect();
         for (&cell, &fac) in &territory {
@@ -878,22 +872,11 @@ impl<'a> Widget for MeshWidget<'a> {
             if node_cells.contains(&cell) {
                 continue;
             }
-            // Stable stipple keyed only on cell position so the
-            // pattern holds still from tick to tick — folding the
-            // tick in here strobed the whole territory at night.
-            let key = (cell.0 as u32)
-                .wrapping_mul(2654435761)
-                ^ (cell.1 as u32).wrapping_mul(40503);
-            let thin = night || storming;
-            if thin && (key & 1) == 0 {
-                continue;
+            let mut style = Style::default().fg(faction_hue(fac));
+            if night || storming {
+                style = style.add_modifier(Modifier::DIM);
             }
-            // No DIM modifier here — terminals render DIM as a
-            // desaturated variant that drifts visibly off the
-            // faction hue used in the header bar. The shade glyph
-            // itself (░ / ·) already keeps the tint subordinate.
-            let style = Style::default().fg(faction_hue(fac));
-            put(buf, area, cell, shade, style);
+            put(buf, area, cell, TERRITORY_GLYPH, style);
         }
 
         // 0a-bis. ISP outage zones — dim hatched fill across the
