@@ -73,33 +73,51 @@ impl World {
             })
             .collect();
         let pwned_flash = self.cfg.pwned_flash_ticks;
-        let mut victims: Vec<NodeId> = Vec::new();
+        // (victim_id, enemy_faction). The enemy is whichever
+        // different-faction neighbor sits closest within the radius —
+        // used to attribute the kill for rivalry bookkeeping.
+        let mut victims: Vec<(NodeId, u8)> = Vec::new();
         for &(id, pos, faction) in &positions {
-            let near_enemy = positions.iter().any(|&(_, p, f)| {
-                f != faction
-                    && !self.allied(f, faction)
-                    && (p.0 - pos.0).abs().max((p.1 - pos.1).abs()) <= radius
-            });
-            if !near_enemy {
-                continue;
+            let mut nearest_enemy: Option<(i16, u8)> = None;
+            for &(_, p, f) in &positions {
+                if f == faction || self.allied(f, faction) {
+                    continue;
+                }
+                let d = (p.0 - pos.0).abs().max((p.1 - pos.1).abs());
+                if d <= radius && nearest_enemy.map(|(nd, _)| d < nd).unwrap_or(true) {
+                    nearest_enemy = Some((d, f));
+                }
             }
-            if self.rng.gen_bool(chance as f64) {
-                victims.push(id);
+            let Some((_, enemy_faction)) = nearest_enemy else {
+                continue;
+            };
+            // Rivalry-amplified chance: an old feud's pressure adds
+            // up to a 2x multiplier on the base skirmish_chance.
+            let pressure = self.rivalry_pressure(faction, enemy_faction);
+            let amp = 1.0 + (pressure as f32 / super::RIVALRY_CAP as f32);
+            let effective = (chance * amp).min(1.0);
+            if self.rng.gen_bool(effective as f64) {
+                victims.push((id, enemy_faction));
             }
         }
-        for id in victims {
+        for (id, enemy_faction) in victims {
             let pos = self.nodes[id].pos;
-            let node = &mut self.nodes[id];
-            if node.hardened {
+            let victim_faction = self.nodes[id].faction;
+            let hardened = self.nodes[id].hardened;
+            if hardened {
+                let node = &mut self.nodes[id];
                 node.hardened = false;
                 node.heartbeats = 0;
                 node.shield_flash = 6;
                 self.log_node(pos, "skirmish shielded");
+                self.bump_rivalry(victim_faction, enemy_faction, 2);
             } else {
+                let node = &mut self.nodes[id];
                 node.state = State::Pwned {
                     ticks_left: pwned_flash,
                 };
                 self.log_node(pos, "skirmish LOST");
+                self.bump_rivalry(victim_faction, enemy_faction, 6);
             }
         }
     }

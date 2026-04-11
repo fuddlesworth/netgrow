@@ -48,10 +48,19 @@ impl World {
         let a_faction = self.nodes[a].faction;
         let radius = self.cfg.reconnect_radius;
         // Roll once per attempt: is this a cross-faction bridge?
-        // Allied factions stay peaceful — their bridges form normally
-        // within same-faction only.
-        let allow_cross_faction = self.cfg.cross_faction_bridge_chance > 0.0
-            && self.rng.gen_bool(self.cfg.cross_faction_bridge_chance as f64);
+        // Rivalry-amplified: a faction's max pressure against any
+        // other faction adds up to 2x to the base cross-faction
+        // chance, so live feuds pull more bridges between rivals.
+        let max_pressure = (0..self.faction_stats.len() as u8)
+            .filter(|&f| f != a_faction)
+            .map(|f| self.rivalry_pressure(a_faction, f))
+            .max()
+            .unwrap_or(0);
+        let amp = 1.0 + (max_pressure as f32 / super::RIVALRY_CAP as f32);
+        let cross_chance =
+            (self.cfg.cross_faction_bridge_chance * amp).min(1.0) as f64;
+        let allow_cross_faction =
+            self.cfg.cross_faction_bridge_chance > 0.0 && self.rng.gen_bool(cross_chance);
         let mut candidates: Vec<NodeId> = alive
             .iter()
             .copied()

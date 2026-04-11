@@ -194,6 +194,9 @@ impl World {
         // (target, incoming_strain, existing_strain) — handled after
         // the move loop so we can mutate target infection state.
         let mut merges: Vec<(NodeId, u8, u8)> = Vec::new();
+        // (src_faction, dst_faction) — cross-faction worm crossings
+        // bump the rivalry tracker so feuds escalate over time.
+        let mut rivalries: Vec<(u8, u8)> = Vec::new();
         for mut worm in std::mem::take(&mut self.worms) {
             let (link_a, link_b, link_len) = {
                 let link = &self.links[worm.link_id];
@@ -240,6 +243,9 @@ impl World {
                                 .push((target, worm.strain, existing.strain)),
                             _ => {}
                         }
+                        if src != dst {
+                            rivalries.push((src, dst));
+                        }
                     }
                     continue;
                 }
@@ -258,6 +264,9 @@ impl World {
                             Some(existing) if existing.strain != worm.strain => merges
                                 .push((target, worm.strain, existing.strain)),
                             _ => {}
+                        }
+                        if src != dst {
+                            rivalries.push((src, dst));
                         }
                     }
                     continue;
@@ -279,6 +288,9 @@ impl World {
         // VETERAN_CURE_RESIST_CAP) and a deterministic strain id
         // derived from the parents so the same combo always picks
         // the same name.
+        for (a, b) in rivalries {
+            self.bump_rivalry(a, b, 4);
+        }
         for (target, incoming, existing) in merges {
             let existing_resist =
                 self.nodes[target].infection.map(|i| i.cure_resist).unwrap_or(0);

@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
@@ -80,6 +80,10 @@ pub const LEGENDARY_MIN_AGE: u64 = 1200;
 /// qualify for a legendary name.
 pub const LEGENDARY_MIN_CHILDREN: u16 = 8;
 
+/// Maximum value any rivalry pair can hold. Caps the multiplier so
+/// even ancient feuds eventually plateau instead of melting events.
+pub const RIVALRY_CAP: u16 = 200;
+
 /// Number of successful packet deliveries a Parent link must carry
 /// before it gets promoted to a backbone link with an inflated HOT
 /// ceiling and a thicker glyph.
@@ -156,6 +160,13 @@ pub struct World {
     /// cadence as faction history. Feeds the btop-style braille area
     /// graph in the right column's 'activity' panel.
     pub activity_history: VecDeque<u32>,
+    /// Per-faction-pair "war pressure". Indexed by canonical pair
+    /// `(min(a,b), max(a,b))`. Accumulates from cross-faction kills,
+    /// worm crossings, and border skirmish hits; decays slowly via
+    /// the faction sampler. High pressure amplifies border skirmish
+    /// chances and makes cross-faction bridge rolls more likely
+    /// between the rivals — feuds become sticky instead of uniform.
+    pub rivalry: HashMap<(u8, u8), u16>,
 }
 
 impl World {
@@ -233,6 +244,34 @@ impl World {
             let name = LEGENDARY_NAME_POOL[idx as usize];
             let (a, b) = octet_pair(pos);
             self.push_log(format!("✦ legend ✦ {} rises @ 10.0.{}.{}", name, a, b));
+        }
+    }
+
+    /// Canonical-pair key for the rivalry map. Always (min, max) so
+    /// either argument order produces the same lookup. Returns None
+    /// if both factions are the same — self-rivalries are nonsense.
+    fn rivalry_key(a: u8, b: u8) -> Option<(u8, u8)> {
+        if a == b {
+            None
+        } else {
+            Some((a.min(b), a.max(b)))
+        }
+    }
+
+    /// Read the current war pressure between two factions. Zero if
+    /// they've never tangled.
+    pub fn rivalry_pressure(&self, a: u8, b: u8) -> u16 {
+        Self::rivalry_key(a, b)
+            .and_then(|k| self.rivalry.get(&k).copied())
+            .unwrap_or(0)
+    }
+
+    /// Bump war pressure between two factions by `amount`, clamped
+    /// to RIVALRY_CAP. No-op for self-pairs.
+    pub fn bump_rivalry(&mut self, a: u8, b: u8, amount: u16) {
+        if let Some(key) = Self::rivalry_key(a, b) {
+            let entry = self.rivalry.entry(key).or_insert(0);
+            *entry = entry.saturating_add(amount).min(RIVALRY_CAP);
         }
     }
 
@@ -470,6 +509,7 @@ impl World {
             faction_stats: vec![FactionStats::default(); count],
             mythic_pandemic_seen: false,
             activity_history: VecDeque::with_capacity(ACTIVITY_HISTORY_LEN),
+            rivalry: HashMap::new(),
         }
     }
 
@@ -522,10 +562,13 @@ impl World {
         // Sample faction alive counts for the header sparkline.
         if self.tick.is_multiple_of(FACTION_SAMPLE_PERIOD) {
             self.sample_faction_history();
-        }
-        // Check for legendary-node promotions on the same slow cadence.
-        if self.tick.is_multiple_of(FACTION_SAMPLE_PERIOD) {
+            // Check for legendary-node promotions on the same cadence.
             self.maybe_promote_legendary();
+            // Slow rivalry decay so old feuds eventually fade.
+            self.rivalry.retain(|_, v| {
+                *v = v.saturating_sub(2);
+                *v > 0
+            });
         }
 
         // Phase 1: growth — add new nodes and extend link animations.
