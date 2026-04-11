@@ -556,6 +556,11 @@ fn main() -> io::Result<()> {
                             world.inject_wormhole(c);
                         }
                     }
+                    (KeyCode::Char('g'), _) if cursor.is_some() => {
+                        if let Some(c) = cursor {
+                            world.inject_graffiti(c);
+                        }
+                    }
                     _ => {}
                 }
             }

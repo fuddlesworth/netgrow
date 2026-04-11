@@ -101,6 +101,21 @@ pub const STRAIN_OUTCOMPETE_CHANCE: f32 = 0.01;
 
 /// Ticks a favoritism boost lasts after a single 1-9 key press.
 pub const FAVOR_DURATION_TICKS: u64 = 300;
+
+/// Ticks a turf-graffiti mark stays live after the viewer tags
+/// a cell. While the mark is active, spawn-weight rolls bias
+/// parent selection toward any alive node within
+/// `GRAFFITI_MARK_RADIUS` of the mark. Pure viewer-nudging tool
+/// — the sim still decides *whether* to spawn and *what* to
+/// spawn, the mark only biases *where*.
+pub const GRAFFITI_MARK_TICKS: u64 = 400;
+/// Chebyshev radius within which a graffiti mark boosts spawn
+/// weight on nearby parent candidates.
+pub const GRAFFITI_MARK_RADIUS: i16 = 6;
+/// Multiplier added to a parent candidate's weight for each
+/// active graffiti mark within radius. 2.5× is roughly the same
+/// strength as the faction-favoritism hotkey.
+pub const GRAFFITI_WEIGHT_MULT: f32 = 2.5;
 /// Spawn-weight multiplier applied to the favored faction's parent
 /// weight while the favor window is active. 2x roughly doubles
 /// its odds of being picked as the next spawn's parent.
@@ -366,6 +381,12 @@ pub struct World {
     /// the relevant multiplier from this struct and fold it into the
     /// existing cfg-derived values.
     pub era_rules: EraRules,
+    /// Active turf-graffiti marks left by the viewer via the `g`
+    /// cursor hotkey. Each entry is `(cell, expires_tick)`.
+    /// While a mark is live, spawn-weight rolls bias parent
+    /// selection toward alive nodes within `GRAFFITI_MARK_RADIUS`
+    /// of the cell. Cleaned up each tick when expired.
+    pub graffiti_marks: Vec<((i16, i16), u64)>,
     /// Procedurally-generated custom events rolled at world
     /// creation. Each entry carries a name, trigger, condition,
     /// effect, and cooldown; the runtime walks this list each
@@ -2327,6 +2348,39 @@ impl World {
         });
     }
 
+    /// Drop a turf-graffiti mark at `pos`. While the mark is
+    /// live, parent-selection in `try_spawn` biases toward any
+    /// alive node within `GRAFFITI_MARK_RADIUS` of the cell —
+    /// the sim still decides *what* to spawn and *whether* to
+    /// spawn, the mark only biases *where*. Called by the `g`
+    /// cursor hotkey. Out-of-bounds positions are rejected.
+    pub fn inject_graffiti(&mut self, pos: (i16, i16)) {
+        if pos.0 < 0 || pos.1 < 0 || pos.0 >= self.bounds.0 || pos.1 >= self.bounds.1 {
+            self.push_log("graffiti refused: out of bounds".to_string());
+            return;
+        }
+        let expires_tick = self.tick + GRAFFITI_MARK_TICKS;
+        self.graffiti_marks.push((pos, expires_tick));
+        let (a, b) = octet_pair(pos);
+        self.push_log(format!("graffiti @ 10.0.{}.{} — bias armed", a, b));
+    }
+
+    /// Parent-weight multiplier added to a candidate at `pos`
+    /// based on how many active graffiti marks sit within
+    /// radius. Read from `try_spawn`'s parent-weighting pass.
+    /// Each in-radius mark adds `GRAFFITI_WEIGHT_MULT - 1.0` so
+    /// the multiplier grows with stacked marks.
+    pub fn graffiti_weight_bonus(&self, pos: (i16, i16)) -> f32 {
+        let mut bonus = 1.0f32;
+        for &(mark, _) in &self.graffiti_marks {
+            let d = (mark.0 - pos.0).abs().max((mark.1 - pos.1).abs());
+            if d <= GRAFFITI_MARK_RADIUS {
+                bonus += GRAFFITI_WEIGHT_MULT - 1.0;
+            }
+        }
+        bonus
+    }
+
     /// Canonical-pair key for the rivalry map. Always (min, max) so
     /// either argument order produces the same lookup. Returns None
     /// if both factions are the same — self-rivalries are nonsense.
@@ -2852,6 +2906,7 @@ impl World {
             extinction_since_tick: None,
             drought_until: 0,
             custom_events: Vec::new(),
+            graffiti_marks: Vec::new(),
         };
         // Roll 3-5 procedurally-generated custom events at world
         // creation. Uses the world's own seeded RNG so the event
@@ -2981,6 +3036,8 @@ impl World {
         if self.favored_faction.is_some() && self.tick >= self.favor_expires_tick {
             self.favored_faction = None;
         }
+        // Expire any graffiti marks whose window has elapsed.
+        self.graffiti_marks.retain(|&(_, exp)| exp > self.tick);
 
         // Phase 1: growth — add new nodes and extend link animations.
         self.try_spawn();

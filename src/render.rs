@@ -2397,6 +2397,25 @@ impl<'a> Widget for MeshWidget<'a> {
         // bold arrow; the next 1-2 cells behind it (toward the child end
         // the packet just came from, i.e. higher path indices) fade out
         // so the viewer sees direction and speed at a glance.
+        // Turf graffiti marks: render each active mark as an
+        // accent-color `✕` glyph with a pulse that fades as the
+        // mark approaches expiry. Drawn before packets so the
+        // marker sits under any active traffic glyph, not over it.
+        for &(mark_pos, expires) in &w.graffiti_marks {
+            let remaining = expires.saturating_sub(w.tick);
+            let mod_style = if remaining > crate::world::GRAFFITI_MARK_TICKS / 2 {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            };
+            put(
+                buf,
+                area,
+                mark_pos,
+                "✕",
+                Style::default().fg(theme().accent).add_modifier(mod_style),
+            );
+        }
         for pkt in &w.packets {
             let link = &w.links[pkt.link_id];
             let idx = pkt.pos as usize;

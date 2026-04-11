@@ -381,6 +381,10 @@ impl World {
                     if self.is_favored(n.faction) {
                         weight *= super::FAVOR_WEIGHT_MULT;
                     }
+                    // Turf graffiti: any candidate near a live
+                    // mark gets a per-mark multiplicative bump
+                    // toward being picked as the next spawn parent.
+                    weight *= self.graffiti_weight_bonus(n.pos);
                     Some((i, weight))
                 }
                 _ => None,
