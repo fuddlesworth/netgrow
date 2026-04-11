@@ -902,6 +902,64 @@ fn diplomacy_pressure_escalates_to_cold_war_then_open_war() {
 }
 
 #[test]
+fn extinction_triggers_reseed_after_silent_interval() {
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        worm_spawn_rate: 0.0,
+        reconnect_rate: 0.0,
+        c2_count: 2,
+        c2_count_max: 3,
+        epoch_period: 0,
+        ..Config::default()
+    };
+    let mut w = World::new(7, (80, 30), cfg);
+    let initial_c2_count = w.c2_nodes.len();
+    // Kill every node so the mesh is fully extinct.
+    for n in w.nodes.iter_mut() {
+        n.state = State::Dead;
+    }
+    // First detection should flag extinction and log the mythic.
+    w.check_extinction_and_reseed();
+    assert!(
+        w.extinction_since_tick.is_some(),
+        "extinction should be detected on first all-dead check"
+    );
+    let extinction_logged = w
+        .logs
+        .iter()
+        .any(|(s, _)| s.starts_with("✦ MYTHIC ✦ EXTINCTION"));
+    assert!(extinction_logged, "extinction mythic line should fire");
+    // No reseed yet — cooldown hasn't elapsed.
+    assert_eq!(w.c2_nodes.len(), initial_c2_count);
+    // Fast-forward past the cooldown and trigger the check again.
+    w.tick = EXTINCTION_RESEED_DELAY_TICKS + 10;
+    w.check_extinction_and_reseed();
+    // A fresh cohort should now be appended and the timer cleared.
+    assert!(
+        w.c2_nodes.len() > initial_c2_count,
+        "reseed should have appended fresh C2s: got {} (was {})",
+        w.c2_nodes.len(),
+        initial_c2_count
+    );
+    assert!(w.extinction_since_tick.is_none());
+    let reseed_logged = w
+        .logs
+        .iter()
+        .any(|(s, _)| s.starts_with("✦ MYTHIC ✦ RESEED"));
+    assert!(reseed_logged, "reseed mythic line should fire");
+    // Reseeded C2s are alive, have C2_INITIAL_HP, and use fresh
+    // faction ids beyond the original count.
+    let new_c2_id = w.c2_nodes.last().copied().unwrap();
+    assert!(matches!(w.nodes[new_c2_id].state, State::Alive));
+    assert_eq!(w.nodes[new_c2_id].pwn_resist, C2_INITIAL_HP);
+    assert!((w.nodes[new_c2_id].faction as usize) >= initial_c2_count);
+    // Extinction cycle counter should have incremented.
+    assert_eq!(w.extinction_cycles, 1);
+}
+
+#[test]
 fn diplomacy_vassalage_derivation_is_correct_under_both_key_orderings() {
     // The canonical pair key is `(min(a,b), max(a,b))`, so for a
     // Vassalage the overlord can be either `a` (when overlord has

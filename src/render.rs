@@ -601,6 +601,11 @@ fn summary_totals_block(world: &World) -> Paragraph<'static> {
             format!("{}", world.dominance_shifts),
             th.accent,
         ),
+        row(
+            "resets",
+            format!("{}", world.extinction_cycles),
+            th.pwned,
+        ),
         row("alive", format!("{}", alive), th.value),
         row("dead", format!("{}", dead), th.ghost),
         row("branches", format!("{}", branches.len()), th.frame_accent),

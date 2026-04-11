@@ -170,6 +170,12 @@ pub const TECH_TIER_3_COST: u32 = 1800;
 /// the log feed.
 pub const TECH_T3_ACTIVE_CHANCE: f64 = 0.22;
 
+/// Ticks the mesh has to stay fully empty of alive factions before
+/// `check_extinction_and_reseed` fires a cosmic reseed. Gives the
+/// extinction moment weight — ghost tombstones fade, logs quiet
+/// down — before a fresh colony roll brings the sim back.
+pub const EXTINCTION_RESEED_DELAY_TICKS: u64 = 600;
+
 /// Fraction of total alive nodes a single faction needs to hold
 /// to be counted as the currently-dominant faction. Fires a log
 /// line on transitions, never ends the run — the sim keeps
@@ -313,6 +319,12 @@ pub struct World {
     /// Cumulative count of distinct dominance declarations fired
     /// this run, so the summary can show 'F0 crowned 3 times'.
     pub dominance_shifts: u32,
+    /// Number of extinction → reseed cycles this run has lived
+    /// through. Increments once per successful reseed in
+    /// `check_extinction_and_reseed`, so the stats panel can
+    /// surface "3 resets" as a narrative marker alongside
+    /// dominance shifts. Zero for the opening act.
+    pub extinction_cycles: u32,
     /// Fixed fiber-zone terrain rolled at world creation. Nodes
     /// spawned inside a hotspot start with bonus pwn_resist so
     /// factions have territory worth contesting.
@@ -334,6 +346,13 @@ pub struct World {
     /// the relevant multiplier from this struct and fold it into the
     /// existing cfg-derived values.
     pub era_rules: EraRules,
+    /// First tick on which the mesh was detected as fully extinct
+    /// (zero alive factions). Cleared as soon as any faction regains
+    /// an alive presence. When this stays set for at least
+    /// `EXTINCTION_RESEED_DELAY_TICKS` ticks, `check_extinction_and_reseed`
+    /// fires a cosmic reseed that spawns a fresh 1–N C2 cohort and
+    /// the sim picks up where the opening act would.
+    pub extinction_since_tick: Option<u64>,
 }
 
 impl World {
@@ -651,6 +670,132 @@ impl World {
             }
         }
         counts
+    }
+
+    /// Detect mesh-wide extinction and fire a cosmic reseed after
+    /// the silent-interval cooldown. Runs every faction sample
+    /// period. The state machine is three steps:
+    ///
+    /// 1. Count alive factions (any faction with >=1 alive node).
+    /// 2. If nonzero, clear `extinction_since_tick` so a future
+    ///    extinction starts the cooldown fresh.
+    /// 3. If zero, either start the cooldown timer (logging the
+    ///    EXTINCTION mythic once), or — if the cooldown has
+    ///    elapsed — fire `reseed_after_extinction` and clear
+    ///    the timer.
+    ///
+    /// The cooldown gives the reader time to feel the extinction:
+    /// ghost tombstones fade, logs quiet down, then a fresh cohort
+    /// rolls in as a RESEED mythic event.
+    fn check_extinction_and_reseed(&mut self) {
+        let mut alive_factions = 0u32;
+        for n in &self.nodes {
+            if matches!(n.state, State::Alive) {
+                alive_factions += 1;
+                break;
+            }
+        }
+        let now = self.tick;
+        if alive_factions > 0 {
+            self.extinction_since_tick = None;
+            return;
+        }
+        match self.extinction_since_tick {
+            None => {
+                self.extinction_since_tick = Some(now);
+                self.push_log(
+                    "✦ MYTHIC ✦ EXTINCTION — the mesh falls silent".to_string(),
+                );
+            }
+            Some(since) if now.saturating_sub(since) >= EXTINCTION_RESEED_DELAY_TICKS => {
+                self.reseed_after_extinction();
+                self.extinction_since_tick = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Spawn a fresh C2 cohort after a confirmed extinction. Uses
+    /// the same `c2_count` / `c2_count_max` config window the
+    /// constructor uses for the opening roll, so a seed that
+    /// starts with a 2–4 opening will reseed with a 2–4 cohort.
+    /// Each new C2 gets a new faction id (appended to the tail of
+    /// `c2_nodes`), a rolled persona, a fresh palette slot, and a
+    /// new branch id. Emits a RESEED mythic event on success.
+    fn reseed_after_extinction(&mut self) {
+        let bounds = self.bounds;
+        if bounds.0 < 12 || bounds.1 < 12 {
+            return;
+        }
+        let min = self.cfg.c2_count.max(1);
+        let max = self.cfg.c2_count_max.max(min);
+        let count = if max > min {
+            self.rng.gen_range(min..=max) as usize
+        } else {
+            min as usize
+        };
+        // Pick placement positions with the same margin / spacing
+        // budget the constructor uses, so reseeded C2s don't land
+        // on top of each other or stick to a wall.
+        let margin_x = ((bounds.0 / 10).max(4)).min(bounds.0 / 2 - 1);
+        let margin_y = ((bounds.1 / 6).max(3)).min(bounds.1 / 2 - 1);
+        let min_spacing = (bounds.0.min(bounds.1) / 4).max(10);
+        let mut chosen_positions: Vec<(i16, i16)> = Vec::with_capacity(count);
+        for _ in 0..count {
+            let mut pick: Option<(i16, i16)> = None;
+            for _ in 0..64 {
+                let x = self.rng.gen_range(margin_x..bounds.0 - margin_x);
+                let y = self.rng.gen_range(margin_y..bounds.1 - margin_y);
+                if self.occupied.contains(&(x, y)) {
+                    continue;
+                }
+                let too_close = chosen_positions.iter().any(|&p: &(i16, i16)| {
+                    (p.0 - x).abs().max((p.1 - y).abs()) < min_spacing
+                });
+                if !too_close {
+                    pick = Some((x, y));
+                    break;
+                }
+            }
+            if let Some(pos) = pick {
+                chosen_positions.push(pos);
+            }
+        }
+        if chosen_positions.is_empty() {
+            return;
+        }
+        let palette_len = crate::theme::theme().faction_palette.len().max(1);
+        let mut spawned = 0u32;
+        for pos in chosen_positions {
+            let new_faction = self.c2_nodes.len() as u8;
+            let new_branch = self.alloc_branch_id();
+            let mut node = Node::fresh(pos, None, self.tick, Role::Relay, new_branch);
+            node.faction = new_faction;
+            node.pwn_resist = C2_INITIAL_HP;
+            node.mutated_flash = 12;
+            let id = self.nodes.len();
+            self.nodes.push(node);
+            self.occupied.insert(pos);
+            self.c2_nodes.push(id);
+            self.faction_stats.push(FactionStats::default());
+            let persona = match self.rng.gen_range(0..4u8) {
+                0 => Persona::Aggressor,
+                1 => Persona::Fortress,
+                2 => Persona::Plague,
+                _ => Persona::Opportunist,
+            };
+            self.personas.push(persona);
+            let color_idx = self.rng.gen_range(0..palette_len);
+            self.faction_colors.push(color_idx);
+            spawned += 1;
+        }
+        if spawned > 0 {
+            self.extinction_cycles = self.extinction_cycles.saturating_add(1);
+            self.push_log(format!(
+                "✦ MYTHIC ✦ RESEED #{} — {} fresh colonies rise from the ash",
+                self.extinction_cycles, spawned
+            ));
+        }
     }
 
     /// Diplomacy state-machine driver. Called once per faction
@@ -2146,11 +2291,13 @@ impl World {
             faction_colors,
             current_dominant: None,
             dominance_shifts: 0,
+            extinction_cycles: 0,
             hotspots: hotspots_init,
             favored_faction: None,
             favor_expires_tick: 0,
             strain_patents: vec![None; STRAIN_COUNT],
             era_rules: era_rules_for(0).0,
+            extinction_since_tick: None,
         }
     }
 
@@ -2248,6 +2395,11 @@ impl World {
             self.collect_strain_patents();
             // Wake any sleeper-lattice edges whose triggers fired.
             self.activate_sleeper_lattice();
+            // Detect full extinction and fire a cosmic reseed
+            // after the silent-interval cooldown. The sim is
+            // hands-off, so mesh-wide wipe shouldn't end the
+            // run — it's just another act break.
+            self.check_extinction_and_reseed();
         }
         // Expire the faction favoritism boost.
         if self.favored_faction.is_some() && self.tick >= self.favor_expires_tick {
