@@ -300,10 +300,14 @@ impl World {
         let count = self.rng.gen_range(1..=(max as usize));
         let take = count.min(candidates.len());
 
-        // Routing wants the occupied set minus the two endpoints so it
-        // doesn't reject the start/end cells. Same pattern the spawn
-        // routing uses.
-        let mut occ = self.occupied.clone();
+        // Routing blocks only on other node positions, not link
+        // paths — so backdoor cross-links are free to cross over
+        // existing wires just like spawn and reconnect links do.
+        let mut occ: HashSet<(i16, i16)> = self
+            .nodes
+            .iter()
+            .map(|n| n.pos)
+            .collect();
         occ.remove(&a_pos);
 
         let bounds = self.bounds;

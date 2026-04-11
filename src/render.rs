@@ -1972,6 +1972,31 @@ impl<'a> Widget for MeshWidget<'a> {
                 } else {
                     style
                 };
+                // If this cell already holds a link glyph from a
+                // previously-drawn wire (because the two paths
+                // cross here), swap in a crossroad char so the
+                // intersection reads as a proper crosshair
+                // instead of one glyph punching through the other.
+                let cx = area.x as i32 + cell.0 as i32;
+                let cy = area.y as i32 + cell.1 as i32;
+                if cx >= area.x as i32
+                    && cy >= area.y as i32
+                    && cx < area.right() as i32
+                    && cy < area.bottom() as i32
+                {
+                    if let Some(existing) = buf.cell_mut((cx as u16, cy as u16)) {
+                        let sym = existing.symbol();
+                        let is_link_glyph = matches!(
+                            sym,
+                            "─" | "│" | "┌" | "┐" | "└" | "┘"
+                                | "━" | "┃" | "┏" | "┓" | "┗" | "┛"
+                        );
+                        if is_link_glyph {
+                            existing.set_symbol("┼").set_style(style);
+                            continue;
+                        }
+                    }
+                }
                 put(buf, area, cell, glyph, style);
             }
         }

@@ -106,10 +106,15 @@ impl World {
         }
         let b = candidates[self.rng.gen_range(0..candidates.len())];
         let b_pos = self.nodes[b].pos;
+        // Routing only blocks on node cells, not existing link
+        // paths — so new links are free to cross over already-
+        // drawn wires and produce denser mesh topology.
+        let node_cells: std::collections::HashSet<(i16, i16)> =
+            self.nodes.iter().map(|n| n.pos).collect();
         let path = match routing::route_link(
             a_pos,
             b_pos,
-            &self.occupied,
+            &node_cells,
             self.bounds,
             &mut self.rng,
         ) {
@@ -403,10 +408,14 @@ impl World {
             }
         }
 
+        // Only other node positions block the router; link paths
+        // are free to cross over existing wires.
+        let node_cells: std::collections::HashSet<(i16, i16)> =
+            self.nodes.iter().map(|n| n.pos).collect();
         let path = match routing::route_link(
             parent_pos,
             cand,
-            &self.occupied,
+            &node_cells,
             self.bounds,
             &mut self.rng,
         ) {
