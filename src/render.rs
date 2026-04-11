@@ -608,13 +608,16 @@ fn summary_leaderboard_block(world: &World) -> Paragraph<'static> {
                 Style::default().fg(hue),
             ),
             Span::styled(
-                format!("{:>+5}  ", score),
+                // 7-char width handles up to 6 digits + sign so
+                // long-running high-score factions don't overflow
+                // the column and push the score bar right.
+                format!("{:>+7}  ", score),
                 Style::default().fg(hue).add_modifier(Modifier::BOLD),
             ),
             Span::styled(bar, Style::default().fg(hue)),
             Span::styled(
                 format!(
-                    "  spawn {:<4} lost {:<4} intel {:<4} cured {}",
+                    "  spawn {:<4} lost {:<4} intel {:<5} cured {}",
                     fs.spawned, fs.lost, fs.intel, fs.infections_cured
                 ),
                 Style::default().fg(th.stat_label),
