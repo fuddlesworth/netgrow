@@ -204,11 +204,16 @@ Brainstormed unshipped items from earlier rounds, rough scope markers:
 
 ### Lifecycle / cascades
 
-- ⭐ **Scorched-Earth Protocol** *(small)* — losing factions can chain-
-  self-destruct their subtree instead of surrendering. Leaves rubble
-  zones for rivals to reclaim.
-- **Faction Memory Decay** *(trivial)* — resurrected factions forget
-  rivalries, diplomatic state resets to neutral.
+- ✅ **Scorched-Earth Protocol** — a faction that drops below 25% of
+  its peak (with peak >= 20) rolls a 40% chance per sample period to
+  self-destruct its own subtree from the C2 down via
+  `schedule_subtree_death(c2_id, 2.0)`. Logged as
+  `✦ SCORCHED EARTH ✦ F{N} initiates total collapse`. One-shot per
+  faction lifetime via `FactionStats.scorched_earth_fired`.
+- ✅ **Faction Memory Decay** — when a C2 dies in `advance_dying`,
+  all rivalry entries and active wars involving that faction id are
+  purged from the HashMaps. Logs `F{N} memory fades — {N} rivalries
+  forgotten` in ghost color.
 
 ### Terrain / topology
 
@@ -222,9 +227,11 @@ Brainstormed unshipped items from earlier rounds, rough scope markers:
 
 ### Narrative / history
 
-- ⭐ **Lore Tablets** *(trivial)* — legendary nodes leave a permanent
-  tombstone glyph with an epitaph when they die. The map becomes a
-  graveyard that rewards reading.
+- ✅ **Lore Tablets** — legendary nodes render as permanent `†`
+  tombstones on death (held in `occupied` forever, echo pinned at
+  max). Their full connection web stays visible in dim accent
+  color as a permanent memorial. Fall logs fire
+  `✦ legend ✦ {name} falls @ ip (F{N})` as mythic events.
 
 ### Player interaction
 

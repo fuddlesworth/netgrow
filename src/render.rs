@@ -1671,6 +1671,11 @@ fn color_log_line(s: &str) -> Line<'static> {
             .fg(th.header_brand_fg)
             .bg(th.pwned)
             .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    } else if s.starts_with("✦ SCORCHED EARTH") {
+        Style::default()
+            .fg(th.header_brand_fg)
+            .bg(th.log_cascade)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
     } else if s.starts_with("✦ sleeper") {
         Style::default()
             .fg(th.header_brand_fg)
@@ -1809,6 +1814,8 @@ fn color_log_line(s: &str) -> Line<'static> {
             .add_modifier(Modifier::BOLD)
     } else if s.starts_with("F") && s.contains("loses dominance") {
         Style::default().fg(th.log_cascade).add_modifier(Modifier::BOLD)
+    } else if s.starts_with("F") && s.contains("memory fades") {
+        Style::default().fg(th.ghost).add_modifier(Modifier::DIM)
     } else if s.starts_with("F") && s.contains("scanner spotted") {
         Style::default().fg(th.scanner)
     } else if s.starts_with("fiber zone") {

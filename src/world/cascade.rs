@@ -498,6 +498,33 @@ impl World {
                 name, a, b, faction
             ));
         }
+        // Faction memory decay: when a C2 node dies, purge any
+        // rivalry pairs involving that faction. The faction is
+        // gone — so are its grudges. Reborn colonies start with
+        // a clean slate, and surviving rivals stop escalating
+        // against a faction that no longer exists.
+        let dead_factions: Vec<u8> = newly_dead
+            .iter()
+            .filter(|&&id| self.c2_nodes.contains(&id))
+            .map(|&id| self.nodes[id].faction)
+            .collect();
+        if !dead_factions.is_empty() {
+            let before = self.rivalry.len();
+            self.rivalry
+                .retain(|&(a, b), _| !dead_factions.iter().any(|&f| a == f || b == f));
+            let purged = before.saturating_sub(self.rivalry.len());
+            for f in &dead_factions {
+                self.push_log(format!(
+                    "F{} memory fades — {} rivalries forgotten",
+                    f, purged
+                ));
+            }
+            // Also drop active war declarations involving the
+            // dead factions so they don't persist as dead-pair
+            // entries clogging the wars map.
+            self.wars
+                .retain(|&(a, b), _| !dead_factions.iter().any(|&f| a == f || b == f));
+        }
         // Resurrection rolls now happen at schedule_subtree_death
         // time, where the whole cascade cohort is visible — by the
         // point a node finalizes into Dead its cohort has long

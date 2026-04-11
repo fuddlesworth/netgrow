@@ -133,6 +133,19 @@ pub const WAR_DURATION_TICKS: u64 = 500;
 /// going until the user quits.
 pub const VICTORY_ALIVE_FRACTION: f32 = 0.60;
 
+/// Fraction of a faction's peak alive count it must drop to before
+/// scorched-earth becomes possible. A faction that has lost at
+/// least this much of its peak is eligible to trigger the
+/// self-destruct cascade.
+pub const SCORCHED_EARTH_TRIGGER_FRACTION: f32 = 0.25;
+/// Minimum peak alive count a faction must have reached to even
+/// qualify for scorched-earth — prevents tiny factions from
+/// instantly self-destructing after their first cascade.
+pub const SCORCHED_EARTH_MIN_PEAK: u32 = 20;
+/// Per-sample-tick chance that an eligible faction actually fires
+/// its scorched-earth protocol once the trigger condition is met.
+pub const SCORCHED_EARTH_CHANCE: f64 = 0.4;
+
 /// Number of successful packet deliveries a Parent link must carry
 /// before it gets promoted to a backbone link with an inflated HOT
 /// ceiling and a thicker glyph.
@@ -380,6 +393,72 @@ impl World {
     /// promote them. A pair only declares once per rivalry lifetime
     /// — after a declaration fires, the rivalry has to fully decay
     /// below the threshold and re-climb to trigger another.
+    /// Scorched-earth protocol — when a faction has fallen
+    /// below `SCORCHED_EARTH_TRIGGER_FRACTION` of its peak,
+    /// each sample period rolls a small chance that it defies
+    /// assimilation by chain-collapsing its own subtree from
+    /// the C2 down. Leaves rubble zones other factions have to
+    /// reclaim instead of just walking into. One-shot per
+    /// faction lifetime (tracked via
+    /// `FactionStats.scorched_earth_fired`).
+    fn maybe_scorched_earth(&mut self) {
+        let mut eligible: Vec<(u8, NodeId)> = Vec::new();
+        for (fid_usize, fs) in self.faction_stats.iter().enumerate() {
+            if fs.scorched_earth_fired {
+                continue;
+            }
+            if fs.peak_alive < SCORCHED_EARTH_MIN_PEAK {
+                continue;
+            }
+            let cur = fs.history.back().copied().unwrap_or(0);
+            if (cur as f32) > (fs.peak_alive as f32) * SCORCHED_EARTH_TRIGGER_FRACTION {
+                continue;
+            }
+            if cur == 0 {
+                // Already wiped out — nothing to burn.
+                continue;
+            }
+            // Find the faction's C2 node (if any still alive).
+            let fid = fid_usize as u8;
+            let c2 = self
+                .c2_nodes
+                .iter()
+                .copied()
+                .find(|&id| {
+                    matches!(self.nodes[id].state, State::Alive)
+                        && self.nodes[id].faction == fid
+                });
+            if let Some(c2_id) = c2 {
+                eligible.push((fid, c2_id));
+            }
+        }
+        for (fid, c2_id) in eligible {
+            if !self.rng.gen_bool(SCORCHED_EARTH_CHANCE) {
+                continue;
+            }
+            if let Some(fs) = self.faction_stats.get_mut(fid as usize) {
+                fs.scorched_earth_fired = true;
+            }
+            let pos = self.nodes[c2_id].pos;
+            let (a, b) = octet_pair(pos);
+            self.push_log(format!(
+                "✦ SCORCHED EARTH ✦ F{} initiates total collapse @ 10.0.{}.{}",
+                fid, a, b
+            ));
+            // Schedule the whole subtree — schedule_subtree_death
+            // already walks the cascade reachability, so this
+            // burns every node reachable from the C2 within the
+            // faction. Use a high honeypot-style multiplier so
+            // the rubble lingers longer as ghosts before fully
+            // decaying.
+            self.schedule_subtree_death(c2_id, 2.0);
+            // Also kill the C2 itself explicitly (it's exempt
+            // from the cascade reachability that compute_cascade
+            // uses, since that anchors on the C2).
+            self.nodes[c2_id].dying_in = 1;
+        }
+    }
+
     fn maybe_declare_wars(&mut self) {
         let mut new_wars: Vec<(u8, u8)> = Vec::new();
         for (&(a, b), &pressure) in &self.rivalry {
@@ -1133,6 +1212,9 @@ impl World {
             self.maybe_declare_wars();
             // Check for a dominance victory condition.
             self.maybe_declare_victory();
+            // Let any critically-weakened faction trigger its
+            // scorched-earth protocol as a last defiance.
+            self.maybe_scorched_earth();
         }
         // Expire any wars whose windows have elapsed.
         self.wars.retain(|_, exp| *exp > self.tick);

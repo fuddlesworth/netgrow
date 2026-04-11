@@ -606,6 +606,10 @@ pub struct FactionStats {
     /// dynamic persona-shift rule: when current alive drops well
     /// below the peak, the faction flips to a defensive persona.
     pub peak_alive: u32,
+    /// True once this faction has initiated scorched-earth —
+    /// chain-collapsed its own subtree in defiance rather than
+    /// letting rivals reclaim it. One-shot per faction lifetime.
+    pub scorched_earth_fired: bool,
 }
 
 impl FactionStats {
