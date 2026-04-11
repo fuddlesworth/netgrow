@@ -51,6 +51,14 @@ faction_palette = [
   "#fe8019",  # orange
   "#b8bb26",  # green
   "#d3869b",  # purple
+  "#fabd2f",  # yellow
+  "#83a598",  # soft blue
+  "#fb4934",  # bright red
+  "#d79921",  # amber
+  "#689d6a",  # muted green
+  "#458588",  # deep blue
+  "#cc241d",  # deep red
+  "#b16286",  # magenta
 ]
 
 strain_palette = [

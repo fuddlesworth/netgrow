@@ -53,6 +53,14 @@ faction_palette = [
   "#FFAA7F",  # salmon
   "#00AA7F",  # emerald
   "#B48EAD",  # mauve
+  "#56B6C2",  # teal
+  "#E5C07B",  # wheat
+  "#D19A66",  # tan
+  "#C74264",  # crimson
+  "#478ED5",  # muted blue
+  "#7fc7a4",  # cool mint
+  "#e06c75",  # rose red
+  "#a78bd9",  # pale violet
 ]
 
 strain_palette = [

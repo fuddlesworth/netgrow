@@ -122,10 +122,18 @@ impl Default for Theme {
                 Color::Rgb(220, 240, 140),
             ],
             faction_palette: vec![
-                Color::Rgb(80, 220, 240),
-                Color::Rgb(255, 160, 60),
-                Color::Rgb(140, 240, 100),
-                Color::Rgb(180, 140, 240),
+                Color::Rgb(80, 220, 240),  // cyan
+                Color::Rgb(255, 160, 60),  // orange
+                Color::Rgb(140, 240, 100), // lime green
+                Color::Rgb(180, 140, 240), // lavender
+                Color::Rgb(255, 100, 160), // hot pink
+                Color::Rgb(255, 230, 80),  // yellow
+                Color::Rgb(100, 200, 255), // sky blue
+                Color::Rgb(240, 130, 90),  // salmon
+                Color::Rgb(160, 255, 200), // mint
+                Color::Rgb(220, 120, 255), // magenta
+                Color::Rgb(255, 200, 120), // peach
+                Color::Rgb(100, 250, 170), // jade
             ],
             strain_palette: vec![
                 Color::Rgb(220, 80, 220),

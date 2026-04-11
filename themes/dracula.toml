@@ -51,6 +51,14 @@ faction_palette = [
   "#ffb86c",  # orange
   "#50fa7b",  # green
   "#bd93f9",  # purple
+  "#f1fa8c",  # yellow
+  "#ff79c6",  # pink
+  "#ff5555",  # red
+  "#6272a4",  # comment blue
+  "#a3ffea",  # mint
+  "#d0a0ff",  # lavender
+  "#ffd080",  # peach
+  "#ff8fc9",  # rose
 ]
 
 strain_palette = [

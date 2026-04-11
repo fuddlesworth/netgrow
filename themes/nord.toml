@@ -51,6 +51,14 @@ faction_palette = [
   "#d08770",  # nord12 orange
   "#a3be8c",  # nord14 green
   "#b48ead",  # nord15 purple
+  "#8fbcbb",  # nord7 teal
+  "#ebcb8b",  # nord13 yellow
+  "#bf616a",  # nord11 red
+  "#81a1c1",  # nord9 frost blue
+  "#5e81ac",  # nord10 deep blue
+  "#d8dee9",  # nord4 silver
+  "#b39ddb",  # pale lavender
+  "#80cbc4",  # soft teal
 ]
 
 strain_palette = [
