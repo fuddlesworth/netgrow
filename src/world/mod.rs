@@ -26,15 +26,38 @@ pub const STRAIN_COUNT: usize = 8;
 const WORM_STEP_INTERVAL: u64 = 2;
 
 /// Link load threshold for the "warm" render tier: accent color with a
-/// bold modifier. Below this the link uses its normal branch hue.
+/// bold modifier. Below this the link uses its normal branch hue. Also
+/// the exfil backpressure threshold — an exfil whose inbound link is
+/// warm or hotter skips its emission cycle and retries on a shorter
+/// cooldown, so traffic self-throttles before the chain saturates.
 pub const WARM_LINK: u8 = 6;
 /// Link load threshold for the "hot" render tier: cascade color. Packets
-/// refuse to hop onto a link whose load has crossed this.
+/// refuse to hop onto a link whose load has crossed this, and the link's
+/// `burn_ticks` counter climbs while it stays above this line.
 pub const HOT_LINK: u8 = 16;
 /// How much each in-flight packet adds to its current link's load per tick.
-const PACKET_LOAD_INCREMENT: u8 = 2;
+const PACKET_LOAD_INCREMENT: u8 = 1;
 /// How much each in-flight worm adds to its current link's load per tick.
 const WORM_LOAD_INCREMENT: u8 = 1;
+
+/// Sustained-hot ticks that upgrade a link's child endpoint into a
+/// Router on a probabilistic roll. The morph bypasses the normal
+/// mutation lock — it's the mesh adapting to traffic pressure in
+/// place, not a background mutation.
+const ROUTER_UPGRADE_THRESHOLD: u8 = 20;
+/// Per-tick chance (while over `ROUTER_UPGRADE_THRESHOLD`) that an
+/// eligible child endpoint morphs into a Router. Kept relatively high
+/// so the response to congestion feels immediate but still organic.
+const ROUTER_UPGRADE_CHANCE: f64 = 0.25;
+/// Sustained-hot ticks that collapse a link entirely, clearing all
+/// traffic, spiking both endpoints' role cooldowns, and quarantining
+/// the link for `LINK_QUARANTINE_TICKS`. The rare dramatic response
+/// when Router upgrades and cross-link reroutes fail to relieve the
+/// pressure in time.
+const LINK_COLLAPSE_THRESHOLD: u8 = 60;
+/// How long a collapsed link stays unavailable to packets before it
+/// can carry traffic again.
+const LINK_QUARANTINE_TICKS: u8 = 40;
 
 /// Duration in ticks of a scanner's ping pulse. Adjacent links brighten
 /// to the scanner color for this many ticks — no strobe, no reversed
@@ -413,6 +436,7 @@ impl World {
         // Phase 2: traveler motion — anything moving along existing links.
         self.decay_link_load();
         self.advance_packets();
+        self.advance_link_overloads();
         self.advance_worms();
         self.advance_patch_waves();
         self.advance_sparks();
@@ -555,13 +579,104 @@ impl World {
         }
     }
 
-    /// Decay one step of traffic load and breach TTL from every link.
-    /// Called at the top of the motion phase so the add/decay pair stays
-    /// symmetric.
+    /// Decay one step of traffic load, breach TTL, and burn/quarantine
+    /// state from every link. Called at the top of the motion phase so
+    /// the add/decay pair stays symmetric. Decay is load-proportional
+    /// (`max(1, load/4)`) so hot links cool aggressively — short bursts
+    /// snap back instead of lingering at the ceiling.
     fn decay_link_load(&mut self) {
         for link in self.links.iter_mut() {
-            link.load = link.load.saturating_sub(1);
+            let step = (link.load / 4).max(1);
+            link.load = link.load.saturating_sub(step);
             link.breach_ttl = link.breach_ttl.saturating_sub(1);
+            link.quarantined = link.quarantined.saturating_sub(1);
+            // burn_ticks climbs while hot, unwinds while cool.
+            if link.load >= HOT_LINK {
+                link.burn_ticks = link.burn_ticks.saturating_add(1);
+            } else if link.burn_ticks > 0 {
+                link.burn_ticks -= 1;
+            }
+        }
+    }
+
+    /// React to sustained congestion: upgrade child endpoints into
+    /// Routers when a link has been hot for a while, and collapse
+    /// links that stay hot past the upper threshold. Called right
+    /// after `advance_packets` so the decisions are based on the
+    /// load snapshot the packets just observed.
+    fn advance_link_overloads(&mut self) {
+        // Pass 1: collect candidates without borrowing self mutably.
+        let mut upgrade_candidates: Vec<NodeId> = Vec::new();
+        let mut collapse_ids: Vec<usize> = Vec::new();
+        for (li, link) in self.links.iter().enumerate() {
+            if link.quarantined > 0 {
+                continue;
+            }
+            if link.burn_ticks >= LINK_COLLAPSE_THRESHOLD {
+                collapse_ids.push(li);
+                continue;
+            }
+            if link.burn_ticks == ROUTER_UPGRADE_THRESHOLD
+                && link.kind == LinkKind::Parent
+            {
+                upgrade_candidates.push(link.b);
+            }
+        }
+
+        // Pass 2: router upgrades. Bypasses `is_mutation_locked` on
+        // purpose — this is the mesh adapting to pressure in place.
+        for id in upgrade_candidates {
+            if self.is_c2(id) {
+                continue;
+            }
+            let node = &self.nodes[id];
+            if node.role == Role::Router
+                || !matches!(node.state, State::Alive)
+                || node.dying_in > 0
+            {
+                continue;
+            }
+            // Still respect honeypot stealth and defender immunity.
+            if matches!(node.role, Role::Honeypot | Role::Defender) {
+                continue;
+            }
+            if self.rng.gen_bool(ROUTER_UPGRADE_CHANCE) {
+                let pos = node.pos;
+                self.nodes[id].role = Role::Router;
+                self.nodes[id].mutated_flash = 8;
+                self.log_node(pos, "upgraded → router");
+            }
+        }
+
+        // Pass 3: link collapses. Flush traffic, quarantine the link,
+        // stun both endpoints, and emit a shockwave at the midpoint.
+        for li in collapse_ids {
+            let (mid, a, b) = {
+                let link = &self.links[li];
+                let mid = link
+                    .path
+                    .get(link.path.len() / 2)
+                    .copied()
+                    .unwrap_or((0, 0));
+                (mid, link.a, link.b)
+            };
+            self.packets.retain(|p| p.link_id != li);
+            self.worms.retain(|w| w.link_id != li);
+            let link = &mut self.links[li];
+            link.load = 0;
+            link.burn_ticks = 0;
+            link.quarantined = LINK_QUARANTINE_TICKS;
+            // Stun endpoints. Cap via the DDoS ceiling so overlapping
+            // collapses can't disable a node forever.
+            const OVERLOAD_STUN: u16 = 120;
+            const OVERLOAD_CAP: u16 = 500;
+            for endpoint in [a, b] {
+                let n = &mut self.nodes[endpoint];
+                n.role_cooldown = n.role_cooldown.saturating_add(OVERLOAD_STUN).min(OVERLOAD_CAP);
+                n.scan_pulse = n.scan_pulse.max(6);
+            }
+            self.emit_cascade_effects(mid, 8);
+            self.push_log("⚡ LINK OVERLOAD — router core melted".to_string());
         }
     }
 

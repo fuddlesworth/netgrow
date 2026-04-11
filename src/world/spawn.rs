@@ -115,6 +115,8 @@ impl World {
             kind: LinkKind::Cross,
             load: 0,
             breach_ttl: 0,
+            burn_ticks: 0,
+            quarantined: 0,
         });
         if self.nodes[a].faction != self.nodes[b].faction {
             self.push_log(format!(
@@ -139,7 +141,8 @@ impl World {
             + w.tower
             + w.beacon
             + w.proxy
-            + w.decoy;
+            + w.decoy
+            + w.router;
         let mut r = self.rng.gen::<f32>() * total.max(f32::EPSILON);
         if r < w.relay {
             return Role::Relay;
@@ -172,7 +175,11 @@ impl World {
         if r < w.proxy {
             return Role::Proxy;
         }
-        Role::Decoy
+        r -= w.proxy;
+        if r < w.decoy {
+            return Role::Decoy;
+        }
+        Role::Router
     }
 
     pub(super) fn alloc_branch_id(&mut self) -> u16 {
@@ -385,6 +392,8 @@ impl World {
             kind: LinkKind::Parent,
             load: 0,
             breach_ttl: 0,
+            burn_ticks: 0,
+            quarantined: 0,
         });
 
         let h = (cand.0 as u32).wrapping_mul(2654435761) ^ (cand.1 as u32).wrapping_mul(40503);

@@ -514,6 +514,10 @@ fn legend_block() -> Paragraph<'static> {
             cell("⊚", th.accent, "beacon"),
             Some(cell("⊛", th.stat_packets, "proxy")),
         ),
+        two(
+            cell("⊕", th.value, "router"),
+            None,
+        ),
     ];
     Paragraph::new(lines).block(block)
 }
@@ -1426,6 +1430,12 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                     Style::default()
                         .fg(th.exfil)
                         .add_modifier(if node.hardened { Modifier::BOLD } else { Modifier::empty() }),
+                ),
+                Role::Router => (
+                    "⊕",
+                    Style::default()
+                        .fg(th.value)
+                        .add_modifier(Modifier::BOLD),
                 ),
             };
             if pulse_boost {

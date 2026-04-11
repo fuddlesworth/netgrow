@@ -5,13 +5,13 @@
 //! `maybe_spawn_worms` fires new worms off active-infected carriers.
 //! Split out of `world/mod.rs` so the core tick loop stays small.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rand::Rng;
 
 use super::{
-    octet_pair, HOT_LINK, Infection, InfectionStage, NodeId, Packet, PACKET_LOAD_INCREMENT,
-    State, WORM_LOAD_INCREMENT, WORM_STEP_INTERVAL, Worm, World,
+    octet_pair, HOT_LINK, Infection, InfectionStage, LinkKind, NodeId, Packet,
+    PACKET_LOAD_INCREMENT, Role, State, WORM_LOAD_INCREMENT, WORM_STEP_INTERVAL, Worm, World,
 };
 
 impl World {
@@ -20,9 +20,23 @@ impl World {
             return;
         }
         let inbound = self.build_inbound_links();
+        // Index fully-drawn cross-links by endpoint for O(1) reroute lookups.
+        let mut cross_at: HashMap<NodeId, Vec<usize>> = HashMap::new();
+        for (li, l) in self.links.iter().enumerate() {
+            if l.kind != LinkKind::Cross {
+                continue;
+            }
+            if (l.drawn as usize) < l.path.len() {
+                continue;
+            }
+            cross_at.entry(l.a).or_default().push(li);
+            cross_at.entry(l.b).or_default().push(li);
+        }
 
         let mut keep: Vec<Packet> = Vec::with_capacity(self.packets.len());
-        let mut dropped_positions: Vec<(i16, i16)> = Vec::new();
+        let mut dropped_count: u32 = 0;
+        let mut last_drop_pos: Option<(i16, i16)> = None;
+        let mut rerouted_count: u32 = 0;
         for mut pkt in std::mem::take(&mut self.packets) {
             let (link_a, link_b) = {
                 let link = &self.links[pkt.link_id];
@@ -49,19 +63,63 @@ impl World {
                 if self.is_c2(parent_id) {
                     continue; // delivered
                 }
+                // Router absorption — this parent caches the packet
+                // instead of forwarding, relieving the upstream chain.
+                if self.nodes[parent_id].role == Role::Router {
+                    self.nodes[parent_id].pulse = 3;
+                    continue;
+                }
                 if let Some(&next_link) = inbound.get(&parent_id) {
                     let next = &self.links[next_link];
-                    if next.path.is_empty() {
+                    let primary_usable = !next.path.is_empty()
+                        && next.load < HOT_LINK
+                        && next.quarantined == 0;
+                    if primary_usable {
+                        pkt.link_id = next_link;
+                        pkt.pos = (next.path.len() - 1) as u16;
+                        keep.push(pkt);
                         continue;
                     }
-                    if next.load >= HOT_LINK {
-                        // Congested downstream leg — drop the packet.
-                        dropped_positions.push(self.nodes[parent_id].pos);
-                        continue;
+                    // Primary route is congested or quarantined — look
+                    // for a cross-link bypass: any cross-link touching
+                    // `parent_id` whose far endpoint has a cooler
+                    // inbound path we can jump onto.
+                    let parent_faction = self.nodes[parent_id].faction;
+                    let mut rerouted = false;
+                    if let Some(crosses) = cross_at.get(&parent_id) {
+                        for &cli in crosses {
+                            let c = &self.links[cli];
+                            let other = if c.a == parent_id { c.b } else { c.a };
+                            if !matches!(self.nodes[other].state, State::Alive)
+                                || self.nodes[other].dying_in > 0
+                            {
+                                continue;
+                            }
+                            if self.nodes[other].faction != parent_faction {
+                                continue;
+                            }
+                            let Some(&alt) = inbound.get(&other) else {
+                                continue;
+                            };
+                            let alt_link = &self.links[alt];
+                            if alt_link.path.is_empty()
+                                || alt_link.load >= HOT_LINK
+                                || alt_link.quarantined > 0
+                            {
+                                continue;
+                            }
+                            pkt.link_id = alt;
+                            pkt.pos = (alt_link.path.len() - 1) as u16;
+                            keep.push(pkt);
+                            rerouted_count += 1;
+                            rerouted = true;
+                            break;
+                        }
                     }
-                    pkt.link_id = next_link;
-                    pkt.pos = (next.path.len() - 1) as u16;
-                    keep.push(pkt);
+                    if !rerouted {
+                        dropped_count += 1;
+                        last_drop_pos = Some(self.nodes[parent_id].pos);
+                    }
                 }
                 continue;
             }
@@ -69,8 +127,18 @@ impl World {
             keep.push(pkt);
         }
         self.packets = keep;
-        for pos in dropped_positions {
-            self.log_node(pos, "pkt drop (hot)");
+        // Collapse drops into a single log line on heavy bursts so
+        // congested cores don't spam the log. Quiet trickles still get
+        // a normal per-node line so a single lost packet stays visible.
+        if dropped_count >= 3 {
+            self.push_log(format!("{} pkts dropped at congested core", dropped_count));
+        } else if dropped_count > 0 {
+            if let Some(pos) = last_drop_pos {
+                self.log_node(pos, "pkt drop");
+            }
+        }
+        if rerouted_count >= 4 {
+            self.push_log(format!("{} pkts rerouted via cross-links", rerouted_count));
         }
     }
 

@@ -24,6 +24,7 @@ pub struct FileConfig {
     pub beacon_weight: Option<f32>,
     pub proxy_weight: Option<f32>,
     pub decoy_weight: Option<f32>,
+    pub router_weight: Option<f32>,
 
     pub scanner_ping_period: Option<u16>,
     pub exfil_packet_period: Option<u16>,

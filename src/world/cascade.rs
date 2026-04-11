@@ -322,6 +322,8 @@ impl World {
                     kind: LinkKind::Cross,
                     load: 0,
                     breach_ttl: 0,
+                    burn_ticks: 0,
+                    quarantined: 0,
                 });
                 revealed += 1;
                 self.log_node(b_pos, "backdoor revealed");

@@ -8,7 +8,7 @@
 
 use rand::Rng;
 
-use super::{NodeId, Packet, Role, State, World, DIRS, SCANNER_PULSE_TICKS};
+use super::{NodeId, Packet, Role, State, World, DIRS, SCANNER_PULSE_TICKS, WARM_LINK};
 
 impl World {
     pub(super) fn advance_role_cooldowns(&mut self) {
@@ -108,16 +108,26 @@ impl World {
             })
             .collect();
         for id in exfil_ids {
-            self.nodes[id].role_cooldown = period;
             if let Some(&link_id) = inbound.get(&id) {
                 let link = &self.links[link_id];
                 if link.path.is_empty() {
+                    self.nodes[id].role_cooldown = period;
                     continue;
                 }
+                // Backpressure: if the outbound link is already warm
+                // or quarantined, skip this cycle and retry sooner —
+                // exfils self-throttle before flooding the chain.
+                if link.load >= WARM_LINK || link.quarantined > 0 {
+                    self.nodes[id].role_cooldown = (period / 2).max(1);
+                    continue;
+                }
+                self.nodes[id].role_cooldown = period;
                 self.packets.push(Packet {
                     link_id,
                     pos: (link.path.len() - 1) as u16,
                 });
+            } else {
+                self.nodes[id].role_cooldown = period;
             }
         }
     }

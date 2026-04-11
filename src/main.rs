@@ -78,6 +78,12 @@ struct Cli {
     /// exfils but never emit packets — passive camouflage.
     #[arg(long, default_value_t = 0.02)]
     decoy_weight: f32,
+    /// Relative weight of Router nodes at spawn. Routers cache exfil
+    /// packets that reach them instead of forwarding to C2, easing
+    /// congestion on the parent chain. Can also appear dynamically
+    /// when a link sustains hot traffic for long enough.
+    #[arg(long, default_value_t = 0.02)]
+    router_weight: f32,
 
     /// Ticks between Scanner pings.
     #[arg(long, default_value_t = 30)]
@@ -280,6 +286,7 @@ fn main() -> io::Result<()> {
     let beacon_weight = pick_f32("beacon_weight", cli.beacon_weight, file.beacon_weight);
     let proxy_weight = pick_f32("proxy_weight", cli.proxy_weight, file.proxy_weight);
     let decoy_weight = pick_f32("decoy_weight", cli.decoy_weight, file.decoy_weight);
+    let router_weight = pick_f32("router_weight", cli.router_weight, file.router_weight);
     let scanner_ping_period = pick_u16(
         "scanner_ping_period",
         cli.scanner_ping_period,
@@ -359,6 +366,7 @@ fn main() -> io::Result<()> {
             beacon: beacon_weight,
             proxy: proxy_weight,
             decoy: decoy_weight,
+            router: router_weight,
         },
         scanner_ping_period,
         exfil_packet_period,

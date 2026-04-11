@@ -82,6 +82,8 @@ fn packet_reaches_c2_and_drops() {
         kind: LinkKind::Parent,
         load: 0,
         breach_ttl: 0,
+        burn_ticks: 0,
+        quarantined: 0,
     });
     let path_ab: Vec<(i16, i16)> = (10..=14).map(|x| (x, 10)).collect();
     let len_ab = path_ab.len() as u16;
@@ -93,6 +95,8 @@ fn packet_reaches_c2_and_drops() {
         kind: LinkKind::Parent,
         load: 0,
         breach_ttl: 0,
+        burn_ticks: 0,
+        quarantined: 0,
     });
     // Force the Exfil to fire on tick 0 and then tick enough for the
     // packet to reach C2 and be dropped.
@@ -135,6 +139,8 @@ fn cross_link_saves_reachable_node_from_cascade() {
         kind: LinkKind::Cross,
         load: 0,
         breach_ttl: 0,
+        burn_ticks: 0,
+        quarantined: 0,
     });
     let cascade = w.compute_cascade(a);
     let ids: HashSet<NodeId> = cascade.iter().map(|(id, _)| *id).collect();
@@ -323,6 +329,8 @@ fn worm_delivered_to_alive_neighbor() {
         kind: LinkKind::Parent,
         load: 0,
         breach_ttl: 0,
+        burn_ticks: 0,
+        quarantined: 0,
     });
     // Launch a worm from a → b manually and tick the worm advance step
     // enough times for it to reach the far end.
@@ -625,6 +633,8 @@ fn link_load_accumulates_and_decays() {
         kind: LinkKind::Parent,
         load: 0,
         breach_ttl: 0,
+        burn_ticks: 0,
+        quarantined: 0,
     });
     // Park a packet on the link and tick the motion phase a few times.
     w.packets.push(Packet {

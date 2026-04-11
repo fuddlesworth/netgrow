@@ -40,6 +40,12 @@ pub enum Role {
     /// camouflage node that draws attacker attention away from real
     /// exfils. Rendered identically to an Exfil.
     Decoy,
+    /// Traffic-caching junction. Absorbs exfil packets that reach it
+    /// instead of forwarding them toward C2, easing congestion on the
+    /// parent chain. Spawns rarely via role weights, or dynamically
+    /// when a node's inbound link sustains hot traffic long enough
+    /// that the congestion system upgrades it in place.
+    Router,
 }
 
 impl Role {
@@ -56,6 +62,7 @@ impl Role {
             Role::Beacon => "beacon",
             Role::Proxy => "proxy",
             Role::Decoy => "decoy",
+            Role::Router => "router",
         }
     }
 
@@ -73,6 +80,7 @@ impl Role {
             Role::Beacon => "⊚",
             Role::Proxy => "⊛",
             Role::Decoy => "▣",
+            Role::Router => "⊕",
         }
     }
 
@@ -88,6 +96,7 @@ impl Role {
                 | Role::Beacon
                 | Role::Proxy
                 | Role::Decoy
+                | Role::Router
         )
     }
 
@@ -260,6 +269,17 @@ pub struct Link {
     /// when a pwn event walks up the parent chain from the victim
     /// toward C2; decays each tick in decay_link_load.
     pub breach_ttl: u8,
+    /// Ticks of sustained HOT_LINK load. Climbs while the link is hot,
+    /// unwinds while cool. Drives two congestion responses: crossing
+    /// `ROUTER_UPGRADE_THRESHOLD` morphs the child endpoint into a
+    /// Router; crossing `LINK_COLLAPSE_THRESHOLD` collapses the link,
+    /// flushing traffic and quarantining it for a window.
+    pub burn_ticks: u8,
+    /// Nonzero during a post-collapse quarantine. Packets refuse to
+    /// hop onto a quarantined link; decays -1 per tick in
+    /// `decay_link_load`. Purely a gating counter — the visible effect
+    /// is the flushed traffic and stunned endpoints.
+    pub quarantined: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -354,12 +374,13 @@ pub struct RoleWeights {
     pub beacon: f32,
     pub proxy: f32,
     pub decoy: f32,
+    pub router: f32,
 }
 
 impl Default for RoleWeights {
     fn default() -> Self {
         Self {
-            relay: 0.51,
+            relay: 0.49,
             scanner: 0.13,
             exfil: 0.10,
             honeypot: 0.04,
@@ -368,6 +389,7 @@ impl Default for RoleWeights {
             beacon: 0.04,
             proxy: 0.03,
             decoy: 0.02,
+            router: 0.02,
         }
     }
 }
