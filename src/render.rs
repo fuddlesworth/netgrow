@@ -688,30 +688,53 @@ fn footer_bar(ui: UiState) -> Paragraph<'static> {
         )
     };
     let lab = move |t: &'static str| Span::styled(t, Style::default().fg(th.label));
-    let spans: Vec<Span<'static>> = vec![
-        Span::raw(" "),
-        key("q"),
-        lab(" quit "),
-        key("␣"),
-        lab(" pause "),
-        key("+"),
-        key("-"),
-        lab(" speed "),
-        key("i"),
-        lab(" infect "),
-        key("⇥"),
-        lab(" inspect "),
-        Span::raw(" "),
-        Span::styled(
-            format!("{}ms/tick", ui.tick_ms),
-            Style::default().fg(th.ghost),
-        ),
-        Span::styled("  ·  ", Style::default().fg(th.ghost)),
-        Span::styled(
-            format!("theme {}", ui.theme_name),
-            Style::default().fg(th.ghost),
-        ),
-    ];
+    // Footer swaps to a cursor-mode help line when the inspector
+    // cursor is active, so the available cursor-drop keys are
+    // actually discoverable. Default mode stays the same.
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::raw(" "));
+    if ui.cursor.is_some() {
+        spans.extend([
+            key("⇥"),
+            lab(" exit cursor "),
+            key("←↑↓→"),
+            lab(" move "),
+            key("i"),
+            lab(" infect "),
+            key("p"),
+            lab(" patch "),
+            key("s"),
+            lab(" scan "),
+            key("c"),
+            lab(" plant c2 "),
+            key("w"),
+            lab(" wormhole "),
+        ]);
+    } else {
+        spans.extend([
+            key("q"),
+            lab(" quit "),
+            key("␣"),
+            lab(" pause "),
+            key("+"),
+            key("-"),
+            lab(" speed "),
+            key("⇥"),
+            lab(" cursor "),
+            key("i"),
+            lab(" inject "),
+        ]);
+    }
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(
+        format!("{}ms/tick", ui.tick_ms),
+        Style::default().fg(th.ghost),
+    ));
+    spans.push(Span::styled("  ·  ", Style::default().fg(th.ghost)));
+    spans.push(Span::styled(
+        format!("theme {}", ui.theme_name),
+        Style::default().fg(th.ghost),
+    ));
     Paragraph::new(Line::from(spans))
         .style(Style::default().bg(th.bar_bg))
         .alignment(Alignment::Left)
