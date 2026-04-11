@@ -236,6 +236,31 @@ impl World {
         }
     }
 
+    /// True if any alive node within Chebyshev distance 1 of `pos`
+    /// has the given role. Used by the role-synergy bonuses (Tower
+    /// near Defender, Scanner near Beacon, Exfil near Router) so
+    /// adjacent role combos reward tactical spawn placement.
+    pub(crate) fn has_neighbor_role(&self, pos: (i16, i16), role: Role) -> bool {
+        for dx in -1i16..=1 {
+            for dy in -1i16..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let np = (pos.0 + dx, pos.1 + dy);
+                for n in &self.nodes {
+                    if n.pos == np
+                        && n.role == role
+                        && matches!(n.state, State::Alive)
+                        && n.dying_in == 0
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// True during the night half of the day/night cycle. When the period
     /// is zero the cycle is disabled and this always returns false.
     pub fn is_night(&self) -> bool {
@@ -587,6 +612,34 @@ impl World {
                         n.hardened = true;
                         newly_hardened.push(n.pos);
                     }
+                }
+            }
+            // Synergy: a Tower adjacent to a Defender regenerates one
+            // pwn_resist charge per heartbeat, capped at twice the
+            // configured tower spawn pool. Encourages clustered
+            // fortifications around defender lattices.
+            let tower_cap = self.cfg.tower_pwn_resist.saturating_mul(2).max(4);
+            let tower_ids: Vec<NodeId> = self
+                .nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, n)| {
+                    if matches!(n.state, State::Alive)
+                        && n.role == Role::Tower
+                        && n.pwn_resist < tower_cap
+                    {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for id in tower_ids {
+                let pos = self.nodes[id].pos;
+                if self.has_neighbor_role(pos, Role::Defender) {
+                    self.nodes[id].pwn_resist =
+                        self.nodes[id].pwn_resist.saturating_add(1);
+                    self.nodes[id].shield_flash = 4;
                 }
             }
             self.push_log(format!("beacon sweep @ t={}", self.tick));

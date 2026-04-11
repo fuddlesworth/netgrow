@@ -8,7 +8,9 @@
 
 use rand::Rng;
 
-use super::{NodeId, Packet, Role, State, World, DIRS, SCANNER_PULSE_TICKS, WARM_LINK};
+use super::{
+    NodeId, Packet, Role, State, World, DIRS, HOT_LINK, SCANNER_PULSE_TICKS, WARM_LINK,
+};
 
 impl World {
     pub(super) fn advance_role_cooldowns(&mut self) {
@@ -60,14 +62,21 @@ impl World {
             // mut borrow below to avoid aliasing.
             let dir_idx = self.rng.gen_range(0..DIRS.len());
             let (dx, dy) = DIRS[dir_idx];
+            // Synergy: a scanner adjacent to a Beacon doubles its
+            // pulse duration so the linked-up cluster reads as a
+            // brighter scan zone for twice as long.
+            let pos = self.nodes[id].pos;
+            let beacon_boost = self.has_neighbor_role(pos, Role::Beacon);
+            let pulse_ticks = if beacon_boost {
+                SCANNER_PULSE_TICKS.saturating_mul(2)
+            } else {
+                SCANNER_PULSE_TICKS
+            };
             let n = &mut self.nodes[id];
             n.role_cooldown = period;
             n.last_ping_tick = now;
             n.last_ping_dir = Some((dx as i8, dy as i8));
-            // Light up the scanner itself and its adjacent links for a few
-            // ticks. The render pass reads scan_pulse to brighten the node
-            // and every link touching it.
-            n.scan_pulse = SCANNER_PULSE_TICKS;
+            n.scan_pulse = pulse_ticks;
             fired_positions.push(n.pos);
         }
         // Proxies within proxy_radius of any fired scanner echo the
@@ -117,10 +126,15 @@ impl World {
                     self.nodes[id].role_cooldown = period;
                     continue;
                 }
-                // Backpressure: if the outbound link is already warm
-                // or quarantined, skip this cycle and retry sooner —
-                // exfils self-throttle before flooding the chain.
-                if link.load >= WARM_LINK || link.quarantined > 0 {
+                // Synergy: an exfil adjacent to a Router gets a much
+                // higher backpressure ceiling — its packets can ride
+                // up to HOT_LINK before throttling instead of WARM.
+                // Rewards spawning routers next to busy exfils.
+                let exfil_pos = self.nodes[id].pos;
+                let router_adjacent =
+                    self.has_neighbor_role(exfil_pos, Role::Router);
+                let pressure_ceiling = if router_adjacent { HOT_LINK } else { WARM_LINK };
+                if link.load >= pressure_ceiling || link.quarantined > 0 {
                     self.nodes[id].role_cooldown = (period / 2).max(1);
                     continue;
                 }
