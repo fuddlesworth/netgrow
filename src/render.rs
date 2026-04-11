@@ -501,7 +501,10 @@ fn factions_block(world: &World) -> Paragraph<'static> {
             ),
             Span::raw(" "),
             Span::styled(
-                format!("{:<10}", persona),
+                // 11 = len("opportunist"), the longest persona name.
+                // Anything shorter pushes the alive/score columns
+                // out of alignment between rows.
+                format!("{:<11}", persona),
                 Style::default().fg(hue),
             ),
             Span::raw(" "),
