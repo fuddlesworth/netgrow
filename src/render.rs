@@ -1933,6 +1933,14 @@ impl<'a> Widget for MeshWidget<'a> {
             } else {
                 Style::default().fg(branch_hue(b.branch_id))
             };
+            // Bake a bg block onto every link cell so links always
+            // read as colored strips, not bare foreground lines.
+            let link_bg = dim_bg(
+                style
+                    .fg
+                    .unwrap_or(branch_hue(b.branch_id)),
+            );
+            let style = style.bg(link_bg);
             let reveal = if dying || dead {
                 link.path.len()
             } else {
@@ -2134,6 +2142,17 @@ impl<'a> Widget for MeshWidget<'a> {
         // 4. Nodes
         for node in &w.nodes {
             let (glyph, style) = node_glyph(node, w.tick, w);
+            // Bake a bg block behind every node so nodes render
+            // as highlighted chiclets instead of bare glyphs.
+            // Skip nodes that already set a bg in their style
+            // (dying flashes, cursor highlights, etc.) so we
+            // don't clobber event overlays.
+            let node_bg_color = dim_bg(style.fg.unwrap_or(theme().value));
+            let style = if style.bg.is_some() {
+                style
+            } else {
+                style.bg(node_bg_color)
+            };
             put(buf, area, node.pos, glyph, style);
         }
 
@@ -2596,15 +2615,17 @@ fn strain_hue(strain: u8) -> Color {
     palette[(strain as usize) % palette.len()]
 }
 
-/// Darken a faction hue to a background-safe shade: very dark so
-/// the foreground glyph stays readable, but still recognizably
-/// the same hue. Named colors pass through unchanged.
+/// Darken a hue to a background-safe shade: dark enough that the
+/// foreground glyph stays readable, but saturated enough to tie
+/// every glyph visibly back to its color family. Used for the
+/// per-cell bg baked into every glyph style (nodes, links, C2s)
+/// and also for the territory post-pass.
 fn dim_bg(c: Color) -> Color {
     match c {
         Color::Rgb(r, g, b) => Color::Rgb(
-            (r as f32 * 0.18) as u8,
-            (g as f32 * 0.18) as u8,
-            (b as f32 * 0.18) as u8,
+            (r as f32 * 0.28) as u8,
+            (g as f32 * 0.28) as u8,
+            (b as f32 * 0.28) as u8,
         ),
         other => other,
     }
