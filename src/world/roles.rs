@@ -9,7 +9,7 @@
 use rand::Rng;
 
 use super::{
-    NodeId, Packet, Role, State, World, DIRS, HOT_LINK, SCANNER_PULSE_TICKS, WARM_LINK,
+    NodeId, Packet, Role, State, Worm, World, DIRS, HOT_LINK, SCANNER_PULSE_TICKS, WARM_LINK,
 };
 
 impl World {
@@ -304,6 +304,9 @@ impl World {
             return;
         }
         let mut cured_positions: Vec<((i16, i16), u8)> = Vec::new();
+        // Defender ids whose pulse actually cured something this
+        // tick — each is a candidate to spawn an antibody worm.
+        let mut curing_defenders: Vec<NodeId> = Vec::new();
         for (id, dpos) in defenders {
             self.nodes[id].role_cooldown = period;
             self.nodes[id].pulse = 2;
@@ -324,6 +327,9 @@ impl World {
                     n.infection = None;
                     n.immunity_strain = Some(strain);
                     n.immunity_ticks = super::IMMUNITY_DURATION_TICKS;
+                    if !curing_defenders.contains(&id) {
+                        curing_defenders.push(id);
+                    }
                 } else {
                     inf.cure_resist -= 1;
                 }
@@ -334,6 +340,51 @@ impl World {
             if let Some(s) = self.faction_stats.get_mut(faction as usize) {
                 s.infections_cured += 1;
             }
+        }
+        // Antibody worms: each defender that actually cured
+        // something this tick rolls a chance to spawn a same-
+        // faction antibody worm on one of its outgoing links.
+        // The worm travels like a regular worm but cures the
+        // target's infection on arrival instead of infecting.
+        for did in curing_defenders {
+            if !self.rng.gen_bool(0.45) {
+                continue;
+            }
+            let outgoing: Vec<(usize, bool)> = self
+                .links
+                .iter()
+                .enumerate()
+                .filter_map(|(li, l)| {
+                    if (l.drawn as usize) < l.path.len() {
+                        return None;
+                    }
+                    if l.a == did {
+                        Some((li, true))
+                    } else if l.b == did {
+                        Some((li, false))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if outgoing.is_empty() {
+                continue;
+            }
+            let (link_id, from_a) = outgoing[self.rng.gen_range(0..outgoing.len())];
+            let len = self.links[link_id].path.len();
+            if len < 2 {
+                continue;
+            }
+            let pos = if from_a { 1 } else { (len - 2) as u16 };
+            self.worms.push(Worm {
+                link_id,
+                pos,
+                outbound_from_a: from_a,
+                strain: 0,
+                is_antibody: true,
+            });
+            let dpos = self.nodes[did].pos;
+            self.log_node(dpos, "antibody launched");
         }
     }
 }

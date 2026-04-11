@@ -372,6 +372,12 @@ pub struct Worm {
     /// false for the reverse. Cross-links are bidirectional so both are valid.
     pub outbound_from_a: bool,
     pub strain: u8,
+    /// True if this worm is an antibody: instead of infecting its
+    /// target, it cures any infection on arrival. Spawned by
+    /// defender cures on a probabilistic roll. `strain` still
+    /// carries a value for rendering purposes but isn't used as
+    /// the delivered payload.
+    pub is_antibody: bool,
 }
 
 /// AI personality assigned to each faction at world creation.

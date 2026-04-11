@@ -1998,10 +1998,25 @@ impl<'a> Widget for MeshWidget<'a> {
             if cell == w.nodes[link.a].pos || cell == w.nodes[link.b].pos {
                 continue;
             }
-            let style = Style::default()
-                .fg(strain_hue(worm.strain))
-                .add_modifier(Modifier::BOLD);
-            put(buf, area, cell, "■", style);
+            // Antibody worms render as a distinct green diamond so
+            // the viewer can tell counter-attacks apart from
+            // infection worms at a glance.
+            let (glyph, style) = if worm.is_antibody {
+                (
+                    "◈",
+                    Style::default()
+                        .fg(th.defender)
+                        .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                )
+            } else {
+                (
+                    "■",
+                    Style::default()
+                        .fg(strain_hue(worm.strain))
+                        .add_modifier(Modifier::BOLD),
+                )
+            };
+            put(buf, area, cell, glyph, style);
         }
 
         // 3c. C2 ambient halo — faint braille dots in the 8-cell

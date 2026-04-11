@@ -229,6 +229,9 @@ impl World {
         // Processed after the move loop so we can schedule the
         // subtree-cascade if the strike cracks the reservoir.
         let mut c2_strikes: Vec<(NodeId, u8)> = Vec::new();
+        // Antibody worms that reached their target — each gets a
+        // cure attempt after the move loop.
+        let mut antibody_hits: Vec<NodeId> = Vec::new();
         for mut worm in std::mem::take(&mut self.worms) {
             let (link_a, link_b, link_len) = {
                 let link = &self.links[worm.link_id];
@@ -267,6 +270,14 @@ impl World {
                     let dst = self.nodes[target].faction;
                     let alive_target = matches!(self.nodes[target].state, State::Alive);
                     let allied_block = blocked_by_alliance(self, src, dst);
+                    // Antibody worms cure same-faction hosts on
+                    // arrival instead of running the infection path.
+                    if worm.is_antibody {
+                        if alive_target {
+                            antibody_hits.push(target);
+                        }
+                        continue;
+                    }
                     if alive_target && !allied_block {
                         if c2_set.contains(&target) {
                             // Cross-faction worms crack the C2's
@@ -301,6 +312,12 @@ impl World {
                     let dst = self.nodes[target].faction;
                     let alive_target = matches!(self.nodes[target].state, State::Alive);
                     let allied_block = blocked_by_alliance(self, src, dst);
+                    if worm.is_antibody {
+                        if alive_target {
+                            antibody_hits.push(target);
+                        }
+                        continue;
+                    }
                     if alive_target && !allied_block {
                         if c2_set.contains(&target) {
                             if src != dst {
@@ -343,6 +360,29 @@ impl World {
         // the same name.
         for (a, b) in rivalries {
             self.bump_rivalry(a, b, 4);
+        }
+        // Antibody hits: each arriving antibody worm cures the
+        // target's infection if it has one. Logs the cure so the
+        // viewer can see the counter-attack land.
+        for target in antibody_hits {
+            let had_inf = self.nodes[target].infection.is_some();
+            if !had_inf {
+                continue;
+            }
+            let strain = self
+                .nodes[target]
+                .infection
+                .map(|i| i.strain)
+                .unwrap_or(0);
+            self.nodes[target].infection = None;
+            self.nodes[target].immunity_strain = Some(strain);
+            self.nodes[target].immunity_ticks = super::IMMUNITY_DURATION_TICKS;
+            let faction = self.nodes[target].faction;
+            if let Some(s) = self.faction_stats.get_mut(faction as usize) {
+                s.infections_cured += 1;
+            }
+            let pos = self.nodes[target].pos;
+            self.log_node(pos, "antibody cure");
         }
         // Cross-faction worm strikes on C2 nodes drain the defender
         // reservoir. When a strike cracks the last point, schedule
@@ -479,6 +519,7 @@ impl World {
                 pos,
                 outbound_from_a: from_a,
                 strain,
+                is_antibody: false,
             });
             let (a, b) = octet_pair(carrier_pos);
             self.push_log(format!("worm launched from 10.0.{}.{}", a, b));

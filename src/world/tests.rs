@@ -353,6 +353,7 @@ fn worm_delivered_to_alive_neighbor() {
         pos: 0,
         outbound_from_a: true,
         strain: 2,
+        is_antibody: false,
     });
     for _ in 0..10 {
         w.advance_worms();
