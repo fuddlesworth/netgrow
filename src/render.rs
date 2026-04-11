@@ -2535,16 +2535,17 @@ fn strain_hue(strain: u8) -> Color {
 }
 
 /// Darken a hue to a background-safe shade: dark enough that the
-/// foreground glyph stays readable, but saturated enough to tie
-/// every glyph visibly back to its color family. Used for the
-/// per-cell bg baked into every glyph style (nodes, links, C2s)
-/// and also for the territory post-pass.
+/// foreground glyph stays readable, but saturated enough that
+/// each faction's territory is unmistakably its own color.
+/// Used for every per-cell bg — nodes, links, C2s, and the
+/// ambient post-pass for empty cells — so the whole region
+/// renders as a single continuous colored wash.
 fn dim_bg(c: Color) -> Color {
     match c {
         Color::Rgb(r, g, b) => Color::Rgb(
-            (r as f32 * 0.28) as u8,
-            (g as f32 * 0.28) as u8,
-            (b as f32 * 0.28) as u8,
+            (r as f32 * 0.50) as u8,
+            (g as f32 * 0.50) as u8,
+            (b as f32 * 0.50) as u8,
         ),
         other => other,
     }
