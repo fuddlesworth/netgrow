@@ -197,7 +197,7 @@ impl Default for Config {
             exfil_packet_period: 18,
             hardened_after_heartbeats: 10,
             honeypot_cascade_mult: 3.0,
-            reconnect_rate: 0.0,
+            reconnect_rate: 0.015,
             reconnect_radius: 10,
             virus_spread_rate: 0.05,
             virus_incubation_ticks: 30,

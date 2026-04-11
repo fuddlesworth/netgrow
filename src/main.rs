@@ -103,7 +103,7 @@ struct Cli {
     honeypot_cascade_mult: f32,
     /// Per-tick probability of attempting a lateral bridge between two live
     /// nodes in different branches (0 disables the feature).
-    #[arg(long, default_value_t = 0.0)]
+    #[arg(long, default_value_t = 0.015)]
     reconnect_rate: f32,
     /// Maximum Chebyshev distance between reconnect candidates.
     #[arg(long, default_value_t = 10)]
