@@ -248,6 +248,13 @@ pub struct Node {
     /// is cleared. None means the node is exactly what it appears
     /// to be.
     pub sleeper_true_faction: Option<u8>,
+    /// Temporary post-cure immunity: when a node is cured of an
+    /// infection, it records the strain id and a countdown. While
+    /// the countdown is nonzero, spread and worm delivery of that
+    /// specific strain cannot re-infect this node. Other strains
+    /// can still land — immunity is strain-specific, not universal.
+    pub immunity_strain: Option<u8>,
+    pub immunity_ticks: u16,
 }
 
 impl Node {
@@ -293,6 +300,8 @@ impl Node {
             children_spawned: 0,
             legendary_name: u16::MAX,
             sleeper_true_faction: None,
+            immunity_strain: None,
+            immunity_ticks: 0,
         }
     }
 }

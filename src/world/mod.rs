@@ -83,6 +83,12 @@ pub const VETERAN_WAVE_THRESHOLD: u8 = 2;
 /// Caps the escalation so veterans are harder but never immortal.
 pub const VETERAN_CURE_RESIST_CAP: u8 = 6;
 
+/// Ticks of post-cure immunity granted to a node when an infection
+/// is cleared. Strain-specific — while the window is open, the
+/// node can't be re-infected with the same strain via spread or
+/// worm delivery, but other strains still land normally.
+pub const IMMUNITY_DURATION_TICKS: u16 = 180;
+
 /// Minimum age (in ticks) a node needs before it can be promoted to
 /// legendary status. Combined with `LEGENDARY_MIN_CHILDREN` to gate
 /// the rare long-lived, reproductive characters.

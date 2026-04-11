@@ -276,8 +276,11 @@ impl World {
                                 c2_strikes.push((target, src));
                             }
                         } else {
+                            let immune = self.nodes[target].immunity_ticks > 0
+                                && self.nodes[target].immunity_strain
+                                    == Some(worm.strain);
                             match self.nodes[target].infection {
-                                None => arrivals
+                                None if !immune => arrivals
                                     .push((target, worm.strain, self.nodes[target].pos)),
                                 Some(existing) if existing.strain != worm.strain => merges
                                     .push((target, worm.strain, existing.strain)),
@@ -304,8 +307,11 @@ impl World {
                                 c2_strikes.push((target, src));
                             }
                         } else {
+                            let immune = self.nodes[target].immunity_ticks > 0
+                                && self.nodes[target].immunity_strain
+                                    == Some(worm.strain);
                             match self.nodes[target].infection {
-                                None => arrivals
+                                None if !immune => arrivals
                                     .push((target, worm.strain, self.nodes[target].pos)),
                                 Some(existing) if existing.strain != worm.strain => merges
                                     .push((target, worm.strain, existing.strain)),

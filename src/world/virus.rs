@@ -52,8 +52,12 @@ impl World {
                         break;
                     }
                     if inf.cure_resist <= 1 {
+                        let strain = inf.strain;
                         cured.push((n.pos, n.faction));
                         n.infection = None;
+                        // Grant strain-specific post-cure immunity.
+                        n.immunity_strain = Some(strain);
+                        n.immunity_ticks = super::IMMUNITY_DURATION_TICKS;
                         break;
                     } else {
                         inf.cure_resist -= 1;
@@ -184,6 +188,12 @@ impl World {
                         .max_by_key(|(_, c)| **c)
                         .map(|(i, _)| i as u8)
                         .unwrap_or(0);
+                    // Post-cure immunity: if the target is still
+                    // immune to this specific strain, the spread
+                    // attempt no-ops and the node stays clean.
+                    if n.immunity_ticks > 0 && n.immunity_strain == Some(strain) {
+                        continue;
+                    }
                     newly_infected.push((id, strain));
                 }
             }

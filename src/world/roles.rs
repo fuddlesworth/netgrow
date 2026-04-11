@@ -33,6 +33,12 @@ impl World {
             if n.death_echo > 0 {
                 n.death_echo -= 1;
             }
+            if n.immunity_ticks > 0 {
+                n.immunity_ticks -= 1;
+                if n.immunity_ticks == 0 {
+                    n.immunity_strain = None;
+                }
+            }
         }
     }
 
@@ -271,8 +277,11 @@ impl World {
                     continue;
                 }
                 if inf.cure_resist <= 1 {
+                    let strain = inf.strain;
                     cured_positions.push((n.pos, n.faction));
                     n.infection = None;
+                    n.immunity_strain = Some(strain);
+                    n.immunity_ticks = super::IMMUNITY_DURATION_TICKS;
                 } else {
                     inf.cure_resist -= 1;
                 }
