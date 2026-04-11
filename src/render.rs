@@ -532,7 +532,7 @@ fn factions_block(world: &World) -> Paragraph<'static> {
         .max(1);
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(world.faction_stats.len());
     for (i, fs) in world.faction_stats.iter().enumerate() {
-        let hue = faction_hue(i as u8);
+        let hue = faction_hue(world, i as u8);
         let samples: Vec<u32> = fs.history.iter().copied().collect();
         let spark = braille_area_graph_with_max(&samples, SPARK_CELLS, 1, shared_max)
             .into_iter()
@@ -608,7 +608,7 @@ fn legend_block() -> Paragraph<'static> {
     // until tripped. Worms and patch waves are also transient-only.
     let lines = vec![
         row(
-            cell("◆", faction_hue(0), "c2"),
+            cell("◆", faction_hue_legend(), "c2"),
             Some(cell("●", relay_color, "relay")),
             Some(cell("◉", relay_color, "hardened")),
         ),
@@ -967,7 +967,7 @@ impl<'a> Widget for MeshWidget<'a> {
             if node_cells.contains(&cell) {
                 continue;
             }
-            let mut style = Style::default().fg(faction_hue(fac));
+            let mut style = Style::default().fg(faction_hue(w, fac));
             if night || storming {
                 style = style.add_modifier(Modifier::DIM);
             }
@@ -1248,7 +1248,7 @@ impl<'a> Widget for MeshWidget<'a> {
                 continue;
             }
             let pos = c2.pos;
-            let hue = faction_hue(c2.faction);
+            let hue = faction_hue(w, c2.faction);
             let style = Style::default().fg(hue).add_modifier(Modifier::DIM);
             for (dx, dy) in [
                 (-1i16, 0i16),
@@ -1283,7 +1283,7 @@ impl<'a> Widget for MeshWidget<'a> {
 
         // 4. Nodes
         for node in &w.nodes {
-            let (glyph, style) = node_glyph(node, w.tick);
+            let (glyph, style) = node_glyph(node, w.tick, w);
             put(buf, area, node.pos, glyph, style);
         }
 
@@ -1645,12 +1645,23 @@ fn strain_hue(strain: u8) -> Color {
     palette[(strain as usize) % palette.len()]
 }
 
-fn faction_hue(faction: u8) -> Color {
+fn faction_hue(world: &World, faction: u8) -> Color {
     let palette = &theme().faction_palette;
     if palette.is_empty() {
         return Color::Cyan;
     }
-    palette[(faction as usize) % palette.len()]
+    let idx = world.faction_color_index(faction) % palette.len();
+    palette[idx]
+}
+
+/// Legend-only variant that doesn't need a World — picks palette[0]
+/// directly so the legend glyph always has a fixed demo hue.
+fn faction_hue_legend() -> Color {
+    theme()
+        .faction_palette
+        .first()
+        .copied()
+        .unwrap_or(Color::Cyan)
 }
 
 fn branch_hue(branch_id: u16) -> Color {
@@ -1661,7 +1672,7 @@ fn branch_hue(branch_id: u16) -> Color {
     palette[(branch_id as usize) % palette.len()]
 }
 
-fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
+fn node_glyph(node: &Node, tick: u64, world: &World) -> (&'static str, Style) {
     let th = theme();
     if node.dying_in > 0 && !matches!(node.state, State::Dead) {
         let st = if (tick + node.dying_in as u64).is_multiple_of(2) {
@@ -1681,7 +1692,7 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                 return (
                     "◆",
                     Style::default()
-                        .fg(faction_hue(node.faction))
+                        .fg(faction_hue(world, node.faction))
                         .add_modifier(Modifier::BOLD),
                 );
             }

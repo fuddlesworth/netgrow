@@ -390,6 +390,12 @@ impl World {
             _ => super::Persona::Opportunist,
         };
         self.personas.push(persona);
+        // Pick a random palette slot for the reborn colony too so
+        // the color swap reads as "new player arrived" instead of
+        // inheriting the next sequential hue.
+        let palette_len = crate::theme::theme().faction_palette.len().max(1);
+        let color_idx = self.rng.gen_range(0..palette_len);
+        self.faction_colors.push(color_idx);
         let (a, b) = octet_pair(pos);
         self.push_log(format!(
             "✦ MYTHIC ✦ REBIRTH — c2[{}] rises @ 10.0.{}.{}",

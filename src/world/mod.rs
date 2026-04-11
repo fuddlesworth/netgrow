@@ -189,6 +189,12 @@ pub struct World {
     /// per-faction role-weight biases in roll_role and a few
     /// event rolls so factions feel distinct.
     pub personas: Vec<Persona>,
+    /// Per-faction index into the theme's `faction_palette`.
+    /// Indexed in lockstep with `c2_nodes` and shuffled at
+    /// `World::new` so each run's factions pick up different
+    /// colors from the palette instead of F0 always being hue[0],
+    /// F1 always being hue[1], etc.
+    pub faction_colors: Vec<usize>,
 }
 
 impl World {
@@ -398,6 +404,17 @@ impl World {
             let entry = self.rivalry.entry(key).or_insert(0);
             *entry = entry.saturating_add(amount).min(RIVALRY_CAP);
         }
+    }
+
+    /// Palette slot for a given faction. Used by the renderer to
+    /// pick the faction hue via the shuffled `faction_colors` table
+    /// so each run produces distinct color-to-faction mappings.
+    /// Falls back to the faction id itself if the table is short.
+    pub fn faction_color_index(&self, faction: u8) -> usize {
+        self.faction_colors
+            .get(faction as usize)
+            .copied()
+            .unwrap_or(faction as usize)
     }
 
     /// True if any alive node within Chebyshev distance 1 of `pos`
@@ -630,6 +647,19 @@ impl World {
                 1,
             ));
         }
+        // Shuffle the theme faction palette so each run starts with
+        // a different color-to-faction mapping. The palette length
+        // is read through the theme singleton; we only pick indices
+        // here so the world layer stays independent of Color.
+        let palette_len = crate::theme::theme().faction_palette.len().max(1);
+        let mut faction_colors: Vec<usize> = (0..palette_len).collect();
+        faction_colors.shuffle(&mut rng);
+        // If there are more factions than palette slots, wrap with a
+        // secondary offset so consecutive wraparounds don't repeat.
+        while faction_colors.len() < count {
+            faction_colors.push(rng.gen_range(0..palette_len));
+        }
+        faction_colors.truncate(count.max(palette_len));
 
         Self {
             nodes,
@@ -658,6 +688,7 @@ impl World {
             rivalry: HashMap::new(),
             outages: Vec::new(),
             personas,
+            faction_colors,
         }
     }
 
