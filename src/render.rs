@@ -6,7 +6,9 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 use ratatui::Frame;
 
 use crate::theme::theme;
-use crate::util::{braille_area_graph, braille_bar, session_name, with_commas};
+use crate::util::{
+    braille_area_graph_with_max, braille_bar, braille_range_graph, session_name, with_commas,
+};
 use crate::world::{
     node_ip, InfectionStage, LinkKind, Node, Role, State, World, WorldStats, HOT_LINK, WARM_LINK,
 };
@@ -135,7 +137,11 @@ fn activity_block(world: &World, panel_width: u16) -> Paragraph<'static> {
     let graph_cells = inner_cells.saturating_sub(0);
     let graph_height = 3usize;
     let samples: Vec<u32> = world.activity_history.iter().copied().collect();
-    let rows = braille_area_graph(&samples, graph_cells, graph_height);
+    // Min-max normalization within the window so a steady mesh
+    // doesn't pin to the top. The graph now reads as "recent
+    // variation" — flat during calm, spiky during churn — which
+    // is the more informative signal at a glance.
+    let rows = braille_range_graph(&samples, graph_cells, graph_height);
     // Gradient: top row dimmer, bottom row normal, matches a subtle
     // "peaks fade into the sky" look.
     let lines: Vec<Line<'static>> = rows
@@ -477,11 +483,24 @@ fn factions_block(world: &World) -> Paragraph<'static> {
     // activity panel already uses. 14 cells wide leaves room for the
     // F{i}/alive/score prefix in the 41-wide right column.
     const SPARK_CELLS: usize = 14;
+    // Shared max across every faction's history so sparklines are
+    // spatially comparable — the biggest faction fills the row and
+    // smaller ones read as proportionally shorter, instead of every
+    // faction auto-scaling to its own max and pinning flat at the
+    // top. Give a small headroom so the peak doesn't clip.
+    let shared_max = world
+        .faction_stats
+        .iter()
+        .flat_map(|fs| fs.history.iter().copied())
+        .max()
+        .unwrap_or(1)
+        .saturating_add(1)
+        .max(1);
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(world.faction_stats.len());
     for (i, fs) in world.faction_stats.iter().enumerate() {
         let hue = faction_hue(i as u8);
         let samples: Vec<u32> = fs.history.iter().copied().collect();
-        let spark = braille_area_graph(&samples, SPARK_CELLS, 1)
+        let spark = braille_area_graph_with_max(&samples, SPARK_CELLS, 1, shared_max)
             .into_iter()
             .next()
             .unwrap_or_default();

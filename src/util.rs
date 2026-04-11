@@ -30,37 +30,74 @@ pub fn session_name(seed: u64) -> String {
 ///
 /// Returns `height_cells` strings of `width_cells` chars each, top row
 /// first. Filled from the bottom up so it reads like an area chart.
-pub fn braille_area_graph(
+/// Auto-scaled braille area graph — scales each sample against the
+/// series' own maximum. Used by the factions panel (via
+/// `braille_area_graph_with_max`) and callers that want a single
+/// sparkline auto-scaled to itself.
+pub fn braille_area_graph_with_max(
     samples: &[u32],
+    width_cells: usize,
+    height_cells: usize,
+    max_value: u32,
+) -> Vec<String> {
+    let dot_cols = width_cells * 2;
+    let dot_rows = height_cells * 4;
+    let max = max_value.max(1) as usize;
+    let mut fill = vec![0usize; dot_cols];
+    if !samples.is_empty() {
+        for (i, slot) in fill.iter_mut().enumerate() {
+            let sample_idx = (i * samples.len()) / dot_cols;
+            let v = samples[sample_idx] as usize;
+            *slot = ((v * dot_rows) / max).min(dot_rows);
+        }
+    }
+    render_braille_fill(&fill, width_cells, height_cells)
+}
+
+/// Plot a series using min-max normalization within the window,
+/// so flat magnitudes still show their internal variation. A
+/// perfectly constant series renders as an empty row; any
+/// variation amplifies to fill the available cells. Used by the
+/// activity panel so a steady mesh doesn't look pinned to the top.
+pub fn braille_range_graph(
+    samples: &[u32],
+    width_cells: usize,
+    height_cells: usize,
+) -> Vec<String> {
+    let dot_cols = width_cells * 2;
+    let dot_rows = height_cells * 4;
+    let mut fill = vec![0usize; dot_cols];
+    if !samples.is_empty() {
+        let min = samples.iter().min().copied().unwrap_or(0) as i64;
+        let max = samples.iter().max().copied().unwrap_or(0) as i64;
+        let range = (max - min).max(1) as usize;
+        for (i, slot) in fill.iter_mut().enumerate() {
+            let sample_idx = (i * samples.len()) / dot_cols;
+            let v = samples[sample_idx] as i64 - min;
+            let v = v.max(0) as usize;
+            *slot = ((v * dot_rows) / range).min(dot_rows);
+        }
+    }
+    render_braille_fill(&fill, width_cells, height_cells)
+}
+
+/// Shared braille-writing core. Takes a per-dot-column fill count
+/// and emits the area chart as rows of braille cells.
+fn render_braille_fill(
+    fill: &[usize],
     width_cells: usize,
     height_cells: usize,
 ) -> Vec<String> {
     if width_cells == 0 || height_cells == 0 {
         return Vec::new();
     }
-    let dot_cols = width_cells * 2;
     let dot_rows = height_cells * 4;
-    let empty = char::from_u32(0x2800).unwrap_or(' ').to_string().repeat(width_cells);
-    if samples.is_empty() {
-        return vec![empty; height_cells];
-    }
-
-    let max_sample = samples.iter().max().copied().unwrap_or(1).max(1);
-    // fill[dot_col] = number of dot rows filled from the bottom
-    let mut fill = vec![0usize; dot_cols];
-    for (i, slot) in fill.iter_mut().enumerate() {
-        let sample_idx = (i * samples.len()) / dot_cols;
-        let v = samples[sample_idx];
-        *slot = ((v as usize * dot_rows) / max_sample as usize).min(dot_rows);
-    }
-
     // Braille bit layout per cell: [col_offset][row_offset] -> bit mask.
     // Col 0 = left, col 1 = right. Rows 0..=3 = top..=bottom.
     const BITS: [[u8; 4]; 2] = [
         [0x01, 0x02, 0x04, 0x40], // left
         [0x08, 0x10, 0x20, 0x80], // right
     ];
-
     let mut output = Vec::with_capacity(height_cells);
     for cell_row in 0..height_cells {
         let mut row = String::with_capacity(width_cells);
@@ -71,7 +108,7 @@ pub fn braille_area_graph(
                 for (row_off, &bit) in bit_col.iter().enumerate() {
                     let abs_row_from_top = cell_row * 4 + row_off;
                     let from_bottom = dot_rows - 1 - abs_row_from_top;
-                    if fill[dot_col] > from_bottom {
+                    if fill.get(dot_col).copied().unwrap_or(0) > from_bottom {
                         bits |= bit;
                     }
                 }
