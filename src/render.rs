@@ -524,7 +524,7 @@ fn summary_leaderboard_block(world: &World) -> Paragraph<'static> {
             0 => "①",
             1 => "②",
             2 => "③",
-            _ => " ·",
+            _ => "·",
         };
         let fill = ((score.unsigned_abs() * bar_cells) / max_abs).min(bar_cells);
         let bar: String = (0..bar_cells)
