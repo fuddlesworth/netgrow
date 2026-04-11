@@ -202,6 +202,62 @@ impl World {
             self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
         }
 
+        // Strain ecology: when multiple strains coexist, the
+        // dominant one (highest aggregate strength = sum of
+        // veteran_rank + 1 over its hosts) outcompetes weaker
+        // strains at a small per-node chance. Only fires when
+        // there's a ≥2x strength gap so minor diversity isn't
+        // squashed out immediately.
+        let mut strain_strength: [u32; STRAIN_COUNT] = [0; STRAIN_COUNT];
+        for n in &self.nodes {
+            if !matches!(n.state, State::Alive) {
+                continue;
+            }
+            if let Some(inf) = n.infection {
+                let s = (inf.strain as usize) % STRAIN_COUNT;
+                strain_strength[s] =
+                    strain_strength[s].saturating_add(inf.veteran_rank as u32 + 1);
+            }
+        }
+        let max_strength = strain_strength.iter().copied().max().unwrap_or(0);
+        if max_strength >= 3 {
+            let mut outcompeted: Vec<NodeId> = Vec::new();
+            for (id, n) in self.nodes.iter().enumerate() {
+                let Some(inf) = n.infection else {
+                    continue;
+                };
+                if !matches!(n.state, State::Alive) {
+                    continue;
+                }
+                // Only active/terminal stage hosts compete — an
+                // incubating infection is still too young to be
+                // outgunned.
+                if matches!(inf.stage, InfectionStage::Incubating) {
+                    continue;
+                }
+                let s = (inf.strain as usize) % STRAIN_COUNT;
+                if strain_strength[s] * 2 > max_strength {
+                    continue;
+                }
+                if self.rng.gen::<f32>() < super::STRAIN_OUTCOMPETE_CHANCE {
+                    outcompeted.push(id);
+                }
+            }
+            for id in outcompeted {
+                let pos = self.nodes[id].pos;
+                let strain = self
+                    .nodes[id]
+                    .infection
+                    .map(|i| i.strain)
+                    .unwrap_or(0);
+                self.nodes[id].infection = None;
+                self.nodes[id].immunity_strain = Some(strain);
+                self.nodes[id].immunity_ticks = super::IMMUNITY_DURATION_TICKS;
+                let name = self.strain_name(strain);
+                self.log_node(pos, &format!("{} outcompeted", name));
+            }
+        }
+
         // Terminal nodes crash the host — route into the loss/cascade pipeline.
         let pwned_flash = self.cfg.pwned_flash_ticks;
         for id in to_pwn {

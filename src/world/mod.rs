@@ -89,6 +89,11 @@ pub const VETERAN_CURE_RESIST_CAP: u8 = 6;
 /// worm delivery, but other strains still land normally.
 pub const IMMUNITY_DURATION_TICKS: u16 = 180;
 
+/// Per-tick chance a weaker strain's nodes are outcompeted by the
+/// ecosystem's dominant strain. Only fires when there's a >= 2x
+/// strength gap, so minor diversity doesn't get squashed.
+pub const STRAIN_OUTCOMPETE_CHANCE: f32 = 0.01;
+
 /// Minimum age (in ticks) a node needs before it can be promoted to
 /// legendary status. Combined with `LEGENDARY_MIN_CHILDREN` to gate
 /// the rare long-lived, reproductive characters.
