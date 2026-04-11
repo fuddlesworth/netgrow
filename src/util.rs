@@ -121,42 +121,6 @@ fn render_braille_fill(
     output
 }
 
-/// Single-row braille progress bar. Each cell holds a 2×4 dot grid,
-/// so a `width_cells`-cell bar has 2x horizontal sub-cell resolution
-/// (half-filled cells look like a partial fill, not a binary on/off).
-/// All 4 rows of each dot column light up together, giving a solid
-/// bar appearance rather than dots.
-pub fn braille_bar(value: u64, max: u64, width_cells: usize) -> String {
-    if width_cells == 0 {
-        return String::new();
-    }
-    let total_dots = width_cells * 2;
-    let fill = if max == 0 {
-        0
-    } else {
-        ((value as usize * total_dots) / (max as usize)).min(total_dots)
-    };
-    let mut out = String::with_capacity(width_cells);
-    // Left column of each cell = dots 1,2,3,7 → bits 0x01|0x02|0x04|0x40
-    // Right column of each cell = dots 4,5,6,8 → bits 0x08|0x10|0x20|0x80
-    const LEFT: u8 = 0x01 | 0x02 | 0x04 | 0x40;
-    const RIGHT: u8 = 0x08 | 0x10 | 0x20 | 0x80;
-    for cell in 0..width_cells {
-        let dot_col_left = cell * 2;
-        let dot_col_right = dot_col_left + 1;
-        let mut bits: u8 = 0;
-        if fill > dot_col_left {
-            bits |= LEFT;
-        }
-        if fill > dot_col_right {
-            bits |= RIGHT;
-        }
-        let ch = char::from_u32(0x2800 + bits as u32).unwrap_or(' ');
-        out.push(ch);
-    }
-    out
-}
-
 /// Format an integer with thousands separators (commas). Used by the
 /// header tick counter so long sessions don't devolve into digit soup.
 pub fn with_commas(n: u64) -> String {

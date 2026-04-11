@@ -7,7 +7,7 @@ use ratatui::Frame;
 
 use crate::theme::theme;
 use crate::util::{
-    braille_area_graph_with_max, braille_bar, braille_range_graph, session_name, with_commas,
+    braille_area_graph_with_max, braille_range_graph, session_name, with_commas,
 };
 use crate::world::{
     node_ip, InfectionStage, LinkKind, Node, Role, State, World, WorldStats, HOT_LINK, WARM_LINK,
@@ -110,7 +110,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     let faction_rows = world.faction_stats.len().max(1) as u16;
     let factions_height: u16 = faction_rows + 2;
     let right_rows = Layout::vertical([
-        Constraint::Length(9), // stats: 7 content rows + border
+        Constraint::Length(7), // stats: 5 content rows + border
         Constraint::Length(5), // activity: 3 braille content rows + border
         Constraint::Length(factions_height), // per-faction prestige rows + border
         Constraint::Length(7), // roles: 5 content rows + border
@@ -119,10 +119,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     ])
     .split(right_col);
 
-    frame.render_widget(
-        stats_block(world, &stats, world.cfg.max_nodes),
-        right_rows[0],
-    );
+    frame.render_widget(stats_block(world, &stats), right_rows[0]);
     frame.render_widget(activity_block(world, right_rows[1].width), right_rows[1]);
     frame.render_widget(factions_block(world), right_rows[2]);
     frame.render_widget(legend_block(), right_rows[3]);
@@ -436,36 +433,16 @@ fn sep() -> Span<'static> {
     Span::styled(" · ", Style::default().fg(theme().ghost))
 }
 
-fn stats_block(
-    world: &World,
-    s: &WorldStats,
-    max_nodes: usize,
-) -> Paragraph<'static> {
+fn stats_block(world: &World, s: &WorldStats) -> Paragraph<'static> {
     let th = theme();
     let block = bordered_block(" stats ");
     let label_style = Style::default().fg(th.stat_label);
     let alive_color = th.branch_palette.first().copied().unwrap_or(th.value);
     let branch_color = th.branch_palette.get(1).copied().unwrap_or(th.value);
-    let cap = max_nodes.max(1);
-    // Node-population denominator: scales every meter to the shared
-    // max_nodes cap so the bars are comparable at a glance.
-    let row_with_bar =
-        |label: &'static str, value: usize, color: Color| -> Line<'static> {
-            let bar = braille_bar(value as u64, cap as u64, 10);
-            Line::from(vec![
-                Span::styled(format!(" {:<9}", label), label_style),
-                Span::styled(
-                    format!("{:<4}", value),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(bar, Style::default().fg(color)),
-            ])
-        };
-    // Double-column plain row: two label+value pairs sharing a row.
-    // Used for derived counters that don't need bars. Label widths
-    // are 9/9 (one wider than the longest label so every label has
-    // at least one trailing space) and values use right-aligned 4-
-    // char fields so columns line up cleanly.
+    // Two-column row: one label+value pair on the left, another on
+    // the right. Column widths are fixed so every row lines up.
+    // Label width 9 (one wider than the longest 8-char label) keeps
+    // a guaranteed trailing space before the value.
     let row_pair = |la: &'static str,
                     va: usize,
                     ca: Color,
@@ -479,7 +456,7 @@ fn stats_block(
                 format!("{:>4}", va),
                 Style::default().fg(ca).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  "),
+            Span::raw("   "),
             Span::styled(format!("{:<8}", lb), label_style),
             Span::styled(
                 format!("{:>4}", vb),
@@ -501,10 +478,8 @@ fn stats_block(
         .filter(|n| matches!(n.state, State::Alive) && n.legendary_name != u16::MAX)
         .count();
     let lines = vec![
-        row_with_bar("alive", s.alive, alive_color),
-        row_with_bar("pwned", s.pwned, th.pwned),
-        row_with_bar("dying", s.dying, th.log_cascade),
-        row_with_bar("dead", s.dead, th.ghost),
+        row_pair("alive", s.alive, alive_color, "pwned", s.pwned, th.pwned),
+        row_pair("dying", s.dying, th.log_cascade, "dead", s.dead, th.ghost),
         row_pair(
             "branches",
             s.branches,
