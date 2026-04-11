@@ -1,85 +1,84 @@
-# Aretha Dark — warm-black ground with aged gold, rose, and sage.
-# A soulful, low-chroma dark palette that leans into warm amber
-# highlights instead of the cool cyans of the default cyberpunk
-# look. Named for the Queen of Soul — gold as royalty, burgundy
-# as velvet, sage as a quiet undercurrent.
+# Aretha Dark — navy-and-sky-blue palette ported from the
+# Aretha Plasma KDE color scheme via fuddlesworth's VS Code theme
+# (https://github.com/fuddlesworth/aretha-dark-vscode). Deep navy
+# ground, sky-blue accents, crimson errors, emerald positives.
 
-frame          = "#b7841c"  # aged gold
-frame_accent   = "#e5b347"  # bright gold
-bar_bg         = "#14100c"  # warm near-black
-label          = "#c9b88c"  # muted cream
-value          = "#f5e9cc"  # ivory highlight
-ghost          = "#675c4a"  # warm gray
-accent         = "#e5b347"
+frame          = "#3DAEE9"  # active/accent
+frame_accent   = "#478ED5"  # links/functions
+bar_bg         = "#162239"  # editor bg
+label          = "#D3DAE3"  # foreground text
+value          = "#D3DAE3"
+ghost          = "#273E66"  # selection (muted)
+accent         = "#3DAEE9"
 
-header_brand_bg = "#e5b347"
-header_brand_fg = "#14100c"
-stat_label      = "#b09b75"
-stat_value      = "#f5e9cc"
-stat_packets    = "#d4a84a"  # amber
-stat_infected   = "#d17478"  # rose
+header_brand_bg = "#3DAEE9"
+header_brand_fg = "#162239"
+stat_label      = "#B48EAD"  # modifiers/imports (dusty mauve)
+stat_value      = "#D3DAE3"
+stat_packets    = "#56B6C2"  # booleans/null (teal)
+stat_infected   = "#C74264"  # control flow / errors (crimson)
 
-pwned          = "#c23838"  # deep red
-pwned_alt      = "#d95454"  # warm red
-dying_alt      = "#c06b2e"  # burnt orange
-honey_reveal   = "#e5b347"
-shield_flash_a = "#d4a84a"
-shield_flash_b = "#f5e9cc"
-mutated_flash_a = "#d17478"
-mutated_flash_b = "#8a4a8e"  # warm purple
+pwned          = "#C74264"
+pwned_alt      = "#FFAA7F"  # types/constants (salmon)
+dying_alt      = "#FFAA7F"
+honey_reveal   = "#E5C07B"  # type keywords (wheat/amber)
+shield_flash_a = "#3DAEE9"
+shield_flash_b = "#478ED5"
+mutated_flash_a = "#B48EAD"
+mutated_flash_b = "#D19A66"  # numbers/escapes (tan)
 
-scanner  = "#6ba895"  # dusty teal
-exfil    = "#9d6bb0"  # warm purple
-defender = "#89a66a"  # sage
+scanner  = "#56B6C2"  # teal
+exfil    = "#478ED5"  # muted sky blue
+defender = "#00AA7F"  # strings/positive (emerald)
 
-patch_wave = "#89a66a"
-packet     = "#e5b347"
-cross_link = "#b09b75"
-ping       = "#6ba895"
-cursor     = "#e5b347"
+patch_wave = "#00AA7F"
+packet     = "#3DAEE9"
+cross_link = "#B48EAD"
+ping       = "#56B6C2"
+cursor     = "#E5C07B"
 
 branch_palette = [
-  "#89a66a",  # sage
-  "#e5b347",  # bright gold
-  "#d48322",  # amber
-  "#d95454",  # warm red
-  "#d17478",  # rose
-  "#9d6bb0",  # warm purple
-  "#6ba895",  # dusty teal
-  "#c9b88c",  # cream
+  "#00AA7F",  # emerald
+  "#3DAEE9",  # accent blue
+  "#56B6C2",  # teal
+  "#478ED5",  # muted blue
+  "#E5C07B",  # wheat
+  "#D19A66",  # tan
+  "#FFAA7F",  # salmon
+  "#B48EAD",  # mauve
 ]
 
 faction_palette = [
-  "#e5b347",  # bright gold
-  "#9d6bb0",  # warm purple
-  "#89a66a",  # sage
-  "#d95454",  # warm red
+  "#3DAEE9",  # accent blue
+  "#FFAA7F",  # salmon
+  "#00AA7F",  # emerald
+  "#B48EAD",  # mauve
 ]
 
 strain_palette = [
-  "#9d6bb0",  # warm purple
-  "#8a4a8e",
-  "#d17478",  # rose
-  "#b34a5a",
-  "#c23838",  # deep red
-  "#6a1a22",  # burgundy
-  "#d17478",
-  "#9d6bb0",
+  "#C74264",  # crimson
+  "#B48EAD",  # mauve
+  "#C74264",
+  "#D19A66",  # tan
+  "#FFAA7F",  # salmon
+  "#B48EAD",
+  "#C74264",
+  "#D19A66",
 ]
 
-log_handshake = "#89a66a"
-log_beacon    = "#675c4a"
-log_lost      = "#c23838"
-log_hardened  = "#e5b347"
-log_shielded  = "#d4a84a"
-log_cured     = "#89a66a"
-log_cascade   = "#c06b2e"
-log_strain    = "#9d6bb0"
-log_worm      = "#d17478"
-log_mutated   = "#d17478"
-log_bridge    = "#b09b75"
-log_c2_online = "#e5b347"
-log_default   = "#c9b88c"
-log_zero_day_bg = "#e5b347"
-log_honeypot_bg = "#d4a84a"
-log_injected_bg = "#9d6bb0"
+log_handshake = "#00AA7F"
+log_beacon    = "#273E66"
+log_lost      = "#C74264"
+log_hardened  = "#3DAEE9"
+log_shielded  = "#56B6C2"
+log_cured     = "#00AA7F"
+log_cascade   = "#FFAA7F"
+log_strain    = "#B48EAD"
+log_worm      = "#C74264"
+log_mutated   = "#B48EAD"
+log_bridge    = "#478ED5"
+log_c2_online = "#3DAEE9"
+log_default   = "#D3DAE3"
+log_zero_day_bg = "#E5C07B"
+log_honeypot_bg = "#E5C07B"
+log_injected_bg = "#C74264"
