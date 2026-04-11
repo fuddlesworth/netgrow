@@ -27,6 +27,31 @@ const RIGHT_COL_WIDTH: u16 = 41;
 const HEADER_HEIGHT: u16 = 1;
 const FOOTER_HEIGHT: u16 = 1;
 
+/// Which set of panels fills the right column. Runtime is the
+/// default game-view with stats/activity/factions/roles; Intel
+/// swaps those for info-dense panels (minimap, rivalries, events)
+/// that surface state otherwise hidden in the log stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewMode {
+    Runtime,
+    Intel,
+}
+
+impl ViewMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ViewMode::Runtime => "runtime",
+            ViewMode::Intel => "intel",
+        }
+    }
+    pub fn next(&self) -> Self {
+        match self {
+            ViewMode::Runtime => ViewMode::Intel,
+            ViewMode::Intel => ViewMode::Runtime,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct UiState {
     pub paused: bool,
@@ -38,6 +63,10 @@ pub struct UiState {
     /// When `Some`, draws an inspector cursor highlight at the given mesh
     /// cell and shows an inspector panel with the node's details.
     pub cursor: Option<(i16, i16)>,
+    /// Current right-column view set. Swappable at runtime via the
+    /// `v` keybind so the panel real estate can show either the
+    /// default runtime readout or the intel view.
+    pub view: ViewMode,
 }
 
 pub fn mesh_bounds(size: Size) -> (i16, i16) {
@@ -104,29 +133,60 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     );
 
     let inspector_height: u16 = if ui.cursor.is_some() { 13 } else { 0 };
-    // factions panel sizes to exactly fit its rows + border. Always
-    // reserve at least one content row so the border has something
-    // to frame even on a fresh single-faction run.
-    let faction_rows = world.faction_stats.len().max(1) as u16;
-    let factions_height: u16 = faction_rows + 2;
-    let right_rows = Layout::vertical([
-        Constraint::Length(7), // stats: 5 content rows + border
-        Constraint::Length(5), // activity: 3 braille content rows + border
-        Constraint::Length(factions_height), // per-faction prestige rows + border
-        Constraint::Length(7), // roles: 5 content rows + border
-        Constraint::Length(inspector_height),
-        Constraint::Min(5),
-    ])
-    .split(right_col);
-
-    frame.render_widget(stats_block(world, &stats), right_rows[0]);
-    frame.render_widget(activity_block(world, right_rows[1].width), right_rows[1]);
-    frame.render_widget(factions_block(world), right_rows[2]);
-    frame.render_widget(legend_block(), right_rows[3]);
-    if let Some(pos) = ui.cursor {
-        frame.render_widget(inspector_block(world, pos), right_rows[4]);
+    match ui.view {
+        ViewMode::Runtime => {
+            // factions panel sizes to exactly fit its rows + border. Always
+            // reserve at least one content row so the border has something
+            // to frame even on a fresh single-faction run.
+            let faction_rows = world.faction_stats.len().max(1) as u16;
+            let factions_height: u16 = faction_rows + 2;
+            let right_rows = Layout::vertical([
+                Constraint::Length(7), // stats
+                Constraint::Length(5), // activity
+                Constraint::Length(factions_height),
+                Constraint::Length(7), // roles legend
+                Constraint::Length(inspector_height),
+                Constraint::Min(5),
+            ])
+            .split(right_col);
+            frame.render_widget(stats_block(world, &stats), right_rows[0]);
+            frame.render_widget(activity_block(world, right_rows[1].width), right_rows[1]);
+            frame.render_widget(factions_block(world), right_rows[2]);
+            frame.render_widget(legend_block(), right_rows[3]);
+            if let Some(pos) = ui.cursor {
+                frame.render_widget(inspector_block(world, pos), right_rows[4]);
+            }
+            frame.render_widget(log_block(world), right_rows[5]);
+        }
+        ViewMode::Intel => {
+            // Rivalries / events panels size dynamically to their
+            // content (capped so one panel can't eat the column).
+            let rivalry_rows: u16 = (world.rivalry.len().min(6) as u16).max(1);
+            let rivalries_height = rivalry_rows + 2;
+            let event_count = (world.outages.len()
+                + world.partitions.len()
+                + world.wars.len()
+                + world.ddos_waves.len()
+                + if world.is_storming() { 1 } else { 0 })
+                .min(6) as u16;
+            let events_height = event_count.max(1) + 2;
+            let right_rows = Layout::vertical([
+                Constraint::Length(10), // minimap
+                Constraint::Length(rivalries_height),
+                Constraint::Length(events_height),
+                Constraint::Length(inspector_height),
+                Constraint::Min(5),
+            ])
+            .split(right_col);
+            frame.render_widget(minimap_block(world, right_rows[0].width), right_rows[0]);
+            frame.render_widget(rivalries_block(world), right_rows[1]);
+            frame.render_widget(events_block(world), right_rows[2]);
+            if let Some(pos) = ui.cursor {
+                frame.render_widget(inspector_block(world, pos), right_rows[3]);
+            }
+            frame.render_widget(log_block(world), right_rows[4]);
+        }
     }
-    frame.render_widget(log_block(world), right_rows[5]);
 }
 
 fn activity_block(world: &World, panel_width: u16) -> Paragraph<'static> {
@@ -735,6 +795,11 @@ fn footer_bar(ui: UiState) -> Paragraph<'static> {
             lab(" speed "),
             key("⇥"),
             lab(" cursor "),
+            key("v"),
+            Span::styled(
+                format!(" view ({}) ", ui.view.label()),
+                Style::default().fg(th.label),
+            ),
             key("i"),
             lab(" inject "),
         ]);
@@ -919,6 +984,191 @@ fn factions_block(world: &World) -> Paragraph<'static> {
             Span::styled(spark, Style::default().fg(hue)),
         ]));
     }
+    Paragraph::new(lines).block(block)
+}
+
+/// Birds-eye view of the mesh rendered as a coarse grid of cells,
+/// each cell colored by the dominant faction of the mesh block it
+/// represents. Used by the Intel view's minimap panel.
+fn minimap_block(world: &World, panel_width: u16) -> Paragraph<'static> {
+    let th = theme();
+    let block = bordered_block(" minimap ");
+    let cols = panel_width.saturating_sub(2).max(1) as usize;
+    let rows = 8usize;
+    let (bx, by) = (world.bounds.0.max(1) as usize, world.bounds.1.max(1) as usize);
+    // Per-cell bucket of (faction_id → count) so we can pick the
+    // dominant faction for each visual cell. Using a Vec indexed by
+    // faction id keeps allocation minimal.
+    let fac_count = world.faction_stats.len().max(1);
+    let mut buckets: Vec<Vec<u32>> = vec![vec![0u32; fac_count]; cols * rows];
+    for n in &world.nodes {
+        if !matches!(n.state, State::Alive) {
+            continue;
+        }
+        let mx = (n.pos.0 as usize * cols) / bx.max(1);
+        let my = (n.pos.1 as usize * rows) / by.max(1);
+        let idx = my * cols + mx;
+        if let Some(b) = buckets.get_mut(idx) {
+            if let Some(slot) = b.get_mut(n.faction as usize) {
+                *slot += 1;
+            }
+        }
+    }
+    let lines: Vec<Line<'static>> = (0..rows)
+        .map(|y| {
+            let spans: Vec<Span<'static>> = (0..cols)
+                .map(|x| {
+                    let b = &buckets[y * cols + x];
+                    let (best, best_count) = b
+                        .iter()
+                        .enumerate()
+                        .max_by_key(|(_, &c)| c)
+                        .map(|(i, &c)| (i, c))
+                        .unwrap_or((0, 0));
+                    if best_count == 0 {
+                        Span::styled(" ", Style::default().fg(th.ghost))
+                    } else {
+                        Span::styled(
+                            "█",
+                            Style::default().fg(faction_hue(world, best as u8)),
+                        )
+                    }
+                })
+                .collect();
+            Line::from(spans)
+        })
+        .collect();
+    Paragraph::new(lines).block(block)
+}
+
+/// Top-pressure rivalries rendered as horizontal bars. Pulls from
+/// `World.rivalry`, sorts descending, and shows the six hottest
+/// pairs in their combined faction hues.
+fn rivalries_block(world: &World) -> Paragraph<'static> {
+    let th = theme();
+    let block = bordered_block(" rivalries ");
+    if world.rivalry.is_empty() {
+        let lines = vec![Line::from(Span::styled(
+            " (no active feuds)".to_string(),
+            Style::default().fg(th.ghost),
+        ))];
+        return Paragraph::new(lines).block(block);
+    }
+    let mut entries: Vec<((u8, u8), u16)> =
+        world.rivalry.iter().map(|(&k, &v)| (k, v)).collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.truncate(6);
+    let cap = crate::world::RIVALRY_CAP.max(1);
+    let bar_cells = 14u32;
+    let lines: Vec<Line<'static>> = entries
+        .into_iter()
+        .map(|((a, b), pressure)| {
+            let at_war = world.at_war(a, b);
+            let hue_a = faction_hue(world, a);
+            let hue_b = faction_hue(world, b);
+            let fill = ((pressure as u32 * bar_cells) / cap as u32).min(bar_cells);
+            let bar: String = (0..bar_cells)
+                .map(|i| if i < fill { '█' } else { '░' })
+                .collect();
+            let mark = if at_war { "⚔" } else { "·" };
+            Line::from(vec![
+                Span::styled(
+                    format!(" {} ", mark),
+                    Style::default().fg(th.pwned).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("F{}", a),
+                    Style::default().fg(hue_a).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("↔".to_string(), Style::default().fg(th.label)),
+                Span::styled(
+                    format!("F{} ", b),
+                    Style::default().fg(hue_b).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(bar, Style::default().fg(th.pwned)),
+                Span::styled(
+                    format!(" {}", pressure),
+                    Style::default().fg(th.stat_label),
+                ),
+            ])
+        })
+        .collect();
+    Paragraph::new(lines).block(block)
+}
+
+/// Active environmental events panel: storms, DDoS waves, ISP
+/// outages, partitions, wars — each with a one-line descriptor
+/// and any applicable countdown.
+fn events_block(world: &World) -> Paragraph<'static> {
+    let th = theme();
+    let block = bordered_block(" events ");
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let row = |glyph: &'static str, text: String, color: Color| -> Line<'static> {
+        Line::from(vec![
+            Span::styled(
+                format!(" {} ", glyph),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(text, Style::default().fg(th.label)),
+        ])
+    };
+    if world.is_storming() {
+        let remaining = world.storm_until.saturating_sub(world.tick);
+        lines.push(row("⚡", format!("storm ({}t)", remaining), th.pwned));
+    }
+    for wave in &world.ddos_waves {
+        let axis = if wave.horizontal { "horiz" } else { "vert" };
+        lines.push(row("↯", format!("ddos {} pos {}", axis, wave.pos), th.accent));
+    }
+    for outage in &world.outages {
+        let remaining = outage.life.saturating_sub(outage.age);
+        lines.push(row(
+            "⚠",
+            format!("isp outage ({}t)", remaining),
+            th.pwned_alt,
+        ));
+    }
+    for part in &world.partitions {
+        let remaining = part.life.saturating_sub(part.age);
+        let axis = if part.horizontal { "horiz" } else { "vert" };
+        lines.push(row(
+            "✂",
+            format!("partition {} ({}t)", axis, remaining),
+            th.pwned_alt,
+        ));
+    }
+    let mut war_pairs: Vec<((u8, u8), u64)> =
+        world.wars.iter().map(|(&k, &v)| (k, v)).collect();
+    war_pairs.sort_by(|a, b| b.1.cmp(&a.1));
+    for ((a, b), expires) in war_pairs.into_iter().take(4) {
+        let remaining = expires.saturating_sub(world.tick);
+        lines.push(Line::from(vec![
+            Span::styled(
+                " ⚔ ".to_string(),
+                Style::default().fg(th.pwned).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("F{}", a),
+                Style::default().fg(faction_hue(world, a)).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" war ".to_string(), Style::default().fg(th.label)),
+            Span::styled(
+                format!("F{}", b),
+                Style::default().fg(faction_hue(world, b)).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" ({}t)", remaining),
+                Style::default().fg(th.stat_label),
+            ),
+        ]));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " (all quiet)".to_string(),
+            Style::default().fg(th.ghost),
+        )));
+    }
+    lines.truncate(6);
     Paragraph::new(lines).block(block)
 }
 

@@ -467,6 +467,7 @@ fn main() -> io::Result<()> {
     let mut paused = false;
     let mut mesh_bounds = initial_bounds;
     let mut cursor: Option<(i16, i16)> = None;
+    let mut view: render::ViewMode = render::ViewMode::Runtime;
 
     loop {
         let wait = Duration::from_millis(tick_ms);
@@ -494,6 +495,9 @@ fn main() -> io::Result<()> {
                         } else {
                             Some((mesh_bounds.0 / 2, mesh_bounds.1 / 2))
                         };
+                    }
+                    (KeyCode::Char('v'), _) => {
+                        view = view.next();
                     }
                     (KeyCode::Left, _) if cursor.is_some() => {
                         if let Some(c) = cursor.as_mut() {
@@ -548,6 +552,7 @@ fn main() -> io::Result<()> {
                 seed,
                 theme_name,
                 cursor,
+                view,
             };
             terminal.draw(|f| {
                 render::draw(f, &world, ui);
@@ -565,6 +570,7 @@ fn main() -> io::Result<()> {
             seed,
             theme_name,
             cursor,
+            view,
         };
         terminal.draw(|f| {
             render::draw(f, &world, ui);
