@@ -121,6 +121,30 @@ pub const GRAFFITI_WEIGHT_MULT: f32 = 2.5;
 /// its odds of being picked as the next spawn's parent.
 pub const FAVOR_WEIGHT_MULT: f32 = 2.5;
 
+/// Faction id sentinel for unaffiliated mercenary nodes. Far
+/// outside the normal allocation range so render/routing code
+/// that tests `n.faction` against real indices always skips
+/// mercenaries. Never allocated to a real faction.
+pub const MERCENARY_FACTION: u8 = u8::MAX;
+
+/// Ticks between mercenary-auction passes. Each pass iterates
+/// any alive mercenary nodes and flips them to the alive
+/// faction with the highest intel counter (tie-breaker: alive
+/// count) — the "richest bidder" pays for the contract.
+pub const MERCENARY_AUCTION_PERIOD: u64 = 200;
+/// Minimum intel a faction must have to bid in a mercenary
+/// auction. Prevents fresh factions from instantly absorbing
+/// mercenaries before they've delivered anything.
+pub const MERCENARY_MIN_BID_INTEL: u32 = 20;
+/// Intel cost deducted from the winning bidder each auction
+/// win. Models the mercenary's retainer fee — rich factions
+/// can afford to keep buying, poor ones get outbid.
+pub const MERCENARY_BID_COST: u32 = 8;
+/// Per-auction chance that a fresh mercenary node spawns
+/// somewhere on the mesh. Keeps the mercenary population
+/// refreshing over long runs.
+pub const MERCENARY_SPAWN_CHANCE: f64 = 0.35;
+
 /// Minimum age (in ticks) a node needs before it can be promoted to
 /// legendary status. Combined with `LEGENDARY_MIN_CHILDREN` to gate
 /// the rare long-lived, reproductive characters.
@@ -2348,6 +2372,110 @@ impl World {
         });
     }
 
+    /// Mercenary auction pass. Walks alive nodes tagged with
+    /// `MERCENARY_FACTION` (unaffiliated) and flips each to the
+    /// alive faction with the highest intel that can afford the
+    /// bid cost. Also rolls for fresh mercenary spawns at random
+    /// unoccupied cells so the pool keeps refreshing. Runs on
+    /// `MERCENARY_AUCTION_PERIOD` cadence.
+    fn maybe_mercenary_auction(&mut self) {
+        if !self.tick.is_multiple_of(MERCENARY_AUCTION_PERIOD) || self.tick == 0 {
+            return;
+        }
+        // Pass 1: pick the richest bidder (highest intel above
+        // the minimum floor). Tie-break by alive count.
+        let faction_count = self.faction_stats.len();
+        let counts = self.faction_alive_counts();
+        let winner: Option<u8> = (0..faction_count as u8)
+            .filter(|&f| {
+                let stats = &self.faction_stats[f as usize];
+                let c2 = self.c2_nodes.get(f as usize).copied();
+                let alive = c2.map(|id| matches!(self.nodes[id].state, State::Alive)).unwrap_or(false);
+                alive && stats.intel >= MERCENARY_MIN_BID_INTEL
+            })
+            .max_by(|&a, &b| {
+                let fa = &self.faction_stats[a as usize];
+                let fb = &self.faction_stats[b as usize];
+                fa.intel
+                    .cmp(&fb.intel)
+                    .then_with(|| counts[a as usize].cmp(&counts[b as usize]))
+            });
+        // Pass 2: flip any alive mercenaries to the winner and
+        // dock the bid cost. Log each hire individually so the
+        // reader sees the auction play out.
+        if let Some(buyer) = winner {
+            let mercs: Vec<NodeId> = self
+                .nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, n)| {
+                    (matches!(n.state, State::Alive) && n.faction == MERCENARY_FACTION)
+                        .then_some(i)
+                })
+                .collect();
+            if !mercs.is_empty() {
+                // Reparent each mercenary to the nearest alive
+                // node of the buying faction so it joins a
+                // chain instead of stranding itself.
+                for merc in mercs {
+                    let mpos = self.nodes[merc].pos;
+                    let anchor = self
+                        .nodes
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, n)| {
+                            if n.faction == buyer
+                                && matches!(n.state, State::Alive)
+                                && i != merc
+                            {
+                                let d = (n.pos.0 - mpos.0).abs().max((n.pos.1 - mpos.1).abs());
+                                Some((i, d))
+                            } else {
+                                None
+                            }
+                        })
+                        .min_by_key(|(_, d)| *d)
+                        .map(|(i, _)| i)
+                        .unwrap_or_else(|| self.c2_nodes[buyer as usize]);
+                    self.nodes[merc].faction = buyer;
+                    self.nodes[merc].parent = Some(anchor);
+                    self.nodes[merc].mutated_flash = 10;
+                    if let Some(s) = self.faction_stats.get_mut(buyer as usize) {
+                        s.intel = s.intel.saturating_sub(MERCENARY_BID_COST);
+                    }
+                    let (a, b) = octet_pair(mpos);
+                    self.push_log(format!(
+                        "merc hired by F{} @ 10.0.{}.{}",
+                        buyer, a, b
+                    ));
+                }
+            }
+        }
+        // Pass 3: spawn a fresh mercenary somewhere unoccupied.
+        if self.rng.gen_bool(MERCENARY_SPAWN_CHANCE) {
+            let bounds = self.bounds;
+            if bounds.0 >= 8 && bounds.1 >= 8 {
+                for _ in 0..16 {
+                    let x = self.rng.gen_range(4..bounds.0 - 4);
+                    let y = self.rng.gen_range(4..bounds.1 - 4);
+                    if self.occupied.contains(&(x, y)) {
+                        continue;
+                    }
+                    let branch = self.alloc_branch_id();
+                    let mut n = Node::fresh((x, y), None, self.tick, Role::Relay, branch);
+                    n.faction = MERCENARY_FACTION;
+                    n.pwn_resist = 1;
+                    n.mutated_flash = 12;
+                    self.nodes.push(n);
+                    self.occupied.insert((x, y));
+                    let (oa, ob) = octet_pair((x, y));
+                    self.push_log(format!("merc available @ 10.0.{}.{}", oa, ob));
+                    break;
+                }
+            }
+        }
+    }
+
     /// Drop a turf-graffiti mark at `pos`. While the mark is
     /// live, parent-selection in `try_spawn` biases toward any
     /// alive node within `GRAFFITI_MARK_RADIUS` of the cell —
@@ -2986,6 +3114,7 @@ impl World {
             self.maybe_wake_sleepers();
         }
         self.maybe_assimilate();
+        self.maybe_mercenary_auction();
         self.maybe_defector();
         self.maybe_border_skirmish();
 

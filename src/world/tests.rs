@@ -1225,6 +1225,36 @@ fn fission_ignores_branches_below_size_threshold() {
 }
 
 #[test]
+fn mercenary_auction_flips_unaffiliated_node_to_richest_bidder() {
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        c2_count: 2,
+        ..Config::default()
+    };
+    let mut w = World::new(1, (80, 30), cfg);
+    // Plant a mercenary node and give F1 enough intel to win.
+    let merc = w.nodes.len();
+    let mut n = Node::fresh((20, 15), None, 0, Role::Relay, 99);
+    n.faction = MERCENARY_FACTION;
+    w.nodes.push(n);
+    w.faction_stats[0].intel = MERCENARY_MIN_BID_INTEL;
+    w.faction_stats[1].intel = MERCENARY_MIN_BID_INTEL + 50;
+    // Auction runs on a period cadence — advance tick to a
+    // multiple of MERCENARY_AUCTION_PERIOD.
+    w.tick = MERCENARY_AUCTION_PERIOD;
+    w.maybe_mercenary_auction();
+    // Mercenary should have flipped to F1 (richer bidder).
+    assert_eq!(w.nodes[merc].faction, 1);
+    // F1 paid the bid cost.
+    assert_eq!(
+        w.faction_stats[1].intel,
+        MERCENARY_MIN_BID_INTEL + 50 - MERCENARY_BID_COST
+    );
+}
+
+#[test]
 fn extinction_triggers_reseed_after_silent_interval() {
     let cfg = Config {
         p_spawn: 0.0,

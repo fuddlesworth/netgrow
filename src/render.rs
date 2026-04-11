@@ -3015,6 +3015,11 @@ fn faction_hue(world: &World, faction: u8) -> Color {
     if palette.is_empty() {
         return Color::Cyan;
     }
+    // Unaffiliated mercenaries render in a neutral ghost color
+    // so they visibly stand apart from any faction's hue.
+    if faction == crate::world::MERCENARY_FACTION {
+        return theme().ghost;
+    }
     let idx = world.faction_color_index(faction) % palette.len();
     palette[idx]
 }
