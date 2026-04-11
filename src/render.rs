@@ -824,12 +824,12 @@ impl<'a> Widget for MeshWidget<'a> {
             if node_cells.contains(&cell) {
                 continue;
             }
-            // Deterministic stipple based on tick + cell so the
-            // pattern gently shimmers without global flicker.
+            // Stable stipple keyed only on cell position so the
+            // pattern holds still from tick to tick — folding the
+            // tick in here strobed the whole territory at night.
             let key = (cell.0 as u32)
                 .wrapping_mul(2654435761)
-                ^ (cell.1 as u32).wrapping_mul(40503)
-                ^ (w.tick as u32).wrapping_mul(2246822519);
+                ^ (cell.1 as u32).wrapping_mul(40503);
             let thin = night || storming;
             if thin && (key & 1) == 0 {
                 continue;
