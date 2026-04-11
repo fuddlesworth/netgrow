@@ -76,6 +76,12 @@ const FOOTER_HEIGHT: u16 = 1;
 pub enum ViewMode {
     Runtime,
     Intel,
+    /// Shadow-map view: brightens dead-node ghosts and
+    /// dims every live glyph so the reader can see the mesh's
+    /// history — where factions grew, where they died, which
+    /// paths used to carry traffic. Good for studying a long
+    /// run's shape after the fact.
+    Spectral,
 }
 
 impl ViewMode {
@@ -83,12 +89,14 @@ impl ViewMode {
         match self {
             ViewMode::Runtime => "runtime",
             ViewMode::Intel => "intel",
+            ViewMode::Spectral => "spectral",
         }
     }
     pub fn next(&self) -> Self {
         match self {
             ViewMode::Runtime => ViewMode::Intel,
-            ViewMode::Intel => ViewMode::Runtime,
+            ViewMode::Intel => ViewMode::Spectral,
+            ViewMode::Spectral => ViewMode::Runtime,
         }
     }
 }
@@ -169,6 +177,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
         MeshWidget {
             world,
             cursor: ui.cursor,
+            view: ui.view,
         },
         mesh_inner,
     );
@@ -235,6 +244,31 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
                 frame.render_widget(inspector_block(world, pos), right_rows[3]);
             }
             frame.render_widget(log_block(world, right_rows[4].width), right_rows[4]);
+        }
+        ViewMode::Spectral => {
+            // Same sidebar layout as Runtime; the mesh pass
+            // itself flips into "shadow" styling via ui.view
+            // when drawing nodes and links, so every live glyph
+            // dims and every dead ghost brightens.
+            let faction_rows = world.faction_stats.len().max(1) as u16;
+            let factions_height: u16 = faction_rows + 2;
+            let right_rows = Layout::vertical([
+                Constraint::Length(7),
+                Constraint::Length(5),
+                Constraint::Length(factions_height),
+                Constraint::Length(7),
+                Constraint::Length(inspector_height),
+                Constraint::Min(5),
+            ])
+            .split(right_col);
+            frame.render_widget(stats_block(world, &stats), right_rows[0]);
+            frame.render_widget(activity_block(world, right_rows[1].width), right_rows[1]);
+            frame.render_widget(factions_block(world), right_rows[2]);
+            frame.render_widget(legend_block(), right_rows[3]);
+            if let Some(pos) = ui.cursor {
+                frame.render_widget(inspector_block(world, pos), right_rows[4]);
+            }
+            frame.render_widget(log_block(world, right_rows[5].width), right_rows[5]);
         }
     }
 }
@@ -2013,6 +2047,11 @@ fn color_log_line(s: &str) -> Line<'static> {
 pub struct MeshWidget<'a> {
     pub world: &'a World,
     pub cursor: Option<(i16, i16)>,
+    /// Active view mode. Spectral mode tints the whole mesh
+    /// toward ghost colors and brightens dead-node echoes so the
+    /// reader can study the mesh's history; Runtime and Intel
+    /// use the normal styling.
+    pub view: ViewMode,
 }
 
 impl<'a> Widget for MeshWidget<'a> {
@@ -2784,6 +2823,38 @@ impl<'a> Widget for MeshWidget<'a> {
             put(buf, area, (pos.0 + 1, pos.1 - 1), "┐", bracket_style);
             put(buf, area, (pos.0 - 1, pos.1 + 1), "└", bracket_style);
             put(buf, area, (pos.0 + 1, pos.1 + 1), "┘", bracket_style);
+        }
+
+        // Spectral view: walk every cell in the rendered area
+        // and fold its fg toward the ghost color, stripping BOLD
+        // so live glyphs dim and ghost tombstones stand out.
+        // Dead-node glyphs already render in their ghost hue so
+        // this pass lets them read as the "bright layer" while
+        // everything else recedes.
+        if matches!(self.view, ViewMode::Spectral) {
+            let ghost = theme().ghost;
+            for y in area.y..area.bottom() {
+                for x in area.x..area.right() {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        let sym = cell.symbol().to_string();
+                        if sym == " " {
+                            continue;
+                        }
+                        // Skip cells already in the ghost color —
+                        // those are the dead tombstones / decayed
+                        // links we want to preserve at full
+                        // brightness.
+                        let style = cell.style();
+                        if style.fg == Some(ghost) {
+                            continue;
+                        }
+                        let dimmed = Style::default()
+                            .fg(ghost)
+                            .add_modifier(Modifier::DIM);
+                        cell.set_style(dimmed);
+                    }
+                }
+            }
         }
     }
 }

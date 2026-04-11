@@ -208,7 +208,29 @@ Brainstormed unshipped items from earlier rounds, rough scope markers:
   with `defector_intel_reward` (default 12) intel as "topology
   memory carried across the lines." Log mythic formatted as
   `✦ MYTHIC ✦ F{a} → F{b} defector @ 10.0.x.y (+N intel)`.
-- **Mercenary Nodes** *(small)* — unaffiliated auction-bidding nodes that
+- ✅ **Mercenary Nodes** — `MERCENARY_FACTION=u8::MAX` sentinel for
+  unaffiliated nodes. `maybe_mercenary_auction` runs every 200 ticks,
+  flips live mercenaries to the alive faction with highest intel
+  (min bid floor 20, cost 8), reparents them to the buyer's nearest
+  node, and rolls 35% for a fresh mercenary spawn at an unoccupied
+  cell. Render returns ghost hue for the sentinel.
+- ✅ **Turf Graffiti** — `g` cursor hotkey plants a mark at the
+  cursor. Marks live 400 ticks; any alive node within radius 6 gets
+  a 2.5× parent-weight bump in `try_spawn`. Pure bias — sim still
+  decides what to spawn. Rendered as a pulsing ✕ glyph.
+- ✅ **Black Market Links** — `Link.black_market_until: u64` flag
+  on cross-links. Opportunist factions periodically uplift one of
+  their cross-links to temporary backbone capacity. Collapses if an
+  ISP outage touches any cell in the path.
+- ✅ **Syndicate Votes** — `maybe_syndicate_vote` anti-dominance
+  valve. When 3+ factions alive and one holds ≥45% of total, 30%
+  roll per 500-tick pass bumps rivalry +35 against the dominant
+  faction from every other alive faction.
+- ✅ **Spectral View** — new `ViewMode::Spectral`. Cycles via `v`
+  after Intel. Post-pass dims every non-ghost cell toward ghost
+  color so dead-node tombstones + legendary remnants read as the
+  bright layer against a faded live mesh.
+- **Mercenary Nodes** *(shipped)* — unaffiliated auction-bidding nodes that
   sell to the highest bidder each cycle. Compounds faction dominance.
 - ✅ **Strain Patents** — `World.strain_patents: Vec<Option<u8>>`
   (indexed by strain id). When a worm-collision hybrid forms, the
