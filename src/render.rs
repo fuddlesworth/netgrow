@@ -2056,12 +2056,52 @@ impl<'a> Widget for MeshWidget<'a> {
             // ticks — no strobe, no reversed fill, the wire glyphs stay
             // legible, they just brighten.
             let scan_pulse = a.scan_pulse.max(b.scan_pulse);
+            // Ghost-link decay: when either endpoint is dead,
+            // use the maximum of the two endpoints' death_echo
+            // counters to drive a matching fade. Legendary
+            // endpoints keep their echo pinned so tombstone
+            // links stay visible as permanent remnants.
+            let dead_echo: u16 = if dead {
+                let ae = if a.legendary_name != u16::MAX {
+                    crate::world::GHOST_ECHO_TICKS
+                } else {
+                    a.death_echo
+                };
+                let be = if b.legendary_name != u16::MAX {
+                    crate::world::GHOST_ECHO_TICKS
+                } else {
+                    b.death_echo
+                };
+                ae.max(be)
+            } else {
+                0
+            };
+            let dead_legendary = dead
+                && (a.legendary_name != u16::MAX || b.legendary_name != u16::MAX);
+            // Skip fully-decayed dead links entirely — both
+            // endpoints have finished their ghost echo and the
+            // cleanup pass has released their cells.
+            if dead && !dead_legendary && dead_echo == 0 {
+                continue;
+            }
             let style = if dying {
                 Style::default()
                     .fg(th.pwned)
                     .add_modifier(Modifier::BOLD)
             } else if dead {
-                Style::default().fg(th.ghost)
+                // Non-legendary ghost links fade from a dim
+                // ghost-color stroke to nothing. Legendary
+                // remnants use a slightly brighter accent so
+                // tombstone links stand out from generic ghosts.
+                if dead_legendary {
+                    Style::default()
+                        .fg(th.accent)
+                        .add_modifier(Modifier::DIM)
+                } else {
+                    Style::default()
+                        .fg(th.ghost)
+                        .add_modifier(Modifier::DIM)
+                }
             } else if matches!(a.state, State::Pwned { .. })
                 || matches!(b.state, State::Pwned { .. })
             {
@@ -2137,6 +2177,11 @@ impl<'a> Widget for MeshWidget<'a> {
                     } else {
                         glyph_for(prev, cell, next)
                     }
+                } else if dead && !dead_legendary && dead_echo <= crate::world::GHOST_FADE_TICKS {
+                    // Deep-decay ghost links shrink from the
+                    // box-drawing path into a faint dot trail
+                    // before clearing entirely.
+                    "·"
                 } else {
                     glyph_for(prev, cell, next)
                 };
