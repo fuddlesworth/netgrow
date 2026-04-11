@@ -460,6 +460,87 @@ pub fn era_rules_for(idx: usize) -> (EraRules, &'static str) {
     }
 }
 
+/// Adjective pool for procedurally-generated custom-event names.
+/// The generator picks one adjective and one noun (plus a
+/// template variation) to produce names like "the crimson
+/// handshake" or "hollow requiem." Larger pools = more variety
+/// per seed — with ~80 adjectives and ~80 nouns across ~7
+/// templates, a three-word-slot generator has ~45k unique
+/// surface names before repeats, enough that no two seeds
+/// share a mythic vocabulary.
+pub const EVENT_ADJECTIVES: &[&str] = &[
+    // Colors and light
+    "crimson", "obsidian", "amber", "violet", "emerald", "pale", "golden",
+    "silver", "ashen", "scarlet", "cerulean", "ochre", "bronze", "indigo",
+    // Darkness and decay
+    "silent", "hollow", "broken", "forgotten", "cursed", "buried", "rotting",
+    "withered", "derelict", "vacant", "crumbling", "severed", "splintered",
+    // Light and reverence
+    "radiant", "gilded", "sovereign", "solemn", "sacred", "anointed", "blessed",
+    "exalted", "luminous", "hallowed",
+    // Chill and quiet
+    "frozen", "glacial", "whispered", "muted", "veiled", "shrouded", "cloaked",
+    "mourning", "grieving", "dormant",
+    // Heat and fury
+    "smoldering", "burning", "feral", "ravenous", "wrathful", "seething",
+    "blistering", "livid",
+    // Iron and grit
+    "iron", "leaden", "stoic", "tempered", "forged", "calloused", "rusted",
+    "wired", "riveted",
+    // Weather and time
+    "twilight", "dusk", "dawn", "midnight", "autumnal", "winterbound",
+    "eternal", "ephemeral", "timeless", "distant",
+    // Edge and danger
+    "jagged", "splintered", "bleeding", "razor", "shattered", "fractured",
+    "untamed", "lawless", "errant",
+];
+
+/// Noun pool for procedurally-generated custom-event names.
+/// Pairs with EVENT_ADJECTIVES via EVENT_NAME_TEMPLATES. Mix of
+/// ritual/religious, procedural/legal, and warfare/journey
+/// vocabulary so the generated names feel like they come from
+/// different mythic traditions depending on the pick.
+pub const EVENT_NOUNS: &[&str] = &[
+    // Ritual and religion
+    "pilgrimage", "vigil", "chorus", "covenant", "ritual", "conclave",
+    "communion", "liturgy", "sermon", "matins", "vespers", "absolution",
+    "confession", "benediction", "invocation", "hymn",
+    // Procedural and legal
+    "handshake", "verdict", "quorum", "writ", "edict", "doctrine", "accord",
+    "treaty", "parley", "ledger", "tribunal", "ruling",
+    // Arcane and secret
+    "cipher", "sigil", "rune", "glyph", "oracle", "prophecy", "augury",
+    "geas", "conjuring", "summoning",
+    // Action and warfare
+    "gambit", "harvest", "reckoning", "exodus", "procession", "siege",
+    "onslaught", "ambush", "sortie", "reprisal", "purge", "incursion",
+    // Judgment and ending
+    "requiem", "elegy", "dirge", "lament", "eulogy", "epitaph",
+    "threshold", "passage", "crossing",
+    // Celestial and cosmic
+    "eclipse", "apogee", "zenith", "equinox", "solstice", "aurora",
+    "constellation",
+    // Symbols and marks
+    "pantheon", "canticle", "crown", "chalice", "mantle", "shroud",
+    "relic", "icon", "brazier",
+];
+
+/// Name templates for custom events. Placeholders `{adj}` and
+/// `{noun}` get substituted from the pools above at generation
+/// time. Picking a template randomly per event means similar
+/// adjective/noun pairs still read as varied — the user sees
+/// "The crimson handshake" in one run and "Rite of the crimson
+/// handshake" in another.
+pub const EVENT_NAME_TEMPLATES: &[&str] = &[
+    "the {adj} {noun}",
+    "{noun} of the {adj} dawn",
+    "{adj} {noun}",
+    "rite of the {adj} {noun}",
+    "the {noun}'s {adj} hour",
+    "{adj} {noun} protocol",
+    "hymn of the {adj} {noun}",
+];
+
 /// Names the sim awards to nodes that survive long enough and
 /// spawn enough children to earn legendary status. Picked by
 /// modular index off the node id so the same run produces the

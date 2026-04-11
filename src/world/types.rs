@@ -552,6 +552,104 @@ impl Default for Relation {
     }
 }
 
+/// A trigger condition for a procedurally-generated custom event.
+/// Each custom event has one trigger; the event considers itself
+/// ready to fire when the trigger predicate passes on a sample
+/// tick. Triggers are cheap to evaluate — none of them iterate
+/// over the whole node list — so the runtime check can walk
+/// every custom event on the faction sample cadence without
+/// measurable cost.
+#[derive(Clone, Copy, Debug)]
+pub enum EventTrigger {
+    /// Fires on every faction sample period — effectively a
+    /// cooldown-limited heartbeat.
+    EverySample,
+    /// Fires while the current era index matches.
+    InEra(usize),
+    /// Fires during the night half of the day/night cycle.
+    AtNight,
+    /// Fires while any diplomatic relation is in OpenWar.
+    AnyWar,
+    /// Fires while any diplomatic relation is in Alliance.
+    AnyAlliance,
+    /// Fires while at least one faction has unlocked the given
+    /// tech tier (or higher).
+    AnyTechTier(u8),
+    /// Fires when the total alive-node count drops below this
+    /// fraction of `cfg.max_nodes` — late-run / post-extinction
+    /// event hook.
+    AliveFractionBelow(f32),
+}
+
+/// A gate condition applied on top of a trigger. Lets a generated
+/// event demand additional state (e.g. "only at night AND only
+/// when there's an active storm"). Always-true for unrestricted
+/// events.
+#[derive(Clone, Copy, Debug)]
+pub enum EventCondition {
+    Always,
+    StormActive,
+    NoStorm,
+    MinFactionCount(usize),
+    NotDuringEra(usize),
+}
+
+/// The actual effect a custom event fires. All effects are
+/// **instant** in the first cut — no duration-tracked state is
+/// added to World. Persistent buffs/debuffs are a followup.
+/// Effects reuse existing machinery (patch waves, infection
+/// seeds, cascades, wormholes) so the generator is a compiler
+/// producing new mythic events from existing primitives.
+#[derive(Clone, Copy, Debug)]
+pub enum EventEffect {
+    /// Plant 3 fresh infections on random alive non-C2 nodes.
+    PlantInfectionCluster,
+    /// Fire a global patch wave from the mesh center.
+    GlobalPatchWave,
+    /// Credit every alive faction with +20 intel.
+    IntelBonusToAll,
+    /// Credit every alive faction with +50 research.
+    ResearchBonusToAll,
+    /// Schedule a forced cascade on a random non-C2 alive node.
+    ForcedCascade,
+    /// Spawn a wormhole between two random alive nodes.
+    SummonWormhole,
+    /// Bump pressure on every existing diplomatic relation by 20.
+    PressureSpikeAll,
+    /// Bump trust on every peaceful relation by 15.
+    TrustSpikeAll,
+    /// Fire a free scanner pulse on every alive scanner.
+    GlobalScannerSweep,
+}
+
+/// One procedurally-generated custom event. The generator
+/// (`generate_custom_events` in `world/mod.rs`) rolls 3-5 of
+/// these at world creation by composing a random trigger,
+/// condition, and effect plus a templated name. The runtime
+/// check walks `World.custom_events` on each faction sample
+/// period, fires any event whose trigger+condition passes and
+/// whose cooldown has elapsed, and logs a `✦ MYTHIC ✦ {name}`
+/// line. A fresh run rolls a fresh event set, so two seeds
+/// produce genuinely distinct mythic vocabularies.
+#[derive(Clone, Debug)]
+pub struct CustomEvent {
+    pub name: String,
+    pub trigger: EventTrigger,
+    pub condition: EventCondition,
+    pub effect: EventEffect,
+    /// Minimum ticks between successive fires of this event.
+    /// Keeps repeat-trigger events (AnyWar, AtNight) from
+    /// spamming the log feed.
+    pub cooldown_ticks: u64,
+    /// Tick at which this event last fired. Zero means it has
+    /// never fired.
+    pub last_fired_tick: u64,
+    /// Total times this event has fired this run — surfaced in
+    /// the end-of-run summary so the reader can see which custom
+    /// events actually mattered.
+    pub fire_count: u32,
+}
+
 /// Resolved per-faction tech-tree bonuses. Computed once by
 /// `World::tech_effects(faction)` and then read at each call site
 /// as plain field lookups. Collapses five previously-scattered

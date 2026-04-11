@@ -366,6 +366,14 @@ pub struct World {
     /// the relevant multiplier from this struct and fold it into the
     /// existing cfg-derived values.
     pub era_rules: EraRules,
+    /// Procedurally-generated custom events rolled at world
+    /// creation. Each entry carries a name, trigger, condition,
+    /// effect, and cooldown; the runtime walks this list each
+    /// faction sample period and fires any event whose
+    /// trigger+condition passes and whose cooldown has elapsed.
+    /// Two different seeds produce two different event sets, so
+    /// the mythic vocabulary of a run is uniquely its own.
+    pub custom_events: Vec<CustomEvent>,
     /// Tick at which the current bandwidth-drought ends. Zero
     /// means no drought is active. While set, the effective hot
     /// ceiling for packet routing decisions is tightened by
@@ -696,6 +704,208 @@ impl World {
             }
         }
         counts
+    }
+
+    /// Custom-event runtime pass. Walks every procedurally-
+    /// generated event in `custom_events`, evaluates its
+    /// trigger + condition against the current world state, and
+    /// fires the effect if both pass and the cooldown has
+    /// elapsed. Runs on the faction sample cadence.
+    ///
+    /// Split into two passes so the borrow checker stays happy:
+    /// first collect indices of events that should fire, then
+    /// execute each effect in sequence (which may mutate world
+    /// state via `push_log`, `schedule_subtree_death`, etc).
+    fn advance_custom_events(&mut self) {
+        let tick = self.tick;
+        let events_len = self.custom_events.len();
+        if events_len == 0 {
+            return;
+        }
+        let mut to_fire: Vec<usize> = Vec::new();
+        for (i, ev) in self.custom_events.iter().enumerate() {
+            if ev.last_fired_tick > 0
+                && tick.saturating_sub(ev.last_fired_tick) < ev.cooldown_ticks
+            {
+                continue;
+            }
+            if !self.custom_event_trigger_passes(ev.trigger) {
+                continue;
+            }
+            if !self.custom_event_condition_passes(ev.condition) {
+                continue;
+            }
+            to_fire.push(i);
+        }
+        for i in to_fire {
+            let effect = self.custom_events[i].effect;
+            let name = self.custom_events[i].name.clone();
+            self.custom_events[i].last_fired_tick = tick;
+            self.custom_events[i].fire_count =
+                self.custom_events[i].fire_count.saturating_add(1);
+            self.push_log(format!("✦ MYTHIC ✦ {}", name));
+            self.execute_custom_event_effect(effect);
+        }
+    }
+
+    fn custom_event_trigger_passes(&self, trigger: EventTrigger) -> bool {
+        match trigger {
+            EventTrigger::EverySample => true,
+            EventTrigger::InEra(idx) => self.epoch_index() == idx,
+            EventTrigger::AtNight => self.is_night(),
+            EventTrigger::AnyWar => self.relations.values().any(|r| {
+                matches!(r.state, DiplomaticState::OpenWar)
+            }),
+            EventTrigger::AnyAlliance => self.relations.values().any(|r| {
+                matches!(r.state, DiplomaticState::Alliance)
+            }),
+            EventTrigger::AnyTechTier(t) => {
+                self.faction_stats.iter().any(|s| s.tech_tier >= t)
+            }
+            EventTrigger::AliveFractionBelow(frac) => {
+                let alive = self
+                    .nodes
+                    .iter()
+                    .filter(|n| matches!(n.state, State::Alive))
+                    .count();
+                let cap = self.cfg.max_nodes.max(1) as f32;
+                (alive as f32 / cap) < frac
+            }
+        }
+    }
+
+    fn custom_event_condition_passes(&self, condition: EventCondition) -> bool {
+        match condition {
+            EventCondition::Always => true,
+            EventCondition::StormActive => self.is_storming(),
+            EventCondition::NoStorm => !self.is_storming(),
+            EventCondition::MinFactionCount(n) => {
+                let alive_factions = self
+                    .c2_nodes
+                    .iter()
+                    .filter(|&&id| matches!(self.nodes[id].state, State::Alive))
+                    .count();
+                alive_factions >= n
+            }
+            EventCondition::NotDuringEra(idx) => self.epoch_index() != idx,
+        }
+    }
+
+    /// Execute one custom-event effect. All effects are instant
+    /// and reuse existing world-mutation primitives (patch waves,
+    /// infection seeding, cascades, wormholes, intel/research
+    /// grants) so the procedural generator adds no new state.
+    fn execute_custom_event_effect(&mut self, effect: EventEffect) {
+        match effect {
+            EventEffect::PlantInfectionCluster => {
+                let cure_resist = self.cfg.virus_cure_resist;
+                let strain = self.rng.gen_range(0..STRAIN_COUNT as u8);
+                let targets: Vec<NodeId> = self
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, n)| {
+                        (matches!(n.state, State::Alive)
+                            && n.infection.is_none()
+                            && !n.role.is_virus_immune()
+                            && !self.c2_nodes.contains(&i))
+                        .then_some(i)
+                    })
+                    .collect();
+                if targets.is_empty() {
+                    return;
+                }
+                let mut shuffled = targets;
+                shuffled.shuffle(&mut self.rng);
+                for id in shuffled.into_iter().take(3) {
+                    self.nodes[id].infection =
+                        Some(Infection::seeded(strain, cure_resist));
+                }
+            }
+            EventEffect::GlobalPatchWave => {
+                let origin = (self.bounds.0 / 2, self.bounds.1 / 2);
+                self.patch_waves.push(PatchWave { origin, radius: 0 });
+            }
+            EventEffect::IntelBonusToAll => {
+                for s in self.faction_stats.iter_mut() {
+                    s.intel = s.intel.saturating_add(20);
+                }
+            }
+            EventEffect::ResearchBonusToAll => {
+                for s in self.faction_stats.iter_mut() {
+                    s.research = s.research.saturating_add(50);
+                }
+            }
+            EventEffect::ForcedCascade => {
+                let candidates: Vec<NodeId> = self
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, n)| {
+                        (matches!(n.state, State::Alive) && !self.c2_nodes.contains(&i))
+                            .then_some(i)
+                    })
+                    .collect();
+                if let Some(&victim) =
+                    candidates.get(self.rng.gen_range(0..candidates.len().max(1)))
+                {
+                    if !candidates.is_empty() {
+                        self.schedule_subtree_death(victim, 1.5);
+                    }
+                }
+            }
+            EventEffect::SummonWormhole => {
+                let alive: Vec<NodeId> = self
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, n)| {
+                        (matches!(n.state, State::Alive) && !self.c2_nodes.contains(&i))
+                            .then_some(i)
+                    })
+                    .collect();
+                if alive.len() < 2 {
+                    return;
+                }
+                let a = alive[self.rng.gen_range(0..alive.len())];
+                let mut b = alive[self.rng.gen_range(0..alive.len())];
+                while b == a {
+                    b = alive[self.rng.gen_range(0..alive.len())];
+                }
+                let life = self.cfg.wormhole_life_ticks;
+                self.wormholes.push(Wormhole {
+                    a: self.nodes[a].pos,
+                    b: self.nodes[b].pos,
+                    age: 0,
+                    life,
+                });
+            }
+            EventEffect::PressureSpikeAll => {
+                for r in self.relations.values_mut() {
+                    r.pressure = r.pressure.saturating_add(20).min(RIVALRY_CAP);
+                }
+            }
+            EventEffect::TrustSpikeAll => {
+                for r in self.relations.values_mut() {
+                    if matches!(
+                        r.state,
+                        DiplomaticState::Trade
+                            | DiplomaticState::NonAggression
+                            | DiplomaticState::Alliance
+                    ) {
+                        r.trust = r.trust.saturating_add(15).clamp(-TRUST_CAP, TRUST_CAP);
+                    }
+                }
+            }
+            EventEffect::GlobalScannerSweep => {
+                for n in self.nodes.iter_mut() {
+                    if matches!(n.state, State::Alive) && n.role == Role::Scanner {
+                        n.role_cooldown = 0;
+                        n.scan_pulse = SCANNER_PULSE_TICKS.saturating_mul(2);
+                    }
+                }
+            }
+        }
     }
 
     /// True while a bandwidth drought is in effect. Packet
@@ -2344,6 +2554,84 @@ const DIRS: [(i16, i16); 8] = [
     (-1, -1),
 ];
 
+/// Roll `count` procedurally-generated custom events from random
+/// (trigger, condition, effect) compositions plus a templated
+/// name. Called once by `World::new`. Uses the provided rng so
+/// the event set is deterministic per seed — the same seed
+/// always produces the same prophecy pool.
+fn generate_custom_events(rng: &mut ChaCha8Rng, count: usize) -> Vec<CustomEvent> {
+    let trigger_pool: &[EventTrigger] = &[
+        EventTrigger::EverySample,
+        EventTrigger::InEra(0),
+        EventTrigger::InEra(3),
+        EventTrigger::InEra(7),
+        EventTrigger::AtNight,
+        EventTrigger::AnyWar,
+        EventTrigger::AnyAlliance,
+        EventTrigger::AnyTechTier(2),
+        EventTrigger::AnyTechTier(3),
+        EventTrigger::AliveFractionBelow(0.25),
+        EventTrigger::AliveFractionBelow(0.10),
+    ];
+    let condition_pool: &[EventCondition] = &[
+        EventCondition::Always,
+        EventCondition::Always,
+        EventCondition::Always,
+        EventCondition::StormActive,
+        EventCondition::NoStorm,
+        EventCondition::MinFactionCount(3),
+        EventCondition::NotDuringEra(4),
+    ];
+    let effect_pool: &[EventEffect] = &[
+        EventEffect::PlantInfectionCluster,
+        EventEffect::GlobalPatchWave,
+        EventEffect::IntelBonusToAll,
+        EventEffect::ResearchBonusToAll,
+        EventEffect::ForcedCascade,
+        EventEffect::SummonWormhole,
+        EventEffect::PressureSpikeAll,
+        EventEffect::TrustSpikeAll,
+        EventEffect::GlobalScannerSweep,
+    ];
+    let mut out: Vec<CustomEvent> = Vec::with_capacity(count);
+    for _ in 0..count {
+        let trigger = trigger_pool[rng.gen_range(0..trigger_pool.len())];
+        let condition = condition_pool[rng.gen_range(0..condition_pool.len())];
+        let effect = effect_pool[rng.gen_range(0..effect_pool.len())];
+        let name = generate_event_name(rng);
+        // Cooldown varies by trigger cadence — "every sample"
+        // events need a longer cooldown than era-locked ones
+        // since their trigger fires constantly.
+        let cooldown_ticks = match trigger {
+            EventTrigger::EverySample => 2400,
+            EventTrigger::AtNight | EventTrigger::AnyWar | EventTrigger::AnyAlliance => 1600,
+            EventTrigger::AnyTechTier(_) => 2000,
+            EventTrigger::AliveFractionBelow(_) => 3000,
+            EventTrigger::InEra(_) => 1200,
+        };
+        out.push(CustomEvent {
+            name,
+            trigger,
+            condition,
+            effect,
+            cooldown_ticks,
+            last_fired_tick: 0,
+            fire_count: 0,
+        });
+    }
+    out
+}
+
+/// Roll one custom-event name from the template + adjective +
+/// noun pools. Each template has placeholders `{adj}` and
+/// `{noun}` substituted with a random pick.
+fn generate_event_name(rng: &mut ChaCha8Rng) -> String {
+    let template = EVENT_NAME_TEMPLATES[rng.gen_range(0..EVENT_NAME_TEMPLATES.len())];
+    let adj = EVENT_ADJECTIVES[rng.gen_range(0..EVENT_ADJECTIVES.len())];
+    let noun = EVENT_NOUNS[rng.gen_range(0..EVENT_NOUNS.len())];
+    template.replace("{adj}", adj).replace("{noun}", noun)
+}
+
 /// Number of samples kept in each faction's alive-count history.
 pub const FACTION_HISTORY_LEN: usize = 8;
 /// Number of samples kept in the global activity history window.
@@ -2523,7 +2811,7 @@ impl World {
         }
         faction_colors.truncate(count.max(palette_len));
 
-        Self {
+        let mut world = Self {
             nodes,
             links: Vec::new(),
             c2_nodes,
@@ -2563,7 +2851,19 @@ impl World {
             era_rules: era_rules_for(0).0,
             extinction_since_tick: None,
             drought_until: 0,
+            custom_events: Vec::new(),
+        };
+        // Roll 3-5 procedurally-generated custom events at world
+        // creation. Uses the world's own seeded RNG so the event
+        // set is deterministic per seed.
+        let event_count = world.rng.gen_range(3..=5);
+        world.custom_events = generate_custom_events(&mut world.rng, event_count);
+        for ev in &world.custom_events {
+            world
+                .logs
+                .push_back((format!("✦ prophecy ✦ {}", ev.name), 1));
         }
+        world
     }
 
     /// Display name for a strain id, wrapping into the name pool if the
@@ -2662,6 +2962,11 @@ impl World {
             self.collect_strain_patents();
             // Wake any sleeper-lattice edges whose triggers fired.
             self.activate_sleeper_lattice();
+            // Procedural custom events rolled at world creation.
+            // Walks the custom_events pool, evaluates each
+            // trigger+condition against current world state, and
+            // fires any event whose cooldown has elapsed.
+            self.advance_custom_events();
             // Civil-war / fission check: break away divergent
             // branches that have drifted too far from their
             // parent faction's persona.

@@ -987,6 +987,85 @@ fn ghost_packet_delivers_without_crediting_intel() {
 }
 
 #[test]
+fn custom_events_roll_at_world_creation_and_fire_on_trigger() {
+    let mut w = World::new(42, (80, 30), Config::default());
+    // World::new should roll 3-5 custom events.
+    assert!(w.custom_events.len() >= 3 && w.custom_events.len() <= 5);
+    // Each event has a non-empty name and zero fire count.
+    for ev in &w.custom_events {
+        assert!(!ev.name.is_empty(), "event name should be non-empty");
+        assert_eq!(ev.fire_count, 0);
+        assert_eq!(ev.last_fired_tick, 0);
+    }
+    // Force every event into a permissive state: trigger
+    // EverySample, condition Always. That way advance_custom_events
+    // must fire at least one on the next call (subject to per-event
+    // cooldown which is 0 at the start).
+    for ev in w.custom_events.iter_mut() {
+        ev.trigger = EventTrigger::EverySample;
+        ev.condition = EventCondition::Always;
+    }
+    w.tick = 100;
+    w.advance_custom_events();
+    let any_fired = w.custom_events.iter().any(|e| e.fire_count > 0);
+    assert!(any_fired, "at least one event should have fired under permissive state");
+    // A mythic log line should have been pushed.
+    let mythic_logged = w
+        .logs
+        .iter()
+        .any(|(s, _)| s.starts_with("✦ MYTHIC ✦"));
+    assert!(mythic_logged);
+}
+
+#[test]
+fn custom_events_respect_cooldown() {
+    let mut w = World::new(7, (80, 30), Config::default());
+    // Collapse to one event with a known cooldown and permissive
+    // trigger/condition.
+    w.custom_events.clear();
+    w.custom_events.push(CustomEvent {
+        name: "test event".to_string(),
+        trigger: EventTrigger::EverySample,
+        condition: EventCondition::Always,
+        effect: EventEffect::IntelBonusToAll,
+        cooldown_ticks: 500,
+        last_fired_tick: 0,
+        fire_count: 0,
+    });
+    // First call fires it.
+    w.tick = 10;
+    w.advance_custom_events();
+    assert_eq!(w.custom_events[0].fire_count, 1);
+    // Second call well within cooldown — should NOT re-fire.
+    w.tick = 200;
+    w.advance_custom_events();
+    assert_eq!(w.custom_events[0].fire_count, 1);
+    // After cooldown elapses, it fires again.
+    w.tick = 600;
+    w.advance_custom_events();
+    assert_eq!(w.custom_events[0].fire_count, 2);
+}
+
+#[test]
+fn custom_events_are_deterministic_per_seed() {
+    let w1 = World::new(123, (80, 30), Config::default());
+    let w2 = World::new(123, (80, 30), Config::default());
+    assert_eq!(w1.custom_events.len(), w2.custom_events.len());
+    for (a, b) in w1.custom_events.iter().zip(w2.custom_events.iter()) {
+        assert_eq!(a.name, b.name);
+    }
+    // Different seed produces different event set (at least one
+    // name differs).
+    let w3 = World::new(999, (80, 30), Config::default());
+    let any_differ = w1
+        .custom_events
+        .iter()
+        .zip(w3.custom_events.iter())
+        .any(|(a, b)| a.name != b.name);
+    assert!(any_differ, "different seeds should produce different event names");
+}
+
+#[test]
 fn drought_tightens_effective_hot_link_while_active() {
     let mut w = World::new(1, (80, 30), Config::default());
     // Baseline: the effective hot ceiling matches HOT_LINK for a

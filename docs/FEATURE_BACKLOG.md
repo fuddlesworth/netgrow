@@ -435,17 +435,26 @@ past, just inspection.
 **Transforms**: Lets the viewer deeply inspect what just happened. Turns
 the sim into a tool you can *study*.
 
-### 7. Procedural event generator *(L)*
+### ✅ 7. Procedural event generator *(L)*
 
-Compose events from parts at world creation: pick a random trigger
-(rivalry > threshold / era matches / day_night state / node count > X),
-a random condition (faction id / role / infection state), and a random
-effect (cascade / spawn boost / cure / event cascade). Produces
-brand-new event types each run that have literally never existed before.
-Names generated from a template pool.
-
-**Transforms**: Every run has its own mythic events the viewer encounters
-for the first time. Never feels stale.
+Shipped: at world creation, `generate_custom_events` rolls 3-5
+`CustomEvent` records by picking random triples from pools of 7
+triggers (`EverySample`, `InEra(N)`, `AtNight`, `AnyWar`,
+`AnyAlliance`, `AnyTechTier(N)`, `AliveFractionBelow(f)`), 5
+conditions (`Always`, `StormActive`, `NoStorm`,
+`MinFactionCount(N)`, `NotDuringEra(N)`), and 9 effects
+(`PlantInfectionCluster`, `GlobalPatchWave`, `IntelBonusToAll`,
+`ResearchBonusToAll`, `ForcedCascade`, `SummonWormhole`,
+`PressureSpikeAll`, `TrustSpikeAll`, `GlobalScannerSweep`). Names
+roll from 7 templates over 80+ adjectives × 100+ nouns producing
+~45k unique surface names before any repeats, so two seeds
+produce genuinely distinct mythic vocabularies. `advance_custom_events`
+walks the pool on the faction sample cadence, checks trigger +
+condition + per-event cooldown, and fires eligible effects
+through the existing world-mutation primitives (no new state).
+On world creation each event announces itself as
+`✦ prophecy ✦ {name}` in the log so the reader sees the run's
+custom vocabulary up front; firing fires `✦ MYTHIC ✦ {name}`.
 
 ---
 
