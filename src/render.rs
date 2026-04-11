@@ -910,10 +910,14 @@ fn legend_block() -> Paragraph<'static> {
         ),
         row(
             cell("⊕", th.value, "router"),
+            Some(cell("⟁", th.defender, "hunter")),
             Some(cell("▓", strain_hue(0), "infected")),
-            Some(cell("✕", th.pwned, "pwned")),
         ),
-        row(cell("·", th.ghost, "ghost"), None, None),
+        row(
+            cell("◉", th.pwned, "pwned"),
+            Some(cell("✕", th.pwned, "dying")),
+            Some(cell("·", th.ghost, "ghost")),
+        ),
     ];
     Paragraph::new(lines).block(block)
 }
@@ -2139,6 +2143,12 @@ fn node_glyph(node: &Node, tick: u64, world: &World) -> (&'static str, Style) {
                     Style::default()
                         .fg(th.value)
                         .add_modifier(Modifier::BOLD),
+                ),
+                Role::Hunter => (
+                    "⟁",
+                    Style::default()
+                        .fg(th.defender)
+                        .add_modifier(Modifier::BOLD | Modifier::REVERSED),
                 ),
             };
             let mut resolved = if pulse_boost {

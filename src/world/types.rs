@@ -46,6 +46,12 @@ pub enum Role {
     /// when a node's inbound link sustains hot traffic long enough
     /// that the congestion system upgrades it in place.
     Router,
+    /// Internal hunter-killer. On its cooldown, scans adjacent
+    /// same-faction neighbors for active infections and culls one
+    /// by forcing it into the Pwned state — cutting off a strain's
+    /// spread at the cost of a host. Counters Plague personas that
+    /// otherwise have no friendly foil.
+    Hunter,
 }
 
 impl Role {
@@ -63,6 +69,7 @@ impl Role {
             Role::Proxy => "proxy",
             Role::Decoy => "decoy",
             Role::Router => "router",
+            Role::Hunter => "hunter",
         }
     }
 
@@ -81,6 +88,7 @@ impl Role {
             Role::Proxy => "⊛",
             Role::Decoy => "▣",
             Role::Router => "⊕",
+            Role::Hunter => "⟁",
         }
     }
 
@@ -97,13 +105,15 @@ impl Role {
                 | Role::Proxy
                 | Role::Decoy
                 | Role::Router
+                | Role::Hunter
         )
     }
 
     /// Roles that can't be infected at all. Honeypots stay hidden;
-    /// defenders are the antibody team. Everything else is fair game.
+    /// defenders are the antibody team; hunters are immune so they
+    /// can keep culling without themselves being flipped.
     pub fn is_virus_immune(&self) -> bool {
-        matches!(self, Role::Honeypot | Role::Defender)
+        matches!(self, Role::Honeypot | Role::Defender | Role::Hunter)
     }
 }
 
@@ -487,12 +497,13 @@ pub struct RoleWeights {
     pub proxy: f32,
     pub decoy: f32,
     pub router: f32,
+    pub hunter: f32,
 }
 
 impl Default for RoleWeights {
     fn default() -> Self {
         Self {
-            relay: 0.49,
+            relay: 0.47,
             scanner: 0.13,
             exfil: 0.10,
             honeypot: 0.04,
@@ -502,6 +513,7 @@ impl Default for RoleWeights {
             proxy: 0.03,
             decoy: 0.02,
             router: 0.02,
+            hunter: 0.02,
         }
     }
 }

@@ -898,6 +898,7 @@ impl World {
         self.fire_scanner_pings();
         self.fire_exfil_packets();
         self.fire_defender_pulses();
+        self.fire_hunter_culls();
 
         // Phase 5: infection dynamics — stage progression, spread, seeding,
         // and worm launches from active carriers.

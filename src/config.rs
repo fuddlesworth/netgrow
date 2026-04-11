@@ -25,6 +25,7 @@ pub struct FileConfig {
     pub proxy_weight: Option<f32>,
     pub decoy_weight: Option<f32>,
     pub router_weight: Option<f32>,
+    pub hunter_weight: Option<f32>,
 
     pub isp_outage_period: Option<u64>,
     pub isp_outage_chance: Option<f32>,

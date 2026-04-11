@@ -84,6 +84,10 @@ struct Cli {
     /// when a link sustains hot traffic for long enough.
     #[arg(long, default_value_t = 0.02)]
     router_weight: f32,
+    /// Relative weight of Hunter nodes at spawn. Hunters periodically
+    /// cull same-faction infected neighbors to cut off strain spread.
+    #[arg(long, default_value_t = 0.02)]
+    hunter_weight: f32,
 
     /// Ticks between Scanner pings.
     #[arg(long, default_value_t = 30)]
@@ -287,6 +291,7 @@ fn main() -> io::Result<()> {
     let proxy_weight = pick_f32("proxy_weight", cli.proxy_weight, file.proxy_weight);
     let decoy_weight = pick_f32("decoy_weight", cli.decoy_weight, file.decoy_weight);
     let router_weight = pick_f32("router_weight", cli.router_weight, file.router_weight);
+    let hunter_weight = pick_f32("hunter_weight", cli.hunter_weight, file.hunter_weight);
     let scanner_ping_period = pick_u16(
         "scanner_ping_period",
         cli.scanner_ping_period,
@@ -367,6 +372,7 @@ fn main() -> io::Result<()> {
             proxy: proxy_weight,
             decoy: decoy_weight,
             router: router_weight,
+            hunter: hunter_weight,
         },
         scanner_ping_period,
         exfil_packet_period,

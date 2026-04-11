@@ -335,7 +335,8 @@ impl World {
                 | Role::Beacon
                 | Role::Proxy
                 | Role::Decoy
-                | Role::Router => continue,
+                | Role::Router
+                | Role::Hunter => continue,
             };
             // Pick uniformly from the first two (the third is the sentinel).
             let new_role = choices[self.rng.gen_range(0..2)];

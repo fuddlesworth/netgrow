@@ -153,6 +153,86 @@ impl World {
         }
     }
 
+    /// Hunters cull same-faction infected neighbors on a period.
+    /// Each Hunter on cooldown 0 scans its Chebyshev-1 neighborhood
+    /// for an infected same-faction node, picks one, forces it into
+    /// the Pwned state (so advance_pwned_and_loss will cascade it
+    /// away), and flashes. Cuts off strain spread at the cost of a
+    /// host — the defensive counter to Plague persona runs.
+    pub(super) fn fire_hunter_culls(&mut self) {
+        let period = self.cfg.scanner_ping_period; // reuse the scanner timer
+        let pwned_flash = self.cfg.pwned_flash_ticks;
+        let hunters: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| {
+                if matches!(n.state, State::Alive)
+                    && n.role == Role::Hunter
+                    && n.role_cooldown == 0
+                {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if hunters.is_empty() {
+            return;
+        }
+        // Build pos → id map once so neighbor lookup is O(neighbors).
+        let mut pos_to_id: std::collections::HashMap<(i16, i16), NodeId> =
+            std::collections::HashMap::with_capacity(self.nodes.len());
+        for (i, n) in self.nodes.iter().enumerate() {
+            if matches!(n.state, State::Alive) {
+                pos_to_id.insert(n.pos, i);
+            }
+        }
+        let mut kills: Vec<(NodeId, (i16, i16))> = Vec::new();
+        for hid in hunters {
+            self.nodes[hid].role_cooldown = period;
+            let (hpos, hfaction) = (self.nodes[hid].pos, self.nodes[hid].faction);
+            let mut target: Option<NodeId> = None;
+            'outer: for dy in -1i16..=1 {
+                for dx in -1i16..=1 {
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    let np = (hpos.0 + dx, hpos.1 + dy);
+                    let Some(&nid) = pos_to_id.get(&np) else {
+                        continue;
+                    };
+                    let n = &self.nodes[nid];
+                    if n.faction != hfaction {
+                        continue;
+                    }
+                    if self.is_c2(nid) {
+                        continue;
+                    }
+                    if n.infection.is_some()
+                        && matches!(n.state, State::Alive)
+                        && n.dying_in == 0
+                    {
+                        target = Some(nid);
+                        break 'outer;
+                    }
+                }
+            }
+            if let Some(tid) = target {
+                let pos = self.nodes[tid].pos;
+                self.nodes[tid].infection = None;
+                self.nodes[tid].state = State::Pwned {
+                    ticks_left: pwned_flash,
+                };
+                self.nodes[hid].scan_pulse = 6;
+                kills.push((tid, pos));
+            }
+        }
+        for (_, pos) in kills {
+            self.log_node(pos, "culled by hunter");
+        }
+    }
+
     pub(super) fn fire_defender_pulses(&mut self) {
         let period = self.cfg.defender_pulse_period;
         let radius = self.cfg.defender_radius;

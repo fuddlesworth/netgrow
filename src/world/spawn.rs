@@ -156,19 +156,22 @@ impl World {
         // Per-persona multipliers applied to base weights. Each
         // persona shifts emphasis without ever zeroing a role out
         // so the role pool stays diverse for every faction.
-        let (m_relay, m_scan, m_exfil, m_def, m_tow, m_bea, m_prox, m_router) =
+        // Multipliers now include a Hunter slot. Fortress favors
+        // hunters heavily (defensive culling), Aggressor lightly,
+        // Plague suppresses them.
+        let (m_relay, m_scan, m_exfil, m_def, m_tow, m_bea, m_prox, m_router, m_hunter) =
             match persona {
                 super::Persona::Aggressor => {
-                    (1.0, 1.8, 1.6, 0.5, 0.5, 0.7, 1.2, 0.8)
+                    (1.0, 1.8, 1.6, 0.5, 0.5, 0.7, 1.2, 0.8, 1.0)
                 }
                 super::Persona::Fortress => {
-                    (0.9, 0.7, 0.5, 1.8, 2.0, 1.6, 0.7, 1.4)
+                    (0.9, 0.7, 0.5, 1.8, 2.0, 1.6, 0.7, 1.4, 1.8)
                 }
                 super::Persona::Plague => {
-                    (1.0, 1.0, 1.4, 0.6, 0.6, 0.9, 1.6, 1.0)
+                    (1.0, 1.0, 1.4, 0.6, 0.6, 0.9, 1.6, 1.0, 0.4)
                 }
                 super::Persona::Opportunist => {
-                    (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+                    (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
                 }
             };
         let w_relay = base.relay * m_relay;
@@ -181,6 +184,7 @@ impl World {
         let w_proxy = base.proxy * m_prox;
         let w_decoy = base.decoy;
         let w_router = base.router * m_router;
+        let w_hunter = base.hunter * m_hunter;
         let total = w_relay
             + w_scanner
             + w_exfil
@@ -190,7 +194,8 @@ impl World {
             + w_beacon
             + w_proxy
             + w_decoy
-            + w_router;
+            + w_router
+            + w_hunter;
         let mut r = self.rng.gen::<f32>() * total.max(f32::EPSILON);
         if r < w_relay {
             return Role::Relay;
@@ -227,7 +232,11 @@ impl World {
         if r < w_decoy {
             return Role::Decoy;
         }
-        Role::Router
+        r -= w_decoy;
+        if r < w_router {
+            return Role::Router;
+        }
+        Role::Hunter
     }
 
     pub(super) fn alloc_branch_id(&mut self) -> u16 {
