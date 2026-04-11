@@ -8,7 +8,7 @@ frame_accent   = "#478ED5"  # links/functions
 bar_bg         = "#162239"  # editor bg
 label          = "#D3DAE3"  # foreground text
 value          = "#D3DAE3"
-ghost          = "#273E66"  # selection (muted)
+ghost          = "#5a7aa8"  # muted blue-gray, bright enough to read on panel bg
 accent         = "#3DAEE9"
 
 header_brand_bg = "#3DAEE9"

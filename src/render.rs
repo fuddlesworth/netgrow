@@ -462,7 +462,10 @@ fn stats_block(
             ])
         };
     // Double-column plain row: two label+value pairs sharing a row.
-    // Used for derived counters that don't need bars.
+    // Used for derived counters that don't need bars. Label widths
+    // are 9/9 (one wider than the longest label so every label has
+    // at least one trailing space) and values use right-aligned 4-
+    // char fields so columns line up cleanly.
     let row_pair = |la: &'static str,
                     va: usize,
                     ca: Color,
@@ -471,14 +474,15 @@ fn stats_block(
                     cb: Color|
      -> Line<'static> {
         Line::from(vec![
-            Span::styled(format!(" {:<8}", la), label_style),
+            Span::styled(format!(" {:<9}", la), label_style),
             Span::styled(
-                format!("{:<5}", va),
+                format!("{:>4}", va),
                 Style::default().fg(ca).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!("{:<7}", lb), label_style),
+            Span::raw("  "),
+            Span::styled(format!("{:<8}", lb), label_style),
             Span::styled(
-                format!("{}", vb),
+                format!("{:>4}", vb),
                 Style::default().fg(cb).add_modifier(Modifier::BOLD),
             ),
         ])
