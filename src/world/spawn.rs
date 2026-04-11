@@ -121,6 +121,13 @@ impl World {
             Some(p) => p,
             None => return,
         };
+        // Sleeper lattice: some reconnect links start latent —
+        // dormant and invisible until a trigger (owner at war,
+        // or one endpoint isolated from its parent chain)
+        // activates them. Roughly one in four new cross-links
+        // are sleepers.
+        let latent = self.nodes[a].faction == self.nodes[b].faction
+            && self.rng.gen_bool(0.25);
         self.links.push(Link {
             a,
             b,
@@ -133,7 +140,13 @@ impl World {
             quarantined: 0,
             packets_delivered: 0,
             is_backbone: false,
+            latent,
         });
+        if latent {
+            // Don't announce sleeper edges — they're hidden
+            // until activation. Skip the bridge log entirely.
+            return;
+        }
         if self.nodes[a].faction != self.nodes[b].faction {
             self.push_log(format!(
                 "bridge F{}↔F{} CROSS-FACTION",
@@ -504,6 +517,7 @@ impl World {
             quarantined: 0,
             packets_delivered: 0,
             is_backbone: false,
+            latent: false,
         });
 
         let h = (cand.0 as u32).wrapping_mul(2654435761) ^ (cand.1 as u32).wrapping_mul(40503);

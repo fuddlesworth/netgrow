@@ -179,9 +179,13 @@ Brainstormed unshipped items from earlier rounds, rough scope markers:
 
 - **Mercenary Nodes** *(small)* — unaffiliated auction-bidding nodes that
   sell to the highest bidder each cycle. Compounds faction dominance.
-- **Strain Patents** *(trivial)* — a faction that mutates a hybrid "owns"
-  it; rivals carrying it pay bandwidth tax. Turns strain ecology into
-  passive income.
+- ✅ **Strain Patents** — `World.strain_patents: Vec<Option<u8>>`
+  (indexed by strain id). When a worm-collision hybrid forms, the
+  merge target's faction claims the patent. Every sample period,
+  `collect_strain_patents` grants the owner +1 intel per rival-
+  faction host carrying the strain. Logs `✦ patent ✦ F{N} files
+  claim on {strain}` on ownership change. Patents clear when an
+  owning faction dies.
 - **Bandwidth Drought** *(small)* — environmental event drops total link
   capacity region-wide for N ticks. Forces traffic prioritization.
 - **Black Market Links** *(small)* — temporary unlicensed high-bandwidth
@@ -198,9 +202,12 @@ Brainstormed unshipped items from earlier rounds, rough scope markers:
 
 ### Virus subtlety
 
-- ⭐ **Carrier Nodes** *(small)* — infected nodes that never go terminal,
-  silently re-infect cured neighbors forever, hidden from virus display.
-  Breaks "cure = safety" assumption.
+- ✅ **Carrier Nodes** — new `Infection.is_carrier` variant.
+  Skips the Active → Terminal transition entirely so the host
+  stays infected indefinitely (spreads normally but never
+  crashes). Seeded via `carrier_chance` (default 0.10), mutually
+  exclusive with ransom. Inspector virus row shows `CARRIER`
+  badge; seed log colorized with header_brand bg.
 
 ### Lifecycle / cascades
 
@@ -217,8 +224,13 @@ Brainstormed unshipped items from earlier rounds, rough scope markers:
 
 ### Terrain / topology
 
-- **Sleeper Lattice** *(medium)* — hidden second graph of dormant edges
-  that activate on war or isolation. Surprise strategic depth.
+- ✅ **Sleeper Lattice** — new `Link.latent` flag. Some
+  reconnect links (~25% same-faction rolls) are created dormant:
+  invisible in render, skipped in cascade reachability, packet
+  reroute, worm traversal. `activate_sleeper_lattice` runs every
+  sample period and wakes sleepers whose endpoints' factions are
+  at war OR whose parent chain is dead/dying. Logs
+  `✦ lattice ✦ sleeper edge wakes` in reversed cross_link color.
 
 ### Traffic / deception
 

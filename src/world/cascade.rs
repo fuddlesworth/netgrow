@@ -143,6 +143,11 @@ impl World {
             if link.kind != LinkKind::Cross {
                 continue;
             }
+            // Latent sleeper links don't carry reachability
+            // until they've been activated.
+            if link.latent {
+                continue;
+            }
             if (link.drawn as usize) < link.path.len() {
                 continue;
             }
@@ -330,6 +335,7 @@ impl World {
                     quarantined: 0,
                     packets_delivered: 0,
                     is_backbone: false,
+                    latent: false,
                 });
                 revealed += 1;
                 self.log_node(b_pos, "backdoor revealed");

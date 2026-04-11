@@ -27,6 +27,9 @@ impl World {
             if l.kind != LinkKind::Cross {
                 continue;
             }
+            if l.latent {
+                continue;
+            }
             if (l.drawn as usize) < l.path.len() {
                 continue;
             }

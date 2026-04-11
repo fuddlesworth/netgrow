@@ -1703,6 +1703,10 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default()
             .fg(th.stat_packets)
             .add_modifier(Modifier::BOLD)
+    } else if s.starts_with("✦ lattice") {
+        Style::default()
+            .fg(th.cross_link)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
     } else if s.starts_with("✦") {
         // Generic catch-all for any other ✦-prefixed mythic event
         // so nothing in that tier falls through to log_default.
@@ -2072,6 +2076,9 @@ impl<'a> Widget for MeshWidget<'a> {
 
         // 1. Links
         for link in w.links.iter() {
+            if link.latent {
+                continue; // sleeper-lattice edges stay invisible
+            }
             let a = &w.nodes[link.a];
             let b = &w.nodes[link.b];
             let dying = a.dying_in > 0 || b.dying_in > 0;

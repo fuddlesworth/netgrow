@@ -364,6 +364,13 @@ pub struct Link {
     /// `decay_link_load`. Purely a gating counter — the visible effect
     /// is the flushed traffic and stunned endpoints.
     pub quarantined: u8,
+    /// Sleeper-lattice flag: when true, this link is dormant and
+    /// invisible. Routing, rendering, cascade reachability, and
+    /// traffic all skip latent links. A periodic trigger checks
+    /// activation conditions (faction at war, endpoint isolated
+    /// from its parent chain) and flips the flag to false, at
+    /// which point the link behaves normally.
+    pub latent: bool,
     /// Lifetime count of exfil packets successfully delivered via
     /// this link (i.e. reached a Router cache or the final C2 hop
     /// without being dropped). Once this crosses

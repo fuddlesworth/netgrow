@@ -400,6 +400,65 @@ impl World {
     /// promote them. A pair only declares once per rivalry lifetime
     /// — after a declaration fires, the rivalry has to fully decay
     /// below the threshold and re-climb to trigger another.
+    /// Sleeper-lattice activation — a periodic pass that wakes
+    /// dormant cross-links when specific conditions fire:
+    /// either endpoint's faction is currently at war with any
+    /// other faction, OR one endpoint's parent (if any) is dead
+    /// or dying, meaning the node would otherwise lose its chain
+    /// to C2 and the sleeper can save it. Activated edges flip
+    /// `latent = false` and announce themselves with a
+    /// `✦ lattice ✦` log line.
+    fn activate_sleeper_lattice(&mut self) {
+        let mut to_wake: Vec<usize> = Vec::new();
+        for (i, link) in self.links.iter().enumerate() {
+            if !link.latent || link.kind != LinkKind::Cross {
+                continue;
+            }
+            let a = &self.nodes[link.a];
+            let b = &self.nodes[link.b];
+            if !matches!(a.state, State::Alive) || !matches!(b.state, State::Alive) {
+                continue;
+            }
+            // Condition 1: endpoint's faction is at war with
+            // anyone. Check both endpoints' factions against
+            // every other faction.
+            let a_fac = a.faction;
+            let b_fac = b.faction;
+            let faction_count = self.faction_stats.len() as u8;
+            let at_war = (0..faction_count).any(|f| {
+                f != a_fac && self.at_war(a_fac, f) || f != b_fac && self.at_war(b_fac, f)
+            });
+            // Condition 2: either endpoint has a parent that is
+            // dead or dying, meaning the node is about to lose
+            // its chain.
+            let parent_lost = |n: &crate::world::Node| -> bool {
+                if let Some(pid) = n.parent {
+                    let p = &self.nodes[pid];
+                    matches!(p.state, State::Dead) || p.dying_in > 0
+                } else {
+                    false
+                }
+            };
+            let isolated = parent_lost(a) || parent_lost(b);
+            if at_war || isolated {
+                to_wake.push(i);
+            }
+        }
+        for li in to_wake {
+            self.links[li].latent = false;
+            let (a, b) = {
+                let link = &self.links[li];
+                (link.a, link.b)
+            };
+            let pos = self.nodes[a].pos;
+            let (oa, ob) = octet_pair(pos);
+            self.push_log(format!(
+                "✦ lattice ✦ sleeper edge wakes @ 10.0.{}.{} (F{}↔F{})",
+                oa, ob, self.nodes[a].faction, self.nodes[b].faction
+            ));
+        }
+    }
+
     /// Strain patent royalties — every sample period, each
     /// faction that owns a patented strain collects +1 intel per
     /// rival-faction host currently carrying that strain. Creates
@@ -1258,6 +1317,8 @@ impl World {
             self.maybe_scorched_earth();
             // Collect strain-patent royalties from rival hosts.
             self.collect_strain_patents();
+            // Wake any sleeper-lattice edges whose triggers fired.
+            self.activate_sleeper_lattice();
         }
         // Expire any wars whose windows have elapsed.
         self.wars.retain(|_, exp| *exp > self.tick);
