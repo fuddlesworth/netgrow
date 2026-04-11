@@ -383,6 +383,10 @@ impl World {
         if let Some(s) = self.faction_stats.get_mut(faction as usize) {
             s.spawned += 1;
         }
+        // Credit the parent so legendary-node promotion can track
+        // reproductive success alongside raw age.
+        self.nodes[parent_id].children_spawned =
+            self.nodes[parent_id].children_spawned.saturating_add(1);
         self.occupied.insert(cand);
         self.links.push(Link {
             a: parent_id,

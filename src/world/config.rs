@@ -283,3 +283,30 @@ pub const ERA_NAMES: &[&str] = &[
     "Echo Chamber",
     "The Long Drift",
 ];
+
+/// Names the sim awards to nodes that survive long enough and
+/// spawn enough children to earn legendary status. Picked by
+/// modular index off the node id so the same run produces the
+/// same names deterministically for a given seed.
+pub const LEGENDARY_NAME_POOL: &[&str] = &[
+    "Orpheus",
+    "Nyx-7",
+    "Sable",
+    "Vector",
+    "Relic",
+    "Ashkey",
+    "Saturn",
+    "Helix",
+    "Monolith",
+    "Quasar",
+    "Obsidian",
+    "Argus",
+    "Crypt",
+    "Vigil",
+    "Warden",
+    "Omega",
+    "Pyre",
+    "Revenant",
+    "Shroud",
+    "Zenith",
+];

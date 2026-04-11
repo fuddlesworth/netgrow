@@ -595,6 +595,11 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
         }
         Some(n) => {
             lines.push(row("ip", node_ip(pos)));
+            if n.legendary_name != u16::MAX {
+                let pool = crate::world::LEGENDARY_NAME_POOL;
+                let name = pool[(n.legendary_name as usize) % pool.len()];
+                lines.push(row("legend", name.to_string()));
+            }
             let role_name = if n.parent.is_none() {
                 "C2"
             } else {
@@ -1597,11 +1602,21 @@ fn node_glyph(node: &Node, tick: u64) -> (&'static str, Style) {
                         .add_modifier(Modifier::BOLD),
                 ),
             };
-            if pulse_boost {
+            let mut resolved = if pulse_boost {
                 (glyph, Style::default().fg(th.value).add_modifier(Modifier::BOLD))
             } else {
                 (glyph, base_style)
+            };
+            // Legendary nodes keep a permanent underlined highlight
+            // on top of whatever role styling resolved — subtle
+            // enough to not clobber existing reads, distinct enough
+            // to pick out the named characters at a glance.
+            if node.legendary_name != u16::MAX {
+                resolved.1 = resolved
+                    .1
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
             }
+            resolved
         }
         State::Pwned { .. } => {
             let st = if tick.is_multiple_of(2) {

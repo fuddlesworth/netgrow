@@ -220,6 +220,17 @@ pub struct Node {
     /// a fading trace before the cell clears. Set when the node first
     /// transitions into `State::Dead`; decays in advance_role_cooldowns.
     pub death_echo: u8,
+    /// Number of nodes spawned directly from this node as their
+    /// parent. Feeds the legendary-node promotion rule along with
+    /// the node's age — long-lived, heavily-reproductive nodes get
+    /// a legendary name assigned and shown in the inspector.
+    pub children_spawned: u16,
+    /// Assigned once a node earns legendary status (age +
+    /// children_spawned past the threshold). Indexes into the
+    /// `LEGENDARY_NAME_POOL` so log lines and the inspector can
+    /// render a stable callable name for recurring characters in a
+    /// run. `u16::MAX` means "not legendary".
+    pub legendary_name: u16,
 }
 
 impl Node {
@@ -262,6 +273,8 @@ impl Node {
             pwn_resist: 0,
             faction: 0,
             death_echo: 0,
+            children_spawned: 0,
+            legendary_name: u16::MAX,
         }
     }
 }

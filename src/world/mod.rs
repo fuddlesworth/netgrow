@@ -72,6 +72,14 @@ pub const VETERAN_WAVE_THRESHOLD: u8 = 2;
 /// Caps the escalation so veterans are harder but never immortal.
 pub const VETERAN_CURE_RESIST_CAP: u8 = 6;
 
+/// Minimum age (in ticks) a node needs before it can be promoted to
+/// legendary status. Combined with `LEGENDARY_MIN_CHILDREN` to gate
+/// the rare long-lived, reproductive characters.
+pub const LEGENDARY_MIN_AGE: u64 = 1200;
+/// Minimum number of direct children a node must have spawned to
+/// qualify for a legendary name.
+pub const LEGENDARY_MIN_CHILDREN: u16 = 8;
+
 /// Duration in ticks of a scanner's ping pulse. Adjacent links brighten
 /// to the scanner color for this many ticks — no strobe, no reversed
 /// fill, just a quiet lift over the branch hue.
@@ -176,6 +184,46 @@ impl World {
         self.activity_history.push_back(total);
         while self.activity_history.len() > ACTIVITY_HISTORY_LEN {
             self.activity_history.pop_front();
+        }
+    }
+
+    /// Scan for nodes that have earned legendary status and assign
+    /// them a stable name from LEGENDARY_NAME_POOL. The promotion
+    /// rule is "alive + long-lived + reproductively successful":
+    /// age past LEGENDARY_MIN_AGE, children_spawned past
+    /// LEGENDARY_MIN_CHILDREN, not a C2 (C2s are faction-level, not
+    /// characters), not already legendary.
+    fn maybe_promote_legendary(&mut self) {
+        let mut promoted: Vec<(NodeId, (i16, i16), u16)> = Vec::new();
+        let now = self.tick;
+        for (id, n) in self.nodes.iter().enumerate() {
+            if n.legendary_name != u16::MAX {
+                continue;
+            }
+            if !matches!(n.state, State::Alive) || n.dying_in > 0 {
+                continue;
+            }
+            if self.is_c2(id) {
+                continue;
+            }
+            if now.saturating_sub(n.born) < LEGENDARY_MIN_AGE {
+                continue;
+            }
+            if n.children_spawned < LEGENDARY_MIN_CHILDREN {
+                continue;
+            }
+            // Hash the node id into the name pool so the same seed
+            // always picks the same names deterministically.
+            let pool_len = LEGENDARY_NAME_POOL.len() as u16;
+            let idx = ((id as u32).wrapping_mul(2654435761) as u16) % pool_len;
+            promoted.push((id, n.pos, idx));
+        }
+        for (id, pos, idx) in promoted {
+            self.nodes[id].legendary_name = idx;
+            self.nodes[id].mutated_flash = 10;
+            let name = LEGENDARY_NAME_POOL[idx as usize];
+            let (a, b) = octet_pair(pos);
+            self.push_log(format!("✦ legend ✦ {} rises @ 10.0.{}.{}", name, a, b));
         }
     }
 
@@ -440,6 +488,10 @@ impl World {
         // Sample faction alive counts for the header sparkline.
         if self.tick.is_multiple_of(FACTION_SAMPLE_PERIOD) {
             self.sample_faction_history();
+        }
+        // Check for legendary-node promotions on the same slow cadence.
+        if self.tick.is_multiple_of(FACTION_SAMPLE_PERIOD) {
+            self.maybe_promote_legendary();
         }
 
         // Phase 1: growth — add new nodes and extend link animations.
