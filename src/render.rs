@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget};
 use ratatui::Frame;
 
 use crate::theme::theme;
-use crate::util::{braille_area_graph, braille_bar, session_name, sparkline, with_commas};
+use crate::util::{braille_area_graph, braille_bar, session_name, with_commas};
 use crate::world::{
     node_ip, InfectionStage, LinkKind, Node, Role, State, World, WorldStats, HOT_LINK, WARM_LINK,
 };
@@ -473,11 +473,19 @@ fn factions_block(world: &World) -> Paragraph<'static> {
     let th = theme();
     let block = bordered_block(" factions ");
     let label_style = Style::default().fg(th.label);
+    // Single-row braille area graph — 4x the vertical resolution of
+    // the plain unicode-block sparkline, matching the style the
+    // activity panel already uses. 14 cells wide leaves room for the
+    // F{i}/alive/score prefix in the 41-wide right column.
+    const SPARK_CELLS: usize = 14;
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(world.faction_stats.len());
     for (i, fs) in world.faction_stats.iter().enumerate() {
         let hue = faction_hue(i as u8);
         let samples: Vec<u32> = fs.history.iter().copied().collect();
-        let spark = sparkline(&samples);
+        let spark = braille_area_graph(&samples, SPARK_CELLS, 1)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
         let alive = samples.last().copied().unwrap_or(0);
         lines.push(Line::from(vec![
             Span::raw(" "),

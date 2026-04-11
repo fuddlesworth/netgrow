@@ -120,25 +120,6 @@ pub fn braille_bar(value: u64, max: u64, width_cells: usize) -> String {
     out
 }
 
-/// Render a sequence of counts as a compact Unicode block sparkline.
-/// Used by the header faction trend indicator — each sample becomes
-/// one of ▁▂▃▄▅▆▇█ scaled against the max in the window.
-pub fn sparkline(samples: &[u32]) -> String {
-    const GLYPHS: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    if samples.is_empty() {
-        return String::new();
-    }
-    let max = (*samples.iter().max().unwrap_or(&1)).max(1);
-    samples
-        .iter()
-        .map(|&v| {
-            let idx = ((v as usize * (GLYPHS.len() - 1)) / (max as usize).max(1))
-                .min(GLYPHS.len() - 1);
-            GLYPHS[idx]
-        })
-        .collect()
-}
-
 /// Format an integer with thousands separators (commas). Used by the
 /// header tick counter so long sessions don't devolve into digit soup.
 pub fn with_commas(n: u64) -> String {
