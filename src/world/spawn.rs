@@ -21,7 +21,9 @@ impl World {
         if self.cfg.reconnect_rate <= 0.0 {
             return;
         }
-        if !self.rng.gen_bool(self.cfg.reconnect_rate.clamp(0.0, 1.0) as f64) {
+        let reconnect_rate = (self.cfg.reconnect_rate * self.meshes[0].rules.reconnect_mult)
+            .clamp(0.0, 1.0);
+        if !self.rng.gen_bool(reconnect_rate as f64) {
             return;
         }
         let alive: Vec<NodeId> = self
@@ -327,8 +329,10 @@ impl World {
         if self.is_storming() {
             spawn_mult *= self.cfg.storm_spawn_mult;
         }
-        let effective_spawn =
-            (self.cfg.p_spawn * spawn_mult * self.era_rules.spawn_mult).clamp(0.0, 1.0);
+        let effective_spawn = (self.cfg.p_spawn * spawn_mult
+            * self.era_rules.spawn_mult
+            * self.meshes[0].rules.spawn_mult)
+            .clamp(0.0, 1.0);
         if !self.rng.gen_bool(effective_spawn as f64) {
             return;
         }

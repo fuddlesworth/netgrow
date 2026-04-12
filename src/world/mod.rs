@@ -323,11 +323,16 @@ pub struct Mesh {
     pub drought_until: u64,
     pub extinction_since_tick: Option<u64>,
     pub graffiti_marks: Vec<((i16, i16), u64)>,
+    /// Per-layer physics modifiers. Stacks multiplicatively with
+    /// era rules at integration points.
+    pub rules: LayerRules,
+    /// Display name for this layer ("surface", "undernet", etc).
+    pub name: &'static str,
 }
 
 impl Mesh {
     #[allow(dead_code)]
-    pub fn empty(bounds: (i16, i16)) -> Self {
+    pub fn empty(bounds: (i16, i16), name: &'static str, rules: LayerRules) -> Self {
         Self {
             nodes: Vec::new(),
             links: Vec::new(),
@@ -351,6 +356,8 @@ impl Mesh {
             drought_until: 0,
             extinction_since_tick: None,
             graffiti_marks: Vec::new(),
+            rules,
+            name,
         }
     }
 }
@@ -3163,6 +3170,8 @@ impl World {
             drought_until: 0,
             extinction_since_tick: None,
             graffiti_marks: Vec::new(),
+            rules: layer_rules_for(0),
+            name: "surface",
         };
         // Build the global faction_c2s reverse map: one entry
         // per faction, each holding a single (mesh_idx, node_id)

@@ -154,7 +154,9 @@ impl World {
         // node with infected neighbors rolls once per tick. We collect first
         // and apply after so freshly infected nodes don't re-infect siblings
         // in the same tick.
-        let spread_rate = self.cfg.virus_spread_rate * self.era_rules.virus_spread_mult;
+        let spread_rate = self.cfg.virus_spread_rate
+            * self.era_rules.virus_spread_mult
+            * self.meshes[0].rules.virus_spread_mult;
         let cure_resist = self.cfg.virus_cure_resist;
         let c2_set: HashSet<NodeId> = self.meshes[0].c2_nodes.iter().copied().collect();
         let adj = self.live_adjacency();
@@ -379,7 +381,9 @@ impl World {
     }
 
     pub(super) fn maybe_mutate(&mut self) {
-        let rate = self.cfg.mutate_rate * self.era_rules.mutate_mult;
+        let rate = self.cfg.mutate_rate
+            * self.era_rules.mutate_mult
+            * self.meshes[0].rules.mutate_mult;
         if rate <= 0.0 {
             return;
         }

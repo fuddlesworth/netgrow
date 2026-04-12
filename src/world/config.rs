@@ -541,6 +541,61 @@ pub const EVENT_NAME_TEMPLATES: &[&str] = &[
     "hymn of the {adj} {noun}",
 ];
 
+/// Per-layer physics modifier set. Stacks multiplicatively on
+/// top of `EraRules` at every integration point: a faction on
+/// mesh 1 during era 3 reads
+/// `cfg * era.spawn_mult * layer.spawn_mult`. All defaults are
+/// 1.0 (no effect) so layer 0 ("surface") is behaviorally
+/// identical to the single-mesh sim from before the refactor.
+#[derive(Clone, Copy, Debug)]
+pub struct LayerRules {
+    pub spawn_mult: f32,
+    pub loss_mult: f32,
+    pub virus_spread_mult: f32,
+    pub mutate_mult: f32,
+    pub reconnect_mult: f32,
+}
+
+impl Default for LayerRules {
+    fn default() -> Self {
+        Self {
+            spawn_mult: 1.0,
+            loss_mult: 1.0,
+            virus_spread_mult: 1.0,
+            mutate_mult: 1.0,
+            reconnect_mult: 1.0,
+        }
+    }
+}
+
+/// Return the `LayerRules` for a given mesh index. Index 0 is
+/// the surface layer (default rules), index 1 is the undernet
+/// (sparse but infested), index 2 is orbital (fast and sparse).
+/// Out-of-range indices fall back to defaults.
+pub fn layer_rules_for(idx: usize) -> LayerRules {
+    match idx {
+        // Surface — baseline, no modifications.
+        0 => LayerRules::default(),
+        // Undernet — sparse spawns, durable nodes, virulent.
+        1 => LayerRules {
+            spawn_mult: 0.7,
+            loss_mult: 0.8,
+            virus_spread_mult: 1.4,
+            mutate_mult: 1.6,
+            reconnect_mult: 1.2,
+        },
+        // Orbital — very sparse, extremely low loss, calm.
+        2 => LayerRules {
+            spawn_mult: 0.5,
+            loss_mult: 0.3,
+            virus_spread_mult: 0.6,
+            mutate_mult: 0.4,
+            reconnect_mult: 2.0,
+        },
+        _ => LayerRules::default(),
+    }
+}
+
 /// Names the sim awards to nodes that survive long enough and
 /// spawn enough children to earn legendary status. Picked by
 /// modular index off the node id so the same run produces the

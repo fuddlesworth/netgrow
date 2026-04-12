@@ -63,7 +63,8 @@ impl World {
             loss_mult *= self.cfg.storm_loss_mult;
         }
         let effective_loss =
-            (self.cfg.p_loss * loss_mult * self.era_rules.loss_mult).clamp(0.0, 1.0);
+            (self.cfg.p_loss * loss_mult * self.era_rules.loss_mult
+                * self.meshes[0].rules.loss_mult).clamp(0.0, 1.0);
         if self.rng.gen_bool(effective_loss as f64) {
             let alive_ids: Vec<NodeId> = self
                 .meshes[0]
