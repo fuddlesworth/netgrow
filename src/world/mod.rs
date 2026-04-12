@@ -3407,7 +3407,6 @@ impl World {
         // Extend global faction registry for the undernet faction.
         personas.push(Persona::Plague);
         faction_colors.push(rng.gen_range(0..palette_len));
-        let total_factions = count + 1;
         logs.push_back((
             format!(
                 "c2[{}] online @ {},{} (undernet)",
@@ -3423,18 +3422,62 @@ impl World {
             ),
             1,
         ));
+        // Build the orbital mesh: very sparse, low loss, fast
+        // reconnect. One Opportunist-biased C2 faction.
+        let orbital_faction_id = (count + 1) as u8;
+        let orbital_pos = (rng.gen_range(10..bounds.0 - 10), rng.gen_range(5..bounds.1 - 5));
+        let mut orbital_c2 = Node::fresh(orbital_pos, None, 0, Role::Relay, 0);
+        orbital_c2.faction = orbital_faction_id;
+        orbital_c2.pwn_resist = C2_INITIAL_HP;
+        let orbital_c2_id: NodeId = 0;
+        let mut orbital_mesh = Mesh::empty(bounds, "orbital", layer_rules_for(2));
+        orbital_mesh.nodes.push(orbital_c2);
+        orbital_mesh.occupied.insert(orbital_pos);
+        orbital_mesh.c2_nodes.push(orbital_c2_id);
+        // Roll 1 hotspot for the orbital mesh.
+        if bounds.0 >= 12 && bounds.1 >= 12 {
+            let w_side = rng.gen_range(5..=9).min(bounds.0 - 6);
+            let h_side = rng.gen_range(5..=9).min(bounds.1 - 6);
+            let x0 = rng.gen_range(3..(bounds.0 - w_side - 3));
+            let y0 = rng.gen_range(3..(bounds.1 - h_side - 3));
+            orbital_mesh.hotspots.push(Hotspot {
+                min: (x0, y0),
+                max: (x0 + w_side, y0 + h_side),
+            });
+        }
+        personas.push(Persona::Opportunist);
+        faction_colors.push(rng.gen_range(0..palette_len));
+        let total_factions = count + 2;
+        logs.push_back((
+            format!(
+                "c2[{}] online @ {},{} (orbital)",
+                orbital_faction_id, orbital_pos.0, orbital_pos.1
+            ),
+            1,
+        ));
+        logs.push_back((
+            format!(
+                "c2[{}] persona = {}",
+                orbital_faction_id,
+                Persona::Opportunist.display_name()
+            ),
+            1,
+        ));
         // Build the global faction_c2s reverse map. Surface factions
-        // get (mesh=0, id), undernet faction gets (mesh=1, id=0).
+        // get (mesh=0, id), undernet gets (mesh=1, id=0), orbital
+        // gets (mesh=2, id=0).
         let mut faction_c2s: Vec<Vec<(usize, NodeId)>> = c2_nodes
             .iter()
             .map(|&id| vec![(0usize, id)])
             .collect();
         faction_c2s.push(vec![(1usize, undernet_c2_id)]);
+        faction_c2s.push(vec![(2usize, orbital_c2_id)]);
         let mut faction_home_mesh: Vec<usize> = (0..count).map(|_| 0usize).collect();
         faction_home_mesh.push(1);
+        faction_home_mesh.push(2);
         let primary_c2 = c2_nodes[0];
         let mut world = Self {
-            meshes: vec![primary_mesh, undernet_mesh],
+            meshes: vec![primary_mesh, undernet_mesh, orbital_mesh],
             active_mesh: 0,
             primary_c2,
             rng,
