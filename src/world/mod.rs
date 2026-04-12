@@ -980,6 +980,175 @@ impl World {
         }
     }
 
+    /// Cross-layer event pass. Fires three types of cross-mesh
+    /// interactions on a periodic cadence:
+    ///
+    /// 1. **Infection drip** — when a strain on mesh 0 crosses
+    ///    VETERAN_CURE_RESIST_CAP, 8% chance to seed a fresh
+    ///    infection of that strain on mesh 1 at a random alive
+    ///    node.
+    /// 2. **Traffic leak** — 3% chance per sample period that a
+    ///    ghost packet spawns on mesh 1 from a random exfil
+    ///    chain if mesh 0 has any packets in flight.
+    /// 3. **Breach projection** — rare (1500-tick period), an
+    ///    Opportunist-persona T2+ faction on mesh 0 spawns a
+    ///    fresh C2 of the **same faction** on mesh 1.
+    fn advance_cross_layer_events(&mut self) {
+        if self.meshes.len() < 2 {
+            return;
+        }
+        // 1. Infection drip: veteran strain on surface → seed on
+        //    undernet.
+        let veteran_strains: Vec<u8> = self.meshes[0]
+            .nodes
+            .iter()
+            .filter_map(|n| {
+                if !matches!(n.state, State::Alive) {
+                    return None;
+                }
+                let inf = n.infection?;
+                (inf.cure_resist >= VETERAN_CURE_RESIST_CAP).then_some(inf.strain)
+            })
+            .collect();
+        if !veteran_strains.is_empty() && self.rng.gen_bool(0.08) {
+            let strain = veteran_strains[self.rng.gen_range(0..veteran_strains.len())];
+            let targets: Vec<NodeId> = self.meshes[1]
+                .nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, n)| {
+                    (matches!(n.state, State::Alive)
+                        && n.infection.is_none()
+                        && !n.role.is_virus_immune())
+                    .then_some(i)
+                })
+                .collect();
+            if !targets.is_empty() {
+                let target = targets[self.rng.gen_range(0..targets.len())];
+                let cure_resist = self.cfg.virus_cure_resist;
+                self.meshes[1].nodes[target].infection =
+                    Some(Infection::seeded(strain, cure_resist));
+                let pos = self.meshes[1].nodes[target].pos;
+                let name = self.strain_name(strain);
+                let (a, b) = octet_pair(pos);
+                self.push_log(format!(
+                    "✦ drip ✦ {} leaks into undernet @ 10.0.{}.{}",
+                    name, a, b
+                ));
+            }
+        }
+        // 2. Traffic leak: ghost packet spawns on undernet when
+        //    surface has active traffic.
+        if !self.meshes[0].packets.is_empty() && self.rng.gen_bool(0.03) {
+            // Find a random exfil → C2 link on the undernet to
+            // spawn the ghost packet on.
+            let usable_links: Vec<usize> = self.meshes[1]
+                .links
+                .iter()
+                .enumerate()
+                .filter_map(|(i, l)| {
+                    if l.kind != LinkKind::Parent {
+                        return None;
+                    }
+                    if l.path.is_empty() || (l.drawn as usize) < l.path.len() {
+                        return None;
+                    }
+                    Some(i)
+                })
+                .collect();
+            if !usable_links.is_empty() {
+                let li = usable_links[self.rng.gen_range(0..usable_links.len())];
+                let pos = (self.meshes[1].links[li].path.len() - 1) as u16;
+                self.meshes[1].packets.push(Packet {
+                    link_id: li,
+                    pos,
+                    ghost: true,
+                });
+            }
+        }
+        // 3. Breach projection: Opportunist T2+ extends into the
+        //    undernet by spawning a new C2 there belonging to the
+        //    SAME faction (so the faction now spans two meshes).
+        if self.tick.is_multiple_of(1500) && self.tick > 0 {
+            let projectors: Vec<u8> = (0..self.faction_stats.len() as u8)
+                .filter(|&f| {
+                    let persona = self
+                        .personas
+                        .get(f as usize)
+                        .copied()
+                        .unwrap_or(Persona::Aggressor);
+                    if !matches!(persona, Persona::Opportunist) {
+                        return false;
+                    }
+                    let tier = self
+                        .faction_stats
+                        .get(f as usize)
+                        .map(|s| s.tech_tier)
+                        .unwrap_or(0);
+                    if tier < 2 {
+                        return false;
+                    }
+                    // Must have an alive C2 on mesh 0 but NOT
+                    // already on mesh 1.
+                    let on_surface = self.meshes[0].c2_nodes.iter().any(|&cid| {
+                        self.meshes[0].nodes[cid].faction == f
+                            && matches!(self.meshes[0].nodes[cid].state, State::Alive)
+                    });
+                    let on_undernet = self.meshes[1].c2_nodes.iter().any(|&cid| {
+                        self.meshes[1].nodes[cid].faction == f
+                            && matches!(self.meshes[1].nodes[cid].state, State::Alive)
+                    });
+                    on_surface && !on_undernet
+                })
+                .collect();
+            if !projectors.is_empty() && self.rng.gen_bool(0.4) {
+                let faction =
+                    projectors[self.rng.gen_range(0..projectors.len())];
+                let b1 = self.meshes[1].bounds;
+                if b1.0 >= 12 && b1.1 >= 8 {
+                    // Pick a random empty cell on mesh 1.
+                    for _ in 0..32 {
+                        let x = self.rng.gen_range(4..b1.0 - 4);
+                        let y = self.rng.gen_range(4..b1.1 - 4);
+                        if self.meshes[1].occupied.contains(&(x, y)) {
+                            continue;
+                        }
+                        let branch = self.meshes[1].next_branch_id;
+                        self.meshes[1].next_branch_id =
+                            self.meshes[1].next_branch_id.wrapping_add(1).max(1);
+                        let mut node = Node::fresh(
+                            (x, y),
+                            None,
+                            self.tick,
+                            Role::Relay,
+                            branch,
+                        );
+                        node.faction = faction;
+                        node.pwn_resist = C2_INITIAL_HP;
+                        node.mutated_flash = 12;
+                        node.pulse = 6;
+                        let id = self.meshes[1].nodes.len();
+                        self.meshes[1].nodes.push(node);
+                        self.meshes[1].occupied.insert((x, y));
+                        self.meshes[1].c2_nodes.push(id);
+                        // Update faction_c2s with the new cross-
+                        // layer anchor.
+                        while self.faction_c2s.len() <= faction as usize {
+                            self.faction_c2s.push(Vec::new());
+                        }
+                        self.faction_c2s[faction as usize].push((1, id));
+                        let (a, b) = octet_pair((x, y));
+                        self.push_log(format!(
+                            "✦ MYTHIC ✦ F{} breaches undernet @ 10.0.{}.{}",
+                            faction, a, b
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     /// True while a bandwidth drought is in effect. Packet
     /// routing and exfil throttling read this to apply the
     /// tighter hot-link ceiling.
@@ -3410,6 +3579,9 @@ impl World {
             // branches that have drifted too far from their
             // parent faction's persona.
             self.advance_fission();
+            // Cross-layer events: infection drip, traffic leak,
+            // breach projection between meshes.
+            self.advance_cross_layer_events();
             // Detect full extinction and fire a cosmic reseed
             // after the silent-interval cooldown. The sim is
             // hands-off, so mesh-wide wipe shouldn't end the

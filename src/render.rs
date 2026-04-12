@@ -1979,6 +1979,8 @@ fn color_log_line(s: &str) -> Line<'static> {
             .add_modifier(Modifier::BOLD | Modifier::ITALIC)
     } else if s.starts_with("✦ tech") {
         Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
+    } else if s.starts_with("✦ drip") {
+        Style::default().fg(th.pwned_alt).add_modifier(Modifier::ITALIC)
     } else if s.starts_with("✦ prophecy") {
         Style::default()
             .fg(th.frame_accent)
