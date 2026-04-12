@@ -195,7 +195,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
             // factions panel sizes to exactly fit its rows + border. Always
             // reserve at least one content row so the border has something
             // to frame even on a fresh single-faction run.
-            let faction_rows = world.faction_stats.len().max(1) as u16;
+            let faction_rows = world.meshes[world.active_mesh].c2_nodes.len().max(1) as u16 + 1;
             let factions_height: u16 = faction_rows + 2;
             let right_rows = Layout::vertical([
                 Constraint::Length(7), // stats
@@ -257,7 +257,7 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
             // itself flips into "shadow" styling via ui.view
             // when drawing nodes and links, so every live glyph
             // dims and every dead ghost brightens.
-            let faction_rows = world.faction_stats.len().max(1) as u16;
+            let faction_rows = world.meshes[world.active_mesh].c2_nodes.len().max(1) as u16 + 1;
             let factions_height: u16 = faction_rows + 2;
             let right_rows = Layout::vertical([
                 Constraint::Length(7),
@@ -1120,8 +1120,29 @@ fn factions_block(world: &World) -> Paragraph<'static> {
         .unwrap_or(1)
         .saturating_add(1)
         .max(1);
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(world.faction_stats.len());
-    for (i, fs) in world.faction_stats.iter().enumerate() {
+    // Only show factions that have at least one alive node on the
+    // active mesh. Factions living entirely on other layers are
+    // hidden so the panel reflects what the viewer is looking at.
+    let active = world.active_mesh;
+    let active_factions: Vec<(usize, &crate::world::FactionStats)> = world
+        .faction_stats
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| {
+            world.meshes[active]
+                .nodes
+                .iter()
+                .any(|n| n.faction == *i as u8 && matches!(n.state, State::Alive))
+                || world.meshes[active]
+                    .c2_nodes
+                    .iter()
+                    .any(|&cid| {
+                        world.meshes[active].nodes[cid].faction == *i as u8
+                    })
+        })
+        .collect();
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(active_factions.len());
+    for (i, fs) in active_factions {
         let hue = faction_hue(world, i as u8);
         let samples: Vec<u32> = fs.history.iter().copied().collect();
         let spark = braille_area_graph_with_max(&samples, SPARK_CELLS, 1, shared_max)
