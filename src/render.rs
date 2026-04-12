@@ -69,34 +69,66 @@ const HEADER_HEIGHT: u16 = 1;
 const FOOTER_HEIGHT: u16 = 1;
 
 /// Which set of panels fills the right column. Runtime is the
-/// default game-view with stats/activity/factions/roles; Intel
-/// swaps those for info-dense panels (minimap, rivalries, events)
-/// that surface state otherwise hidden in the log stream.
+/// How the main mesh area renders. Affects only the mesh
+/// viewport, not the sidebar. Cycled via the `v` keybind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ViewMode {
-    Runtime,
-    Intel,
-    /// Shadow-map view: brightens dead-node ghosts and
-    /// dims every live glyph so the reader can see the mesh's
-    /// history — where factions grew, where they died, which
-    /// paths used to carry traffic. Good for studying a long
-    /// run's shape after the fact.
+pub enum MeshView {
+    /// Normal rendering: live nodes + links in their faction
+    /// hues, packets + worms visible, dead tombstones fading.
+    Normal,
+    /// Shadow-map rendering: live glyphs dim, dead echoes
+    /// brighten. Highlights the mesh's history — where factions
+    /// grew, where they died, which paths used to carry traffic.
     Spectral,
 }
 
-impl ViewMode {
+impl MeshView {
     pub fn label(&self) -> &'static str {
         match self {
-            ViewMode::Runtime => "runtime",
-            ViewMode::Intel => "intel",
-            ViewMode::Spectral => "spectral",
+            MeshView::Normal => "normal",
+            MeshView::Spectral => "spectral",
         }
     }
     pub fn next(&self) -> Self {
         match self {
-            ViewMode::Runtime => ViewMode::Intel,
-            ViewMode::Intel => ViewMode::Spectral,
-            ViewMode::Spectral => ViewMode::Runtime,
+            MeshView::Normal => MeshView::Spectral,
+            MeshView::Spectral => MeshView::Normal,
+        }
+    }
+}
+
+/// What the right-column sidebar displays. Orthogonal to the
+/// mesh view — you can pair any mesh view with any sidebar
+/// view. Cycled via the `b` keybind (for "b"ar / side"b"ar).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidebarView {
+    /// Stats + activity + factions + roles legend. The default
+    /// runtime readout showing who's winning and what's alive.
+    Runtime,
+    /// Minimap + diplomacy + events + logs. Info-dense panel
+    /// set that surfaces state otherwise hidden in the log
+    /// stream.
+    Intel,
+    /// Faction lineage tree: shows parent→splinter chains
+    /// across fissions with birth/death timestamps. Reads as
+    /// a dynasty tree — who came from whom, when, and whether
+    /// they survived.
+    Lineage,
+}
+
+impl SidebarView {
+    pub fn label(&self) -> &'static str {
+        match self {
+            SidebarView::Runtime => "runtime",
+            SidebarView::Intel => "intel",
+            SidebarView::Lineage => "lineage",
+        }
+    }
+    pub fn next(&self) -> Self {
+        match self {
+            SidebarView::Runtime => SidebarView::Intel,
+            SidebarView::Intel => SidebarView::Lineage,
+            SidebarView::Lineage => SidebarView::Runtime,
         }
     }
 }
@@ -112,10 +144,12 @@ pub struct UiState {
     /// When `Some`, draws an inspector cursor highlight at the given mesh
     /// cell and shows an inspector panel with the node's details.
     pub cursor: Option<(i16, i16)>,
-    /// Current right-column view set. Swappable at runtime via the
-    /// `v` keybind so the panel real estate can show either the
-    /// default runtime readout or the intel view.
-    pub view: ViewMode,
+    /// Main-mesh rendering style (normal vs spectral). Toggled
+    /// with `v`.
+    pub mesh_view: MeshView,
+    /// Right-column sidebar layout (runtime / intel / lineage).
+    /// Cycled with `b`.
+    pub sidebar: SidebarView,
 }
 
 pub fn mesh_bounds(size: Size) -> (i16, i16) {
@@ -184,79 +218,14 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
         MeshWidget {
             world,
             cursor: ui.cursor,
-            view: ui.view,
+            mesh_view: ui.mesh_view,
         },
         mesh_inner,
     );
 
     let inspector_height: u16 = if ui.cursor.is_some() { 13 } else { 0 };
-    match ui.view {
-        ViewMode::Runtime => {
-            // factions panel sizes to exactly fit its rows + border. Always
-            // reserve at least one content row so the border has something
-            // to frame even on a fresh single-faction run.
-            let faction_rows = world.meshes[world.active_mesh].c2_nodes.len().max(1) as u16 + 1;
-            let factions_height: u16 = faction_rows + 2;
-            let right_rows = Layout::vertical([
-                Constraint::Length(7), // stats
-                Constraint::Length(5), // activity
-                Constraint::Length(factions_height),
-                Constraint::Length(7), // roles legend
-                Constraint::Length(inspector_height),
-                Constraint::Min(5),
-            ])
-            .split(right_col);
-            frame.render_widget(stats_block(world, &stats), right_rows[0]);
-            frame.render_widget(activity_block(world, right_rows[1].width), right_rows[1]);
-            frame.render_widget(factions_block(world), right_rows[2]);
-            frame.render_widget(legend_block(), right_rows[3]);
-            if let Some(pos) = ui.cursor {
-                frame.render_widget(inspector_block(world, pos), right_rows[4]);
-            }
-            frame.render_widget(log_block(world, right_rows[5].width), right_rows[5]);
-        }
-        ViewMode::Intel => {
-            // Rivalries / events panels size dynamically to their
-            // content (capped so one panel can't eat the column).
-            let rivalry_rows: u16 = (world.relations.len().min(6) as u16).max(1);
-            let rivalries_height = rivalry_rows + 2;
-            let war_count = world
-                .relations
-                .values()
-                .filter(|r| matches!(r.state, crate::world::DiplomaticState::OpenWar))
-                .count();
-            let event_count = (world.meshes[world.active_mesh].outages.len()
-                + world.meshes[world.active_mesh].partitions.len()
-                + war_count
-                + world.meshes[world.active_mesh].ddos_waves.len()
-                + if world.is_storming() { 1 } else { 0 }
-                + if world.is_droughted() { 1 } else { 0 })
-                .min(6) as u16;
-            let events_height = event_count.max(1) + 2;
-            let right_rows = Layout::vertical([
-                Constraint::Length(10), // minimap
-                Constraint::Length(rivalries_height),
-                Constraint::Length(events_height),
-                Constraint::Length(inspector_height),
-                Constraint::Min(5),
-            ])
-            .split(right_col);
-            frame.render_widget(
-                minimap_block(world, right_rows[0].width, ui.cursor),
-                right_rows[0],
-            );
-            frame.render_widget(rivalries_block(world), right_rows[1]);
-            frame.render_widget(events_block(world), right_rows[2]);
-            if let Some(pos) = ui.cursor {
-                frame.render_widget(inspector_block(world, pos), right_rows[3]);
-            }
-            frame.render_widget(log_block(world, right_rows[4].width), right_rows[4]);
-        }
-        ViewMode::Spectral => {
-            // Same sidebar layout as Runtime; the mesh pass
-            // itself flips into "shadow" styling via ui.view
-            // when drawing nodes and links, so every live glyph
-            // dims and every dead ghost brightens.
+    match ui.sidebar {
+        SidebarView::Runtime => {
             let faction_rows = world.meshes[world.active_mesh].c2_nodes.len().max(1) as u16 + 1;
             let factions_height: u16 = faction_rows + 2;
             let right_rows = Layout::vertical([
@@ -276,6 +245,60 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
                 frame.render_widget(inspector_block(world, pos), right_rows[4]);
             }
             frame.render_widget(log_block(world, right_rows[5].width), right_rows[5]);
+        }
+        SidebarView::Intel => {
+            let rivalry_rows: u16 = (world.relations.len().min(6) as u16).max(1);
+            let rivalries_height = rivalry_rows + 2;
+            let war_count = world
+                .relations
+                .values()
+                .filter(|r| matches!(r.state, crate::world::DiplomaticState::OpenWar))
+                .count();
+            let event_count = (world.meshes[world.active_mesh].outages.len()
+                + world.meshes[world.active_mesh].partitions.len()
+                + war_count
+                + world.meshes[world.active_mesh].ddos_waves.len()
+                + if world.is_storming() { 1 } else { 0 }
+                + if world.is_droughted() { 1 } else { 0 })
+                .min(6) as u16;
+            let events_height = event_count.max(1) + 2;
+            let right_rows = Layout::vertical([
+                Constraint::Length(10),
+                Constraint::Length(rivalries_height),
+                Constraint::Length(events_height),
+                Constraint::Length(inspector_height),
+                Constraint::Min(5),
+            ])
+            .split(right_col);
+            frame.render_widget(
+                minimap_block(world, right_rows[0].width, ui.cursor),
+                right_rows[0],
+            );
+            frame.render_widget(rivalries_block(world), right_rows[1]);
+            frame.render_widget(events_block(world), right_rows[2]);
+            if let Some(pos) = ui.cursor {
+                frame.render_widget(inspector_block(world, pos), right_rows[3]);
+            }
+            frame.render_widget(log_block(world, right_rows[4].width), right_rows[4]);
+        }
+        SidebarView::Lineage => {
+            // Lineage panel fills most of the sidebar. Height
+            // scales with the faction count so the whole
+            // dynasty tree is visible without scrolling.
+            let lineage_rows = (world.faction_stats.len() as u16).max(3) + 2;
+            let right_rows = Layout::vertical([
+                Constraint::Length(7), // stats
+                Constraint::Length(lineage_rows),
+                Constraint::Length(inspector_height),
+                Constraint::Min(5),
+            ])
+            .split(right_col);
+            frame.render_widget(stats_block(world, &stats), right_rows[0]);
+            frame.render_widget(lineage_block(world), right_rows[1]);
+            if let Some(pos) = ui.cursor {
+                frame.render_widget(inspector_block(world, pos), right_rows[2]);
+            }
+            frame.render_widget(log_block(world, right_rows[3].width), right_rows[3]);
         }
     }
 }
@@ -966,7 +989,12 @@ fn footer_bar(ui: UiState) -> Paragraph<'static> {
             lab(" cursor "),
             key("v"),
             Span::styled(
-                format!(" view ({}) ", ui.view.label()),
+                format!(" mesh ({}) ", ui.mesh_view.label()),
+                Style::default().fg(th.label),
+            ),
+            key("b"),
+            Span::styled(
+                format!(" bar ({}) ", ui.sidebar.label()),
                 Style::default().fg(th.label),
             ),
             key("[]"),
@@ -1094,6 +1122,101 @@ fn stats_block(world: &World, s: &WorldStats) -> Paragraph<'static> {
             th.accent,
         ),
     ];
+    Paragraph::new(lines).block(block)
+}
+
+/// Lineage panel: renders the faction dynasty tree showing
+/// parent→splinter chains across fissions with birth/death
+/// timestamps. Root factions (no parent) render at column 0;
+/// splinters indent under their parent with a branch glyph.
+/// Dead factions strike through their id and show death tick.
+fn lineage_block(world: &World) -> Paragraph<'static> {
+    let th = theme();
+    let block = bordered_block(" lineage ");
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    // Build children map: parent_id → [child ids].
+    let mut children: std::collections::HashMap<u8, Vec<u8>> =
+        std::collections::HashMap::new();
+    let mut roots: Vec<u8> = Vec::new();
+    for (i, fs) in world.faction_stats.iter().enumerate() {
+        let id = i as u8;
+        match fs.parent_faction {
+            Some(p) => {
+                children.entry(p).or_default().push(id);
+            }
+            None => roots.push(id),
+        }
+    }
+    // Depth-first walk to produce an indented listing.
+    fn walk(
+        world: &World,
+        children: &std::collections::HashMap<u8, Vec<u8>>,
+        id: u8,
+        depth: usize,
+        lines: &mut Vec<Line<'static>>,
+    ) {
+        let th = theme();
+        let fs = match world.faction_stats.get(id as usize) {
+            Some(f) => f,
+            None => return,
+        };
+        let hue = faction_hue(world, id);
+        let persona = world
+            .personas
+            .get(id as usize)
+            .copied()
+            .map(|p| p.display_name())
+            .unwrap_or("?");
+        let home = world
+            .faction_home_mesh
+            .get(id as usize)
+            .copied()
+            .unwrap_or(0);
+        let layer_tag = match home {
+            0 => "s",
+            1 => "u",
+            _ => "o",
+        };
+        let alive = fs.died_tick.is_none();
+        let indent: String = if depth == 0 {
+            " ".to_string()
+        } else {
+            format!("{}└", " ".repeat(depth * 2))
+        };
+        let id_str = format!("F{}{}", id, layer_tag);
+        let id_style = if alive {
+            Style::default().fg(hue).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(th.ghost).add_modifier(Modifier::CROSSED_OUT)
+        };
+        let lifespan = if alive {
+            format!(" born {}t", fs.born_tick)
+        } else {
+            let d = fs.died_tick.unwrap_or(0);
+            format!(" {}..{}t", fs.born_tick, d)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(indent, Style::default().fg(th.ghost)),
+            Span::styled(id_str, id_style),
+            Span::raw(" "),
+            Span::styled(persona.to_string(), Style::default().fg(hue)),
+            Span::styled(lifespan, Style::default().fg(th.stat_label)),
+        ]));
+        if let Some(kids) = children.get(&id) {
+            for &child in kids {
+                walk(world, children, child, depth + 1, lines);
+            }
+        }
+    }
+    for root in roots {
+        walk(world, &children, root, 0, &mut lines);
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " (no factions)".to_string(),
+            Style::default().fg(th.ghost),
+        )));
+    }
     Paragraph::new(lines).block(block)
 }
 
@@ -2029,6 +2152,8 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default().fg(th.log_cured).add_modifier(Modifier::BOLD)
     } else if s.starts_with("✦ fauna") {
         Style::default().fg(th.frame_accent).add_modifier(Modifier::BOLD)
+    } else if s.starts_with("↳ MYTHIC") {
+        Style::default().fg(th.accent).add_modifier(Modifier::ITALIC | Modifier::BOLD)
     } else if s.starts_with("✦ drip") {
         Style::default().fg(th.pwned_alt).add_modifier(Modifier::ITALIC)
     } else if s.starts_with("✦ prophecy") {
@@ -2118,7 +2243,7 @@ pub struct MeshWidget<'a> {
     /// toward ghost colors and brightens dead-node echoes so the
     /// reader can study the mesh's history; Runtime and Intel
     /// use the normal styling.
-    pub view: ViewMode,
+    pub mesh_view: MeshView,
 }
 
 impl<'a> Widget for MeshWidget<'a> {
@@ -2914,7 +3039,7 @@ impl<'a> Widget for MeshWidget<'a> {
         // active sim is barely visible. Good for studying where
         // factions grew, where they died, and which routes
         // carried traffic.
-        if matches!(self.view, ViewMode::Spectral) {
+        if matches!(self.mesh_view, MeshView::Spectral) {
             let ghost = theme().ghost;
             let bright = theme().accent;
             let dark = Color::DarkGray;

@@ -194,10 +194,15 @@ fn shield_flash_is_set_when_hardened_node_is_hit() {
 #[test]
 fn reconnect_creates_cross_link_between_branches() {
     let mut w = World::new(13, (80, 30), Config::default());
+    w.custom_events.clear();
     w.cfg.p_spawn = 0.0;
     w.cfg.p_loss = 0.0;
     w.cfg.reconnect_rate = 1.0;
     w.cfg.reconnect_radius = 20;
+    // cross_faction_bridge_chance can cause the reconnect to
+    // require a different-faction partner, but the test plants
+    // two same-faction nodes. Set to 0 to force same-faction.
+    w.cfg.cross_faction_bridge_chance = 0.0;
     // Two alive nodes in different branches, no existing bridge.
     w.meshes[0].nodes
         .push(Node::fresh((20, 10), Some(w.primary_c2), 0, Role::Relay, 1));
@@ -1059,6 +1064,7 @@ fn custom_events_respect_cooldown() {
         cooldown_ticks: 500,
         last_fired_tick: 0,
         fire_count: 0,
+        chain_next: None,
     });
     // First call fires it.
     w.tick = 10;

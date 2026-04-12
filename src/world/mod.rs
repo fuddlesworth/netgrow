@@ -863,13 +863,32 @@ impl World {
             to_fire.push(i);
         }
         for i in to_fire {
-            let effect = self.custom_events[i].effect;
-            let name = self.custom_events[i].name.clone();
-            self.custom_events[i].last_fired_tick = tick;
-            self.custom_events[i].fire_count =
-                self.custom_events[i].fire_count.saturating_add(1);
-            self.push_log(format!("✦ MYTHIC ✦ {}", name));
-            self.execute_custom_event_effect(effect);
+            self.fire_custom_event(i, false);
+        }
+    }
+
+    /// Fire a single custom event and, if it has a chain link,
+    /// also fire the chained event as a cascade. `is_chained`
+    /// is true when called recursively so the log indicates the
+    /// cascade. Only follows one chain link per original fire
+    /// to prevent infinite loops.
+    fn fire_custom_event(&mut self, index: usize, is_chained: bool) {
+        let tick = self.tick;
+        let effect = self.custom_events[index].effect;
+        let name = self.custom_events[index].name.clone();
+        let chain = self.custom_events[index].chain_next;
+        self.custom_events[index].last_fired_tick = tick;
+        self.custom_events[index].fire_count =
+            self.custom_events[index].fire_count.saturating_add(1);
+        let prefix = if is_chained { "↳ MYTHIC" } else { "✦ MYTHIC ✦" };
+        self.push_log(format!("{} {}", prefix, name));
+        self.execute_custom_event_effect(effect);
+        if !is_chained {
+            if let Some(next) = chain {
+                if next < self.custom_events.len() {
+                    self.fire_custom_event(next, true);
+                }
+            }
         }
     }
 
@@ -1495,7 +1514,12 @@ impl World {
         // every read-side helper keyed by faction id assumes the
         // length of these four vectors is in sync.
         self.meshes[0].c2_nodes.push(hub);
-        self.faction_stats.push(FactionStats::default());
+        let splinter_stats = FactionStats {
+            parent_faction: Some(parent_faction),
+            born_tick: self.tick,
+            ..FactionStats::default()
+        };
+        self.faction_stats.push(splinter_stats);
         self.personas.push(new_persona);
         let palette_len = crate::theme::theme().faction_palette.len().max(1);
         let color_idx = self.rng.gen_range(0..palette_len);
@@ -1694,6 +1718,20 @@ impl World {
                     && matches!(mesh.nodes[c2_id].state, State::Alive)
                 {
                     faction_alive_map[faction] = true;
+                }
+            }
+        }
+        // Record death timestamp for factions that just flipped
+        // to dead. Only set once — existing `died_tick` values
+        // are preserved so the lineage view shows the original
+        // moment a faction fell.
+        let tick = self.tick;
+        for (i, alive) in faction_alive_map.iter().enumerate() {
+            if !alive {
+                if let Some(fs) = self.faction_stats.get_mut(i) {
+                    if fs.died_tick.is_none() && fs.born_tick < tick {
+                        fs.died_tick = Some(tick);
+                    }
                 }
             }
         }
@@ -3447,7 +3485,24 @@ fn generate_custom_events(rng: &mut ChaCha8Rng, count: usize) -> Vec<CustomEvent
             cooldown_ticks,
             last_fired_tick: 0,
             fire_count: 0,
+            chain_next: None,
         });
+    }
+    // Wire chain links: 30% of events randomly chain to another
+    // event in the pool (not themselves). Creates cascading
+    // mythic sequences like "A triggers B triggers C" per run.
+    for i in 0..out.len() {
+        if !rng.gen_bool(0.3) {
+            continue;
+        }
+        if out.len() < 2 {
+            continue;
+        }
+        let mut target = rng.gen_range(0..out.len());
+        if target == i {
+            target = (target + 1) % out.len();
+        }
+        out[i].chain_next = Some(target);
     }
     out
 }

@@ -655,6 +655,13 @@ pub struct CustomEvent {
     /// the end-of-run summary so the reader can see which custom
     /// events actually mattered.
     pub fire_count: u32,
+    /// Optional chained event: when this event fires, the event
+    /// at index `chain_next` also force-fires immediately after.
+    /// Chains can cascade (A → B → C) but the runtime only
+    /// follows one link per step to prevent infinite loops.
+    /// Resolved at generation time so the wiring is stable across
+    /// the run.
+    pub chain_next: Option<usize>,
 }
 
 /// Trait a virus strain can evolve once it survives long enough
@@ -959,6 +966,19 @@ pub struct FactionStats {
     /// Snapshot of `infections_cured` at the previous research
     /// tick. Same delta-calculation pattern as `last_intel_sample`.
     pub last_cures_sample: u32,
+    /// Parent faction in the dynastic lineage. `None` for opening-
+    /// act factions (born at world creation); `Some(id)` for
+    /// splinter factions from civil-war fission. Breach projection
+    /// reuses the source faction id so it doesn't set this field.
+    pub parent_faction: Option<u8>,
+    /// Tick at which this faction was born. 0 for opening factions;
+    /// the tick of the fission event for splinters.
+    pub born_tick: u64,
+    /// Tick at which this faction's last C2 fell. `None` while the
+    /// faction is still alive; set once in the sweep when
+    /// `is_faction_alive` flips to false. Used by the lineage
+    /// view to show death timestamps.
+    pub died_tick: Option<u64>,
 }
 
 impl FactionStats {

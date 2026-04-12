@@ -473,7 +473,8 @@ fn main() -> io::Result<()> {
     let mut paused = false;
     let mut mesh_bounds = initial_bounds;
     let mut cursor: Option<(i16, i16)> = None;
-    let mut view: render::ViewMode = render::ViewMode::Runtime;
+    let mut mesh_view: render::MeshView = render::MeshView::Normal;
+    let mut sidebar: render::SidebarView = render::SidebarView::Runtime;
 
     loop {
         let wait = Duration::from_millis(tick_ms);
@@ -503,7 +504,10 @@ fn main() -> io::Result<()> {
                         };
                     }
                     (KeyCode::Char('v'), _) => {
-                        view = view.next();
+                        mesh_view = mesh_view.next();
+                    }
+                    (KeyCode::Char('b'), _) if cursor.is_none() => {
+                        sidebar = sidebar.next();
                     }
                     // Faction favoritism: press a digit 1-9 to
                     // boost that faction's spawn rolls for a
@@ -581,7 +585,8 @@ fn main() -> io::Result<()> {
                 seed,
                 theme_name,
                 cursor,
-                view,
+                mesh_view,
+                sidebar,
             };
             terminal.draw(|f| {
                 render::draw(f, &world, ui);
@@ -599,7 +604,8 @@ fn main() -> io::Result<()> {
             seed,
             theme_name,
             cursor,
-            view,
+            mesh_view,
+            sidebar,
         };
         terminal.draw(|f| {
             render::draw(f, &world, ui);
