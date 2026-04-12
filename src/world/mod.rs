@@ -418,6 +418,10 @@ pub struct World {
     pub favor_expires_tick: u64,
     pub era_rules: EraRules,
     pub custom_events: Vec<CustomEvent>,
+    /// Per-strain evolution state. `None` = not yet evolved;
+    /// `Some(trait)` = evolved once, trait applies globally to
+    /// all hosts carrying the strain. Indexed by strain id.
+    pub strain_evolved: [Option<StrainTrait>; STRAIN_COUNT],
     /// Cached first-C2 node id on the primary mesh. Duplicated from
     /// `meshes[0].c2_nodes[0]` so test call sites and legacy code
     /// paths that do `w.meshes[0].nodes.push(..., Some(w.c2()), ...)`
@@ -630,6 +634,52 @@ impl World {
     /// passive income from viral ecology: mutating a hybrid
     /// creates a long-tail revenue stream as long as the strain
     /// stays circulating among rival factions.
+    /// Check each strain for evolution eligibility: a strain with
+    /// 3+ veteran-rank-3+ hosts that hasn't evolved yet rolls a
+    /// random trait. Each strain evolves at most once per run.
+    /// The trait is applied at integration points in the
+    /// infection/spread/worm code.
+    fn maybe_evolve_strains(&mut self) {
+        let mut vet_counts = [0u32; STRAIN_COUNT];
+        for mesh in &self.meshes {
+            for n in &mesh.nodes {
+                if !matches!(n.state, State::Alive) {
+                    continue;
+                }
+                if let Some(inf) = n.infection {
+                    if inf.veteran_rank >= 3 {
+                        let s = (inf.strain as usize) % STRAIN_COUNT;
+                        vet_counts[s] += 1;
+                    }
+                }
+            }
+        }
+        for (s, &count) in vet_counts.iter().enumerate() {
+            if self.strain_evolved[s].is_some() {
+                continue;
+            }
+            if count < 3 {
+                continue;
+            }
+            if !self.rng.gen_bool(0.25) {
+                continue;
+            }
+            let evolved_trait = match self.rng.gen_range(0..4u8) {
+                0 => StrainTrait::Stealth,
+                1 => StrainTrait::Resistant,
+                2 => StrainTrait::Mutagenic,
+                _ => StrainTrait::Pandemic,
+            };
+            self.strain_evolved[s] = Some(evolved_trait);
+            let name = self.strain_name(s as u8);
+            self.push_log(format!(
+                "✦ MYTHIC ✦ {} evolved: {}",
+                name,
+                evolved_trait.display_name()
+            ));
+        }
+    }
+
     fn collect_strain_patents(&mut self) {
         // Tally count of rival hosts per (strain, owner) pair.
         let mut royalties: HashMap<u8, u32> = HashMap::new();
@@ -2990,26 +3040,66 @@ impl World {
                 }
             }
         }
-        // Pass 3: spawn a fresh mercenary somewhere unoccupied.
+        // Pass 3: spawn a fresh mercenary cluster (3-8 nodes)
+        // somewhere unoccupied. The root is a Relay; children
+        // chain off it with random roles, forming a self-contained
+        // micro-faction that auctions as a block.
         if self.rng.gen_bool(MERCENARY_SPAWN_CHANCE) {
             let bounds = self.meshes[mi].bounds;
-            if bounds.0 >= 8 && bounds.1 >= 8 {
+            if bounds.0 >= 12 && bounds.1 >= 8 {
+                let mut root_pos: Option<(i16, i16)> = None;
                 for _ in 0..16 {
                     let x = self.rng.gen_range(4..bounds.0 - 4);
                     let y = self.rng.gen_range(4..bounds.1 - 4);
                     if self.meshes[mi].occupied.contains(&(x, y)) {
                         continue;
                     }
-                    let branch = self.alloc_branch_id(mi);
-                    let mut n = Node::fresh((x, y), None, self.tick, Role::Relay, branch);
-                    n.faction = MERCENARY_FACTION;
-                    n.pwn_resist = 1;
-                    n.mutated_flash = 12;
-                    self.meshes[mi].nodes.push(n);
-                    self.meshes[mi].occupied.insert((x, y));
-                    let (oa, ob) = octet_pair((x, y));
-                    self.push_log(format!("merc available @ 10.0.{}.{}", oa, ob));
+                    root_pos = Some((x, y));
                     break;
+                }
+                if let Some(rpos) = root_pos {
+                    let branch = self.alloc_branch_id(mi);
+                    let cluster_size = self.rng.gen_range(3..=8usize);
+                    let root_id = self.meshes[mi].nodes.len();
+                    let mut root = Node::fresh(rpos, None, self.tick, Role::Relay, branch);
+                    root.faction = MERCENARY_FACTION;
+                    root.pwn_resist = 1;
+                    root.mutated_flash = 12;
+                    self.meshes[mi].nodes.push(root);
+                    self.meshes[mi].occupied.insert(rpos);
+                    // Spawn children around the root in a tight cluster.
+                    let mut spawned = 1usize;
+                    for dx in -2i16..=2 {
+                        for dy in -2i16..=2 {
+                            if spawned >= cluster_size {
+                                break;
+                            }
+                            if dx == 0 && dy == 0 {
+                                continue;
+                            }
+                            let cp = (rpos.0 + dx, rpos.1 + dy);
+                            if cp.0 < 1 || cp.1 < 1 || cp.0 >= bounds.0 - 1 || cp.1 >= bounds.1 - 1 {
+                                continue;
+                            }
+                            if self.meshes[mi].occupied.contains(&cp) {
+                                continue;
+                            }
+                            let mut child = Node::fresh(cp, Some(root_id), self.tick, Role::Relay, branch);
+                            child.faction = MERCENARY_FACTION;
+                            child.mutated_flash = 10;
+                            self.meshes[mi].nodes.push(child);
+                            self.meshes[mi].occupied.insert(cp);
+                            spawned += 1;
+                        }
+                        if spawned >= cluster_size {
+                            break;
+                        }
+                    }
+                    let (oa, ob) = octet_pair(rpos);
+                    self.push_log(format!(
+                        "merc cluster ({}) @ 10.0.{}.{}",
+                        spawned, oa, ob
+                    ));
                 }
             }
         }
@@ -3708,6 +3798,7 @@ impl World {
             favor_expires_tick: 0,
             era_rules: era_rules_for(0).0,
             custom_events: Vec::new(),
+            strain_evolved: [None; STRAIN_COUNT],
         };
         // Roll 3-5 procedurally-generated custom events at world
         // creation. Uses the world's own seeded RNG so the event
@@ -3720,6 +3811,32 @@ impl World {
                 .push_back((format!("✦ prophecy ✦ {}", ev.name), 1));
         }
         world
+    }
+
+    /// Effective cure_resist for a freshly seeded infection of the
+    /// given strain, folding in the Resistant evolution trait (+2
+    /// if the strain has evolved it). Read at every seeding site
+    /// so evolved strains produce tougher infections globally.
+    #[allow(dead_code)]
+    pub fn strain_cure_resist(&self, strain: u8) -> u8 {
+        let base = self.cfg.virus_cure_resist;
+        let s = (strain as usize) % STRAIN_COUNT;
+        if matches!(self.strain_evolved[s], Some(StrainTrait::Resistant)) {
+            base.saturating_add(2)
+        } else {
+            base
+        }
+    }
+
+    /// Effective spread rate multiplier for a given strain,
+    /// folding in the Pandemic evolution trait (2× if evolved).
+    pub fn strain_spread_mult(&self, strain: u8) -> f32 {
+        let s = (strain as usize) % STRAIN_COUNT;
+        if matches!(self.strain_evolved[s], Some(StrainTrait::Pandemic)) {
+            2.0
+        } else {
+            1.0
+        }
     }
 
     /// Display name for a strain id, wrapping into the name pool if the
@@ -3796,6 +3913,7 @@ impl World {
             self.maybe_black_market_link(mi);
             self.maybe_defector(mi);
             self.maybe_border_skirmish(mi);
+            self.maybe_layer_fauna(mi);
 
             // Expire graffiti marks on this mesh.
             let tick = self.tick;
@@ -3851,6 +3969,7 @@ impl World {
             self.maybe_scorched_earth();
             self.maybe_syndicate_vote();
             self.collect_strain_patents();
+            self.maybe_evolve_strains();
             self.activate_sleeper_lattice();
             self.advance_custom_events();
             self.advance_fission();

@@ -657,6 +657,41 @@ pub struct CustomEvent {
     pub fire_count: u32,
 }
 
+/// Trait a virus strain can evolve once it survives long enough
+/// with sufficient veteran hosts. Each strain can evolve at most
+/// once per run; the trait applies globally to every host
+/// carrying that strain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StrainTrait {
+    /// Active-stage visual glow suppressed — infected nodes look
+    /// like uninfected relays in the render pass. Harder for the
+    /// viewer (and scanners) to spot.
+    Stealth,
+    /// Permanent +2 cure_resist on every new infection seeded
+    /// with this strain. Existing hosts keep their current
+    /// resist; new ones start tougher.
+    Resistant,
+    /// Doubled hybrid-merge probability when this strain's worm
+    /// collides with a different strain on the same host. Produces
+    /// more hybrids, which feed the strain-patent economy.
+    Mutagenic,
+    /// Spread rate doubles for this strain only in the infection
+    /// spread pass. Makes the strain visibly explosive once it
+    /// evolves.
+    Pandemic,
+}
+
+impl StrainTrait {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            StrainTrait::Stealth => "stealth",
+            StrainTrait::Resistant => "resistant",
+            StrainTrait::Mutagenic => "mutagenic",
+            StrainTrait::Pandemic => "pandemic",
+        }
+    }
+}
+
 /// Resolved per-faction tech-tree bonuses. Computed once by
 /// `World::tech_effects(faction)` and then read at each call site
 /// as plain field lookups. Collapses five previously-scattered

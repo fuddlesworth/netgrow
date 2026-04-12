@@ -2027,6 +2027,8 @@ fn color_log_line(s: &str) -> Line<'static> {
         Style::default().fg(th.pwned).add_modifier(Modifier::BOLD)
     } else if s.starts_with("✦ treaty") {
         Style::default().fg(th.log_cured).add_modifier(Modifier::BOLD)
+    } else if s.starts_with("✦ fauna") {
+        Style::default().fg(th.frame_accent).add_modifier(Modifier::BOLD)
     } else if s.starts_with("✦ drip") {
         Style::default().fg(th.pwned_alt).add_modifier(Modifier::ITALIC)
     } else if s.starts_with("✦ prophecy") {

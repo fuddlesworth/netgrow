@@ -190,14 +190,19 @@ impl World {
                 if infected_count == 0 {
                     continue;
                 }
-                let p = 1.0 - (1.0 - spread_rate).powi(infected_count as i32);
+                // Identify the dominant strain before computing
+                // spread probability so the Pandemic trait can
+                // multiply the rate for this specific strain.
+                let strain = tally
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, c)| **c)
+                    .map(|(i, _)| i as u8)
+                    .unwrap_or(0);
+                let effective_spread =
+                    spread_rate * self.strain_spread_mult(strain);
+                let p = 1.0 - (1.0 - effective_spread).powi(infected_count as i32);
                 if self.rng.gen::<f32>() < p {
-                    let strain = tally
-                        .iter()
-                        .enumerate()
-                        .max_by_key(|(_, c)| **c)
-                        .map(|(i, _)| i as u8)
-                        .unwrap_or(0);
                     // Post-cure immunity: if the target is still
                     // immune to this specific strain, the spread
                     // attempt no-ops and the node stays clean.

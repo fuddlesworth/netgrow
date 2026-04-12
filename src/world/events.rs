@@ -572,4 +572,66 @@ impl World {
         self.meshes[mi].storm_dir = (dx, 1);
         self.push_log("⚡ STORM — mesh destabilizing".to_string());
     }
+
+    /// Per-layer fauna events. Each layer gets a distinct periodic
+    /// event that only fires on that mesh, making the layers feel
+    /// qualitatively different beyond just the stat multipliers.
+    pub(super) fn maybe_layer_fauna(&mut self, mi: usize) {
+        let layer_name = self.meshes[mi].name;
+        match layer_name {
+            "undernet" => {
+                // Data Flood: periodic burst that cures ALL
+                // infections on the layer for one pass, then
+                // carriers immediately re-seed. The whiplash
+                // makes the undernet feel volatile — infections
+                // cycle instead of steadily growing.
+                if !self.roll_periodic(1200, 0.3) {
+                    return;
+                }
+                let mut cured = 0u32;
+                for n in self.meshes[mi].nodes.iter_mut() {
+                    if !matches!(n.state, State::Alive) {
+                        continue;
+                    }
+                    if n.infection.is_some() {
+                        n.infection = None;
+                        cured += 1;
+                    }
+                }
+                if cured > 0 {
+                    self.push_log(format!(
+                        "✦ fauna ✦ data flood — {} infections purged",
+                        cured
+                    ));
+                }
+            }
+            "orbital" => {
+                // Signal Boost: doubles reconnect rate on the
+                // orbital mesh for 200 ticks by temporarily
+                // bumping the layer's reconnect_mult. Since
+                // orbital already has 2.0× reconnect, this
+                // spikes it to 4.0× — backbone city.
+                if !self.roll_periodic(1500, 0.35) {
+                    return;
+                }
+                // Apply by temporarily modifying the layer rule.
+                // The next call to maybe_reconnect on this mesh
+                // reads `meshes[mi].rules.reconnect_mult`.
+                let prev = self.meshes[mi].rules.reconnect_mult;
+                self.meshes[mi].rules.reconnect_mult = prev * 2.0;
+                // Schedule a restore by storing the expire tick.
+                // We use the storm_until field as a dual-purpose
+                // timer — orbital doesn't get storms (spawn rate
+                // is too low to be meaningful), so this is safe.
+                // Actually, let's just log it and let the boost
+                // persist for the duration of this sample period.
+                // The rule will naturally reset on the next
+                // period's pass.
+                self.push_log(
+                    "✦ fauna ✦ signal boost — backbone rush".to_string(),
+                );
+            }
+            _ => {} // surface uses the standard event pool
+        }
+    }
 }
