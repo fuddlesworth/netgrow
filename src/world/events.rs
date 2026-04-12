@@ -17,7 +17,7 @@ impl World {
         if !self.roll_periodic(self.cfg.border_skirmish_period, 1.0) {
             return;
         }
-        if self.c2_nodes.len() < 2 {
+        if self.meshes[0].c2_nodes.len() < 2 {
             return;
         }
         let radius = self.cfg.border_skirmish_radius;
@@ -28,6 +28,7 @@ impl World {
         // Build a snapshot of faction positions so we can scan without
         // aliasing self.
         let positions: Vec<(NodeId, (i16, i16), u8)> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -74,18 +75,18 @@ impl World {
             }
         }
         for (id, enemy_faction) in victims {
-            let pos = self.nodes[id].pos;
-            let victim_faction = self.nodes[id].faction;
-            let hardened = self.nodes[id].hardened;
+            let pos = self.meshes[0].nodes[id].pos;
+            let victim_faction = self.meshes[0].nodes[id].faction;
+            let hardened = self.meshes[0].nodes[id].hardened;
             if hardened {
-                let node = &mut self.nodes[id];
+                let node = &mut self.meshes[0].nodes[id];
                 node.hardened = false;
                 node.heartbeats = 0;
                 node.shield_flash = 6;
                 self.log_node(pos, "skirmish shielded");
                 self.bump_rivalry(victim_faction, enemy_faction, 2);
             } else {
-                let node = &mut self.nodes[id];
+                let node = &mut self.meshes[0].nodes[id];
                 node.state = State::Pwned {
                     ticks_left: pwned_flash,
                 };
@@ -113,12 +114,12 @@ impl World {
         if !self.roll_periodic(period, 1.0) {
             return;
         }
-        if self.c2_nodes.len() < 2 {
+        if self.meshes[0].c2_nodes.len() < 2 {
             return;
         }
         // Count alive per faction.
         let mut counts = vec![0usize; self.faction_stats.len()];
-        for n in &self.nodes {
+        for n in &self.meshes[0].nodes {
             if matches!(n.state, State::Alive) {
                 if let Some(slot) = counts.get_mut(n.faction as usize) {
                     *slot += 1;
@@ -151,9 +152,9 @@ impl World {
         // Flip all the weak faction's alive nodes to the strong
         // faction. The weak faction's C2 gets marked dead.
         let new_faction = strong_idx as u8;
-        let weak_c2 = self.c2_nodes[weak_idx];
-        self.nodes[weak_c2].state = State::Dead;
-        self.nodes[weak_c2].death_echo = super::GHOST_ECHO_TICKS;
+        let weak_c2 = self.meshes[0].c2_nodes[weak_idx];
+        self.meshes[0].nodes[weak_c2].state = State::Dead;
+        self.meshes[0].nodes[weak_c2].death_echo = super::GHOST_ECHO_TICKS;
 
         // Snapshot strong-faction alive positions up front so we can
         // reparent each absorbed node to its nearest strong neighbor.
@@ -161,6 +162,7 @@ impl World {
         // (the now-dead weak C2), which immediately isolates them
         // from the strong C2's reachability tree and dooms them.
         let strong_positions: Vec<(NodeId, (i16, i16))> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -172,6 +174,7 @@ impl World {
 
         // Collect absorbed node ids first (can't flip while borrowing).
         let absorbed: Vec<NodeId> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -183,16 +186,16 @@ impl World {
 
         let mut flipped = 0u32;
         for id in absorbed {
-            let pos = self.nodes[id].pos;
+            let pos = self.meshes[0].nodes[id].pos;
             // Nearest strong-faction alive node becomes the new parent.
             // Fall back to the strong C2 if no other strong nodes exist.
             let new_parent = strong_positions
                 .iter()
                 .min_by_key(|(_, p)| (p.0 - pos.0).abs().max((p.1 - pos.1).abs()))
                 .map(|(pid, _)| *pid)
-                .unwrap_or(self.c2_nodes[strong_idx]);
-            self.nodes[id].faction = new_faction;
-            self.nodes[id].parent = Some(new_parent);
+                .unwrap_or(self.meshes[0].c2_nodes[strong_idx]);
+            self.meshes[0].nodes[id].faction = new_faction;
+            self.meshes[0].nodes[id].parent = Some(new_parent);
             flipped += 1;
         }
 
@@ -214,13 +217,14 @@ impl World {
         if !self.roll_periodic(self.cfg.defector_period, self.cfg.defector_chance) {
             return;
         }
-        if self.c2_nodes.len() < 2 {
+        if self.meshes[0].c2_nodes.len() < 2 {
             return;
         }
         // Candidate defectors: alive, non-C2, and the defector's
         // faction must have at least one **other** faction alive
         // for the pool to make sense.
         let candidates: Vec<NodeId> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -235,11 +239,12 @@ impl World {
             return;
         }
         let defector = candidates[self.rng.gen_range(0..candidates.len())];
-        let old_faction = self.nodes[defector].faction;
-        let old_pos = self.nodes[defector].pos;
+        let old_faction = self.meshes[0].nodes[defector].faction;
+        let old_pos = self.meshes[0].nodes[defector].pos;
         // Rival factions: any faction id other than the defector's
         // current one whose C2 is still Alive.
         let rivals: Vec<u8> = self
+            .meshes[0]
             .c2_nodes
             .iter()
             .enumerate()
@@ -247,7 +252,7 @@ impl World {
                 if i as u8 == old_faction {
                     return None;
                 }
-                matches!(self.nodes[cid].state, State::Alive).then_some(i as u8)
+                matches!(self.meshes[0].nodes[cid].state, State::Alive).then_some(i as u8)
             })
             .collect();
         if rivals.is_empty() {
@@ -257,6 +262,7 @@ impl World {
         // Find the nearest alive node of the new faction — that's
         // the reparent anchor. Fall back to the new faction's C2.
         let anchor = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -271,10 +277,10 @@ impl World {
             })
             .min_by_key(|(_, d)| *d)
             .map(|(i, _)| i)
-            .unwrap_or(self.c2_nodes[new_faction as usize]);
+            .unwrap_or(self.meshes[0].c2_nodes[new_faction as usize]);
         // Flip the defector.
         {
-            let n = &mut self.nodes[defector];
+            let n = &mut self.meshes[0].nodes[defector];
             n.faction = new_faction;
             n.parent = Some(anchor);
             n.mutated_flash = 12;
@@ -297,6 +303,7 @@ impl World {
         }
         // Pick two distinct alive nodes to link.
         let alive: Vec<NodeId> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -316,10 +323,10 @@ impl World {
         while b == a {
             b = alive[self.rng.gen_range(0..alive.len())];
         }
-        let a_pos = self.nodes[a].pos;
-        let b_pos = self.nodes[b].pos;
+        let a_pos = self.meshes[0].nodes[a].pos;
+        let b_pos = self.meshes[0].nodes[b].pos;
         let life = self.cfg.wormhole_life_ticks;
-        self.wormholes.push(Wormhole {
+        self.meshes[0].wormholes.push(Wormhole {
             a: a_pos,
             b: b_pos,
             age: 0,
@@ -334,10 +341,10 @@ impl World {
     }
 
     pub(super) fn advance_wormholes(&mut self) {
-        for wh in self.wormholes.iter_mut() {
+        for wh in self.meshes[0].wormholes.iter_mut() {
             wh.age = wh.age.saturating_add(1);
         }
-        self.wormholes.retain(|w| w.age < w.life);
+        self.meshes[0].wormholes.retain(|w| w.age < w.life);
     }
 
     /// Roll for a new ISP outage zone. Picks a random rectangle on
@@ -347,7 +354,7 @@ impl World {
         if !self.roll_periodic(self.cfg.isp_outage_period, self.cfg.isp_outage_chance) {
             return;
         }
-        let bounds = self.bounds;
+        let bounds = self.meshes[0].bounds;
         if bounds.0 < 4 || bounds.1 < 4 {
             return;
         }
@@ -363,7 +370,7 @@ impl World {
             age: 0,
             life: self.cfg.isp_outage_life_ticks,
         };
-        self.outages.push(outage);
+        self.meshes[0].outages.push(outage);
         self.push_log("⚠ ISP OUTAGE — region offline".to_string());
     }
 
@@ -375,7 +382,7 @@ impl World {
         if !self.roll_periodic(self.cfg.partition_period, self.cfg.partition_chance) {
             return;
         }
-        let bounds = self.bounds;
+        let bounds = self.meshes[0].bounds;
         if bounds.0 < 6 || bounds.1 < 6 {
             return;
         }
@@ -385,7 +392,7 @@ impl World {
         } else {
             self.rng.gen_range(bounds.0 / 3..(bounds.0 * 2 / 3))
         };
-        self.partitions.push(Partition {
+        self.meshes[0].partitions.push(Partition {
             horizontal,
             pos,
             age: 0,
@@ -396,31 +403,32 @@ impl World {
     }
 
     pub(super) fn advance_partitions(&mut self) {
-        if self.partitions.is_empty() {
+        if self.meshes[0].partitions.is_empty() {
             return;
         }
-        for p in self.partitions.iter_mut() {
+        for p in self.meshes[0].partitions.iter_mut() {
             p.age = p.age.saturating_add(1);
         }
-        let dissolved = self.partitions.iter().filter(|p| p.age >= p.life).count();
-        self.partitions.retain(|p| p.age < p.life);
+        let dissolved = self.meshes[0].partitions.iter().filter(|p| p.age >= p.life).count();
+        self.meshes[0].partitions.retain(|p| p.age < p.life);
         if dissolved > 0 {
             self.push_log("partition healed".to_string());
         }
     }
 
     pub(super) fn advance_outages(&mut self) {
-        if self.outages.is_empty() {
+        if self.meshes[0].outages.is_empty() {
             return;
         }
         // Snapshot active rectangles for the per-node stun pass
-        // without aliasing self.outages.
+        // without aliasing self.meshes[0].outages.
         let zones: Vec<(i16, i16, i16, i16)> = self
+            .meshes[0]
             .outages
             .iter()
             .map(|o| (o.min.0, o.min.1, o.max.0, o.max.1))
             .collect();
-        for n in self.nodes.iter_mut() {
+        for n in self.meshes[0].nodes.iter_mut() {
             if !matches!(n.state, State::Alive) {
                 continue;
             }
@@ -438,7 +446,7 @@ impl World {
         // the uplift. Cleared by setting black_market_until back
         // to 0 so effective_hot_link reverts to baseline.
         let mut collapsed = 0u32;
-        for link in self.links.iter_mut() {
+        for link in self.meshes[0].links.iter_mut() {
             if link.black_market_until <= self.tick {
                 continue;
             }
@@ -459,11 +467,11 @@ impl World {
                 collapsed
             ));
         }
-        for o in self.outages.iter_mut() {
+        for o in self.meshes[0].outages.iter_mut() {
             o.age = o.age.saturating_add(1);
         }
-        let dissolved = self.outages.iter().filter(|o| o.age >= o.life).count();
-        self.outages.retain(|o| o.age < o.life);
+        let dissolved = self.meshes[0].outages.iter().filter(|o| o.age >= o.life).count();
+        self.meshes[0].outages.retain(|o| o.age < o.life);
         if dissolved > 0 {
             self.push_log("ISP outage cleared".to_string());
         }
@@ -478,11 +486,11 @@ impl World {
         let edge = self.rng.gen_range(0..4u8);
         let (horizontal, pos, direction) = match edge {
             0 => (true, 0, 1),                    // top, moving down
-            1 => (true, self.bounds.1 - 1, -1),   // bottom, moving up
+            1 => (true, self.meshes[0].bounds.1 - 1, -1),   // bottom, moving up
             2 => (false, 0, 1),                   // left, moving right
-            _ => (false, self.bounds.0 - 1, -1),  // right, moving left
+            _ => (false, self.meshes[0].bounds.0 - 1, -1),  // right, moving left
         };
-        self.ddos_waves.push(DdosWave {
+        self.meshes[0].ddos_waves.push(DdosWave {
             pos,
             horizontal,
             direction,
@@ -492,16 +500,16 @@ impl World {
     }
 
     pub(super) fn advance_ddos_waves(&mut self) {
-        if self.ddos_waves.is_empty() {
+        if self.meshes[0].ddos_waves.is_empty() {
             return;
         }
         let stun = self.cfg.ddos_stun_ticks;
-        let bounds = self.bounds;
-        let mut keep: Vec<DdosWave> = Vec::with_capacity(self.ddos_waves.len());
-        for mut wave in std::mem::take(&mut self.ddos_waves) {
+        let bounds = self.meshes[0].bounds;
+        let mut keep: Vec<DdosWave> = Vec::with_capacity(self.meshes[0].ddos_waves.len());
+        for mut wave in std::mem::take(&mut self.meshes[0].ddos_waves) {
             // Apply stun to any alive node whose position coincides
             // with the current wave line.
-            for n in self.nodes.iter_mut() {
+            for n in self.meshes[0].nodes.iter_mut() {
                 if !matches!(n.state, State::Alive) {
                     continue;
                 }
@@ -529,32 +537,32 @@ impl World {
                 keep.push(wave);
             }
         }
-        self.ddos_waves = keep;
+        self.meshes[0].ddos_waves = keep;
     }
 
     /// Roll for a network storm. Storms spike both spawn and loss rates
     /// for a configurable duration and log the start / end transitions.
     pub(super) fn maybe_storm(&mut self) {
         // End an active storm when its window elapses.
-        if self.storm_until > 0 && self.tick >= self.storm_until {
-            self.storm_until = 0;
+        if self.meshes[0].storm_until > 0 && self.tick >= self.meshes[0].storm_until {
+            self.meshes[0].storm_until = 0;
             self.push_log("storm passes — mesh settling".to_string());
             return;
         }
         // Roll for a new storm only when one isn't already active.
-        if self.storm_until > 0 {
+        if self.meshes[0].storm_until > 0 {
             return;
         }
         if !self.roll_periodic(self.cfg.storm_period, self.cfg.storm_chance) {
             return;
         }
-        self.storm_until = self.tick + self.cfg.storm_duration;
-        self.storm_since = self.tick;
+        self.meshes[0].storm_until = self.tick + self.cfg.storm_duration;
+        self.meshes[0].storm_since = self.tick;
         // Storm front always rolls downward from the top edge and
         // can drift left, straight, or right. Picked fresh for each
         // storm so consecutive storms read as distinct weather.
         let dx = self.rng.gen_range(-1..=1i8);
-        self.storm_dir = (dx, 1);
+        self.meshes[0].storm_dir = (dx, 1);
         self.push_log("⚡ STORM — mesh destabilizing".to_string());
     }
 }

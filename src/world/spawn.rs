@@ -25,6 +25,7 @@ impl World {
             return;
         }
         let alive: Vec<NodeId> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -43,9 +44,9 @@ impl World {
             return;
         }
         let a = alive[self.rng.gen_range(0..alive.len())];
-        let a_pos = self.nodes[a].pos;
-        let a_branch = self.nodes[a].branch_id;
-        let a_faction = self.nodes[a].faction;
+        let a_pos = self.meshes[0].nodes[a].pos;
+        let a_branch = self.meshes[0].nodes[a].branch_id;
+        let a_faction = self.meshes[0].nodes[a].faction;
         let radius = self.cfg.reconnect_radius;
         // Roll once per attempt: is this a cross-faction bridge?
         // Rivalry-amplified: a faction's max pressure against any
@@ -72,25 +73,25 @@ impl World {
                 if b == a {
                     return false;
                 }
-                if self.nodes[b].branch_id == a_branch {
+                if self.meshes[0].nodes[b].branch_id == a_branch {
                     return false;
                 }
                 // Same-faction by default; cross-faction when the roll
                 // allows and we explicitly want a different faction.
                 // Allied factions stay peaceful — don't cross-bridge
                 // during an alliance.
-                let same_faction = self.nodes[b].faction == a_faction;
+                let same_faction = self.meshes[0].nodes[b].faction == a_faction;
                 if allow_cross_faction {
                     if same_faction {
                         return false;
                     }
-                    if self.allied(a_faction, self.nodes[b].faction) {
+                    if self.allied(a_faction, self.meshes[0].nodes[b].faction) {
                         return false;
                     }
                 } else if !same_faction {
                     return false;
                 }
-                let dp = self.nodes[b].pos;
+                let dp = self.meshes[0].nodes[b].pos;
                 (dp.0 - a_pos.0).abs().max((dp.1 - a_pos.1).abs()) <= radius
             })
             .collect();
@@ -104,22 +105,22 @@ impl World {
                     && ((l.a == x && l.b == y) || (l.a == y && l.b == x))
             })
         };
-        candidates.retain(|&b| !already_linked(a, b, &self.links));
+        candidates.retain(|&b| !already_linked(a, b, &self.meshes[0].links));
         if candidates.is_empty() {
             return;
         }
         let b = candidates[self.rng.gen_range(0..candidates.len())];
-        let b_pos = self.nodes[b].pos;
+        let b_pos = self.meshes[0].nodes[b].pos;
         // Routing only blocks on node cells, not existing link
         // paths — so new links are free to cross over already-
         // drawn wires and produce denser mesh topology.
         let node_cells: std::collections::HashSet<(i16, i16)> =
-            self.nodes.iter().map(|n| n.pos).collect();
+            self.meshes[0].nodes.iter().map(|n| n.pos).collect();
         let path = match routing::route_link(
             a_pos,
             b_pos,
             &node_cells,
-            self.bounds,
+            self.meshes[0].bounds,
             &mut self.rng,
         ) {
             Some(p) => p,
@@ -130,9 +131,9 @@ impl World {
         // or one endpoint isolated from its parent chain)
         // activates them. Roughly one in four new cross-links
         // are sleepers.
-        let latent = self.nodes[a].faction == self.nodes[b].faction
+        let latent = self.meshes[0].nodes[a].faction == self.meshes[0].nodes[b].faction
             && self.rng.gen_bool(0.25);
-        self.links.push(Link {
+        self.meshes[0].links.push(Link {
             a,
             b,
             path,
@@ -152,15 +153,15 @@ impl World {
             // until activation. Skip the bridge log entirely.
             return;
         }
-        if self.nodes[a].faction != self.nodes[b].faction {
+        if self.meshes[0].nodes[a].faction != self.meshes[0].nodes[b].faction {
             self.push_log(format!(
                 "bridge F{}↔F{} CROSS-FACTION",
-                self.nodes[a].faction, self.nodes[b].faction
+                self.meshes[0].nodes[a].faction, self.meshes[0].nodes[b].faction
             ));
         } else {
             self.push_log(format!(
                 "bridge {}↔{} established",
-                self.nodes[a].branch_id, self.nodes[b].branch_id
+                self.meshes[0].nodes[a].branch_id, self.meshes[0].nodes[b].branch_id
             ));
         }
     }
@@ -280,8 +281,8 @@ impl World {
     }
 
     pub(super) fn alloc_branch_id(&mut self) -> u16 {
-        let id = self.next_branch_id;
-        self.next_branch_id = self.next_branch_id.wrapping_add(1).max(1);
+        let id = self.meshes[0].next_branch_id;
+        self.meshes[0].next_branch_id = self.meshes[0].next_branch_id.wrapping_add(1).max(1);
         id
     }
 
@@ -290,7 +291,7 @@ impl World {
     /// only, and cascade reachability has its own adjacency builder.
     pub(super) fn build_inbound_links(&self) -> HashMap<NodeId, usize> {
         let mut inbound: HashMap<NodeId, usize> = HashMap::new();
-        for (li, link) in self.links.iter().enumerate() {
+        for (li, link) in self.meshes[0].links.iter().enumerate() {
             if link.kind == LinkKind::Parent {
                 inbound.insert(link.b, li);
             }
@@ -315,7 +316,7 @@ pub fn node_ip(pos: (i16, i16)) -> String {
 impl World {
 
     pub(super) fn try_spawn(&mut self) {
-        if self.nodes.len() >= self.cfg.max_nodes {
+        if self.meshes[0].nodes.len() >= self.cfg.max_nodes {
             return;
         }
         let mut spawn_mult = if self.is_night() {
@@ -338,10 +339,11 @@ impl World {
         // and the mesh stops minting new branches after the first ~30 ticks.
         let now = self.tick;
         let c2_bias = self.cfg.c2_spawn_bias;
-        let c2_set: HashSet<NodeId> = self.c2_nodes.iter().copied().collect();
+        let c2_set: HashSet<NodeId> = self.meshes[0].c2_nodes.iter().copied().collect();
         // Collect beacon positions so we can apply a spawn weight
         // bonus to candidates within beacon_radius.
         let beacon_positions: Vec<(i16, i16)> = self
+            .meshes[0]
             .nodes
             .iter()
             .filter_map(|n| {
@@ -355,6 +357,7 @@ impl World {
         let beacon_radius = self.cfg.beacon_radius;
         let beacon_mult = self.cfg.beacon_weight_mult;
         let mut candidates: Vec<(NodeId, f32)> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -405,14 +408,14 @@ impl World {
             pick -= w;
         }
 
-        let parent_pos = self.nodes[parent_id].pos;
+        let parent_pos = self.meshes[0].nodes[parent_id].pos;
         let depth = self.depth_of(parent_id);
         let dist = (self.cfg.base_dist + (depth as i16) / 4).clamp(3, 8);
 
         // Scanner directional bias: if the parent is a Scanner that recently
         // pinged, grow toward the ping direction instead of rolling a new dir.
         let dir = {
-            let parent = &self.nodes[parent_id];
+            let parent = &self.meshes[0].nodes[parent_id];
             let ping_window = self.cfg.scanner_ping_period as u64 / 2;
             let recent_ping = self.tick.saturating_sub(parent.last_ping_tick) < ping_window;
             match parent.last_ping_dir {
@@ -425,22 +428,22 @@ impl World {
         let cand = (parent_pos.0 + dir.0 * dist, parent_pos.1 + dir.1 * dist);
 
         // Border clamp.
-        if cand.0 <= 0 || cand.1 <= 0 || cand.0 >= self.bounds.0 - 1 || cand.1 >= self.bounds.1 - 1
+        if cand.0 <= 0 || cand.1 <= 0 || cand.0 >= self.meshes[0].bounds.0 - 1 || cand.1 >= self.meshes[0].bounds.1 - 1
         {
             return;
         }
         // Collision checks.
-        if self.occupied.contains(&cand) {
+        if self.meshes[0].occupied.contains(&cand) {
             return;
         }
         // ISP outages block any new spawn whose target cell falls
         // inside a dead zone — the region is offline so the mesh
         // can't route there.
-        if self.outages.iter().any(|o| o.contains(cand)) {
+        if self.meshes[0].outages.iter().any(|o| o.contains(cand)) {
             return;
         }
         let min_gap = 2;
-        for n in &self.nodes {
+        for n in &self.meshes[0].nodes {
             let dx = (n.pos.0 - cand.0).abs();
             let dy = (n.pos.1 - cand.1).abs();
             if dx.max(dy) < min_gap {
@@ -451,12 +454,12 @@ impl World {
         // Only other node positions block the router; link paths
         // are free to cross over existing wires.
         let node_cells: std::collections::HashSet<(i16, i16)> =
-            self.nodes.iter().map(|n| n.pos).collect();
+            self.meshes[0].nodes.iter().map(|n| n.pos).collect();
         let path = match routing::route_link(
             parent_pos,
             cand,
             &node_cells,
-            self.bounds,
+            self.meshes[0].bounds,
             &mut self.rng,
         ) {
             Some(p) => p,
@@ -473,9 +476,9 @@ impl World {
         let branch_id = if forks {
             self.alloc_branch_id()
         } else {
-            self.nodes[parent_id].branch_id
+            self.meshes[0].nodes[parent_id].branch_id
         };
-        let faction = self.nodes[parent_id].faction;
+        let faction = self.meshes[0].nodes[parent_id].faction;
         let mut role = self.roll_role(faction);
 
         // Towers only spawn near their faction's C2. If we rolled Tower
@@ -483,8 +486,8 @@ impl World {
         // Relay so the fortified core stays a fortified core.
         if role == Role::Tower {
             let radius = self.cfg.tower_spawn_radius;
-            let near_c2 = self.c2_nodes.iter().any(|&id| {
-                let p = self.nodes[id].pos;
+            let near_c2 = self.meshes[0].c2_nodes.iter().any(|&id| {
+                let p = self.meshes[0].nodes[id].pos;
                 (p.0 - cand.0).abs().max((p.1 - cand.1).abs()) <= radius
             });
             if !near_c2 {
@@ -492,7 +495,7 @@ impl World {
             }
         }
 
-        let new_id = self.nodes.len();
+        let new_id = self.meshes[0].nodes.len();
         let mut node = Node::fresh(cand, Some(parent_id), self.tick, role, branch_id);
         node.faction = faction;
         if role == Role::Tower {
@@ -501,7 +504,7 @@ impl World {
         // Terrain bonus: nodes spawned inside a fiber zone start
         // with a small pwn_resist boost, giving factions that
         // expand into a hotspot a defensive head-start.
-        if self.hotspots.iter().any(|h| h.contains(cand)) {
+        if self.meshes[0].hotspots.iter().any(|h| h.contains(cand)) {
             node.pwn_resist = node.pwn_resist.saturating_add(3);
             node.mutated_flash = 4;
         }
@@ -523,16 +526,16 @@ impl World {
             }
             node.sleeper_true_faction = Some(true_f);
         }
-        self.nodes.push(node);
+        self.meshes[0].nodes.push(node);
         if let Some(s) = self.faction_stats.get_mut(faction as usize) {
             s.spawned += 1;
         }
         // Credit the parent so legendary-node promotion can track
         // reproductive success alongside raw age.
-        self.nodes[parent_id].children_spawned =
-            self.nodes[parent_id].children_spawned.saturating_add(1);
-        self.occupied.insert(cand);
-        self.links.push(Link {
+        self.meshes[0].nodes[parent_id].children_spawned =
+            self.meshes[0].nodes[parent_id].children_spawned.saturating_add(1);
+        self.meshes[0].occupied.insert(cand);
+        self.meshes[0].links.push(Link {
             a: parent_id,
             b: new_id,
             path,
@@ -558,7 +561,7 @@ impl World {
     pub(super) fn depth_of(&self, mut id: NodeId) -> u32 {
         let mut d = 0;
         let mut guard = 0;
-        while let Some(p) = self.nodes[id].parent {
+        while let Some(p) = self.meshes[0].nodes[id].parent {
             id = p;
             d += 1;
             guard += 1;

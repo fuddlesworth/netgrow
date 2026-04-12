@@ -7,27 +7,27 @@ fn scheduled_subtree_death_eventually_kills_all_descendants() {
     w.cfg.p_spawn = 0.0;
     w.cfg.p_loss = 0.0;
     // Manually build a 3-level tree: c2 -> a -> b -> c
-    let a = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
-    let b = w.nodes.len();
-    w.nodes.push(Node::fresh((12, 10), Some(a), 0, Role::Relay, 1));
-    let c = w.nodes.len();
-    w.nodes.push(Node::fresh((14, 10), Some(b), 0, Role::Relay, 1));
+    let a = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1));
+    let b = w.meshes[0].nodes.len();
+    w.meshes[0].nodes.push(Node::fresh((12, 10), Some(a), 0, Role::Relay, 1));
+    let c = w.meshes[0].nodes.len();
+    w.meshes[0].nodes.push(Node::fresh((14, 10), Some(b), 0, Role::Relay, 1));
     w.schedule_subtree_death(a, 1.0);
     // All three descendants should be flagged dying but not yet Dead.
-    assert!(w.nodes[a].dying_in > 0);
-    assert!(w.nodes[b].dying_in > 0);
-    assert!(w.nodes[c].dying_in > 0);
-    assert!(matches!(w.nodes[a].state, State::Alive));
+    assert!(w.meshes[0].nodes[a].dying_in > 0);
+    assert!(w.meshes[0].nodes[b].dying_in > 0);
+    assert!(w.meshes[0].nodes[c].dying_in > 0);
+    assert!(matches!(w.meshes[0].nodes[a].state, State::Alive));
     // Run enough ticks to drain the deepest dying_in (distance 2 → delay 7).
     for _ in 0..20 {
         w.tick((80, 30));
     }
-    assert!(matches!(w.nodes[a].state, State::Dead));
-    assert!(matches!(w.nodes[b].state, State::Dead));
-    assert!(matches!(w.nodes[c].state, State::Dead));
-    assert!(matches!(w.nodes[w.c2()].state, State::Alive));
+    assert!(matches!(w.meshes[0].nodes[a].state, State::Dead));
+    assert!(matches!(w.meshes[0].nodes[b].state, State::Dead));
+    assert!(matches!(w.meshes[0].nodes[c].state, State::Dead));
+    assert!(matches!(w.meshes[0].nodes[w.primary_c2].state, State::Alive));
 }
 
 #[test]
@@ -38,14 +38,14 @@ fn hardened_node_resists_first_pwn() {
     // otherwise make the single roll probabilistic.
     w.era_rules = EraRules::default();
     w.cfg.p_spawn = 0.0;
-    let id = w.nodes.len();
-    let mut n = Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1);
+    let id = w.meshes[0].nodes.len();
+    let mut n = Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1);
     n.hardened = true;
-    w.nodes.push(n);
+    w.meshes[0].nodes.push(n);
     w.cfg.p_loss = 1.0; // force the victim roll to fire
     w.advance_pwned_and_loss();
-    assert!(matches!(w.nodes[id].state, State::Alive));
-    assert!(!w.nodes[id].hardened);
+    assert!(matches!(w.meshes[0].nodes[id].state, State::Alive));
+    assert!(!w.meshes[0].nodes[id].hardened);
 }
 
 #[test]
@@ -53,13 +53,14 @@ fn branch_id_inherits_from_parent_not_c2() {
     let mut w = World::new(11, (120, 40), Config::default());
     // First-hop child gets fresh branch id.
     let a = w.alloc_branch_id();
-    w.nodes
-        .push(Node::fresh((30, 10), Some(w.c2()), 0, Role::Relay, a));
-    let a_id = w.nodes.len() - 1;
-    w.nodes
-        .push(Node::fresh((32, 10), Some(a_id), 0, Role::Relay, w.nodes[a_id].branch_id));
-    assert_ne!(w.nodes[a_id].branch_id, 0);
-    assert_eq!(w.nodes[a_id + 1].branch_id, w.nodes[a_id].branch_id);
+    w.meshes[0].nodes
+        .push(Node::fresh((30, 10), Some(w.primary_c2), 0, Role::Relay, a));
+    let a_id = w.meshes[0].nodes.len() - 1;
+    let a_branch = w.meshes[0].nodes[a_id].branch_id;
+    w.meshes[0].nodes
+        .push(Node::fresh((32, 10), Some(a_id), 0, Role::Relay, a_branch));
+    assert_ne!(w.meshes[0].nodes[a_id].branch_id, 0);
+    assert_eq!(w.meshes[0].nodes[a_id + 1].branch_id, w.meshes[0].nodes[a_id].branch_id);
 }
 
 #[test]
@@ -68,18 +69,18 @@ fn packet_reaches_c2_and_drops() {
     w.cfg.p_spawn = 0.0;
     w.cfg.p_loss = 0.0;
     // Build chain c2 -> a -> b (exfil)
-    let a = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
-    let b = w.nodes.len();
-    w.nodes
+    let a = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1));
+    let b = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
         .push(Node::fresh((14, 10), Some(a), 0, Role::Exfil, 1));
     // Manufacture links with full paths marked drawn.
     let path_ca: Vec<(i16, i16)> =
-        (w.nodes[w.c2()].pos.0..=10).map(|x| (x, 10)).collect();
+        (w.meshes[0].nodes[w.primary_c2].pos.0..=10).map(|x| (x, 10)).collect();
     let len_ca = path_ca.len() as u16;
-    w.links.push(Link {
-        a: w.c2(),
+    w.meshes[0].links.push(Link {
+        a: w.primary_c2,
         b: a,
         path: path_ca,
         drawn: len_ca,
@@ -95,7 +96,7 @@ fn packet_reaches_c2_and_drops() {
     });
     let path_ab: Vec<(i16, i16)> = (10..=14).map(|x| (x, 10)).collect();
     let len_ab = path_ab.len() as u16;
-    w.links.push(Link {
+    w.meshes[0].links.push(Link {
         a,
         b,
         path: path_ab,
@@ -112,13 +113,13 @@ fn packet_reaches_c2_and_drops() {
     });
     // Force the Exfil to fire on tick 0 and then tick enough for the
     // packet to reach C2 and be dropped.
-    w.nodes[b].role_cooldown = 0;
+    w.meshes[0].nodes[b].role_cooldown = 0;
     w.fire_exfil_packets();
-    assert_eq!(w.packets.len(), 1);
+    assert_eq!(w.meshes[0].packets.len(), 1);
     for _ in 0..40 {
         w.advance_packets();
     }
-    assert!(w.packets.is_empty());
+    assert!(w.meshes[0].packets.is_empty());
 }
 
 #[test]
@@ -132,18 +133,18 @@ fn cross_link_saves_reachable_node_from_cascade() {
     // c has its own parent path to C2, so c must survive. b has no direct
     // parent chain to c after a is gone, so reachability from C2 to b
     // goes c2→c→(cross)→b — b SHOULD survive via the cross.
-    let a = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((20, 10), Some(w.c2()), 0, Role::Relay, 1));
-    let c = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((30, 10), Some(w.c2()), 0, Role::Relay, 2));
-    let b = w.nodes.len();
-    w.nodes.push(Node::fresh((25, 12), Some(a), 0, Role::Relay, 1));
+    let a = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((20, 10), Some(w.primary_c2), 0, Role::Relay, 1));
+    let c = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((30, 10), Some(w.primary_c2), 0, Role::Relay, 2));
+    let b = w.meshes[0].nodes.len();
+    w.meshes[0].nodes.push(Node::fresh((25, 12), Some(a), 0, Role::Relay, 1));
     // Fully-drawn cross link b ↔ c.
     let cross_path = vec![(25, 12), (30, 10)]; // cells don't matter for logic
     let len = cross_path.len() as u16;
-    w.links.push(Link {
+    w.meshes[0].links.push(Link {
         a: b,
         b: c,
         path: cross_path,
@@ -174,20 +175,20 @@ fn shield_flash_is_set_when_hardened_node_is_hit() {
     w.era_rules = EraRules::default();
     w.cfg.p_spawn = 0.0;
     w.cfg.p_loss = 1.0;
-    let id = w.nodes.len();
-    let mut n = Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1);
+    let id = w.meshes[0].nodes.len();
+    let mut n = Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1);
     n.hardened = true;
-    w.nodes.push(n);
+    w.meshes[0].nodes.push(n);
     w.advance_pwned_and_loss();
-    assert!(matches!(w.nodes[id].state, State::Alive));
-    assert!(!w.nodes[id].hardened);
-    assert!(w.nodes[id].shield_flash > 0, "shield flash should be set");
+    assert!(matches!(w.meshes[0].nodes[id].state, State::Alive));
+    assert!(!w.meshes[0].nodes[id].hardened);
+    assert!(w.meshes[0].nodes[id].shield_flash > 0, "shield flash should be set");
     // The flash should drain over subsequent ticks.
     w.cfg.p_loss = 0.0; // don't hit it again
     for _ in 0..10 {
         w.tick((80, 30));
     }
-    assert_eq!(w.nodes[id].shield_flash, 0);
+    assert_eq!(w.meshes[0].nodes[id].shield_flash, 0);
 }
 
 #[test]
@@ -198,17 +199,17 @@ fn reconnect_creates_cross_link_between_branches() {
     w.cfg.reconnect_rate = 1.0;
     w.cfg.reconnect_radius = 20;
     // Two alive nodes in different branches, no existing bridge.
-    w.nodes
-        .push(Node::fresh((20, 10), Some(w.c2()), 0, Role::Relay, 1));
-    w.nodes
-        .push(Node::fresh((25, 12), Some(w.c2()), 0, Role::Relay, 2));
-    let before = w.links.iter().filter(|l| l.kind == LinkKind::Cross).count();
+    w.meshes[0].nodes
+        .push(Node::fresh((20, 10), Some(w.primary_c2), 0, Role::Relay, 1));
+    w.meshes[0].nodes
+        .push(Node::fresh((25, 12), Some(w.primary_c2), 0, Role::Relay, 2));
+    let before = w.meshes[0].links.iter().filter(|l| l.kind == LinkKind::Cross).count();
     w.maybe_reconnect();
-    let after = w.links.iter().filter(|l| l.kind == LinkKind::Cross).count();
+    let after = w.meshes[0].links.iter().filter(|l| l.kind == LinkKind::Cross).count();
     assert_eq!(after, before + 1, "should have formed exactly one cross link");
     // Second call should not create a duplicate between the same pair.
     w.maybe_reconnect();
-    let cross_count = w.links.iter().filter(|l| l.kind == LinkKind::Cross).count();
+    let cross_count = w.meshes[0].links.iter().filter(|l| l.kind == LinkKind::Cross).count();
     assert_eq!(cross_count, after, "must not duplicate existing bridge");
 }
 
@@ -220,14 +221,14 @@ fn reconnect_refuses_same_branch() {
     w.cfg.reconnect_rate = 1.0;
     w.cfg.reconnect_radius = 20;
     // Both nodes in the same branch — should NOT form a cross link.
-    w.nodes
-        .push(Node::fresh((20, 10), Some(w.c2()), 0, Role::Relay, 1));
-    w.nodes
-        .push(Node::fresh((25, 12), Some(w.c2()), 0, Role::Relay, 1));
+    w.meshes[0].nodes
+        .push(Node::fresh((20, 10), Some(w.primary_c2), 0, Role::Relay, 1));
+    w.meshes[0].nodes
+        .push(Node::fresh((25, 12), Some(w.primary_c2), 0, Role::Relay, 1));
     for _ in 0..20 {
         w.maybe_reconnect();
     }
-    let cross = w.links.iter().filter(|l| l.kind == LinkKind::Cross).count();
+    let cross = w.meshes[0].links.iter().filter(|l| l.kind == LinkKind::Cross).count();
     assert_eq!(cross, 0);
 }
 
@@ -240,12 +241,12 @@ fn infection_spreads_along_parent_edges() {
     w.cfg.virus_spread_rate = 1.0;
     // Build c2 -> a -> b, infect a and drive it straight to Active so it
     // can infect neighbors.
-    let a = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
-    let b = w.nodes.len();
-    w.nodes.push(Node::fresh((12, 10), Some(a), 0, Role::Relay, 1));
-    w.nodes[a].infection = Some(Infection {
+    let a = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1));
+    let b = w.meshes[0].nodes.len();
+    w.meshes[0].nodes.push(Node::fresh((12, 10), Some(a), 0, Role::Relay, 1));
+    w.meshes[0].nodes[a].infection = Some(Infection {
         strain: 3,
         stage: InfectionStage::Active,
         age: w.cfg.virus_incubation_ticks,
@@ -260,8 +261,8 @@ fn infection_spreads_along_parent_edges() {
     for _ in 0..5 {
         w.tick((80, 30));
     }
-    assert!(w.nodes[b].infection.is_some());
-    assert_eq!(w.nodes[b].infection.unwrap().strain, 3);
+    assert!(w.meshes[0].nodes[b].infection.is_some());
+    assert_eq!(w.meshes[0].nodes[b].infection.unwrap().strain, 3);
 }
 
 #[test]
@@ -272,10 +273,10 @@ fn infection_skips_c2() {
     w.cfg.virus_seed_rate = 0.0;
     w.cfg.virus_spread_rate = 1.0;
     // Child directly attached to C2, infected and Active.
-    let a = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
-    w.nodes[a].infection = Some(Infection {
+    let a = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1));
+    w.meshes[0].nodes[a].infection = Some(Infection {
         strain: 0,
         stage: InfectionStage::Active,
         age: w.cfg.virus_incubation_ticks,
@@ -289,7 +290,7 @@ fn infection_skips_c2() {
     for _ in 0..20 {
         w.tick((80, 30));
     }
-    assert!(w.nodes[w.c2()].infection.is_none(), "C2 must stay clean");
+    assert!(w.meshes[0].nodes[w.primary_c2].infection.is_none(), "C2 must stay clean");
 }
 
 #[test]
@@ -301,16 +302,16 @@ fn patch_wave_cures_infected_node_within_radius() {
     w.cfg.virus_spread_rate = 0.0;
     w.cfg.worm_spawn_rate = 0.0;
     // Infected node with cure_resist=1, three cells from C2.
-    let c2_pos = w.nodes[w.c2()].pos;
-    let a = w.nodes.len();
-    w.nodes.push(Node::fresh(
+    let c2_pos = w.meshes[0].nodes[w.primary_c2].pos;
+    let a = w.meshes[0].nodes.len();
+    w.meshes[0].nodes.push(Node::fresh(
         (c2_pos.0 + 3, c2_pos.1),
-        Some(w.c2()),
+        Some(w.primary_c2),
         0,
         Role::Relay,
         1,
     ));
-    w.nodes[a].infection = Some(Infection {
+    w.meshes[0].nodes[a].infection = Some(Infection {
         strain: 0,
         stage: InfectionStage::Incubating,
         age: 0,
@@ -322,17 +323,17 @@ fn patch_wave_cures_infected_node_within_radius() {
         veteran_rank: 0,
     });
     // Seed a patch wave directly and tick it forward until the front hits.
-    w.patch_waves.push(PatchWave {
+    w.meshes[0].patch_waves.push(PatchWave {
         origin: c2_pos,
         radius: 0,
     });
     for _ in 0..10 {
         w.advance_patch_waves();
-        if w.nodes[a].infection.is_none() {
+        if w.meshes[0].nodes[a].infection.is_none() {
             break;
         }
     }
-    assert!(w.nodes[a].infection.is_none(), "patch wave should cure the node");
+    assert!(w.meshes[0].nodes[a].infection.is_none(), "patch wave should cure the node");
 }
 
 #[test]
@@ -343,14 +344,14 @@ fn worm_delivered_to_alive_neighbor() {
     w.cfg.virus_seed_rate = 0.0;
     w.cfg.virus_spread_rate = 0.0;
     // Build c2 -> a -> b with fully-drawn links.
-    let a = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
-    let b = w.nodes.len();
-    w.nodes.push(Node::fresh((14, 10), Some(a), 0, Role::Relay, 1));
+    let a = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1));
+    let b = w.meshes[0].nodes.len();
+    w.meshes[0].nodes.push(Node::fresh((14, 10), Some(a), 0, Role::Relay, 1));
     let path_ab: Vec<(i16, i16)> = (10..=14).map(|x| (x, 10)).collect();
     let len_ab = path_ab.len() as u16;
-    w.links.push(Link {
+    w.meshes[0].links.push(Link {
         a,
         b,
         path: path_ab,
@@ -367,7 +368,7 @@ fn worm_delivered_to_alive_neighbor() {
     });
     // Launch a worm from a → b manually and tick the worm advance step
     // enough times for it to reach the far end.
-    w.worms.push(Worm {
+    w.meshes[0].worms.push(Worm {
         link_id: 0,
         pos: 0,
         outbound_from_a: true,
@@ -377,9 +378,9 @@ fn worm_delivered_to_alive_neighbor() {
     for _ in 0..10 {
         w.advance_worms();
     }
-    assert!(w.nodes[b].infection.is_some());
-    assert_eq!(w.nodes[b].infection.unwrap().strain, 2);
-    assert!(w.worms.is_empty());
+    assert!(w.meshes[0].nodes[b].infection.is_some());
+    assert_eq!(w.meshes[0].nodes[b].infection.unwrap().strain, 2);
+    assert!(w.meshes[0].worms.is_empty());
 }
 
 #[test]
@@ -389,10 +390,10 @@ fn terminal_infection_forces_loss() {
     w.cfg.p_loss = 0.0;
     w.cfg.virus_seed_rate = 0.0;
     w.cfg.virus_spread_rate = 0.0;
-    let a = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
-    w.nodes[a].infection = Some(Infection {
+    let a = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1));
+    w.meshes[0].nodes[a].infection = Some(Infection {
         strain: 0,
         stage: InfectionStage::Terminal,
         age: 200,
@@ -406,10 +407,10 @@ fn terminal_infection_forces_loss() {
     // One tick drains terminal_ticks and flips to Pwned.
     w.tick((80, 30));
     assert!(matches!(
-        w.nodes[a].state,
+        w.meshes[0].nodes[a].state,
         State::Pwned { .. } | State::Dead
     ));
-    assert!(w.nodes[a].infection.is_none());
+    assert!(w.meshes[0].nodes[a].infection.is_none());
 }
 
 #[test]
@@ -420,14 +421,14 @@ fn mutation_skips_honeypots() {
     w.cfg.mutate_rate = 1.0;
     w.cfg.mutate_min_age = 0;
     w.cfg.virus_seed_rate = 0.0;
-    let id = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Honeypot, 1));
+    let id = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Honeypot, 1));
     for _ in 0..10 {
         w.maybe_mutate();
     }
-    assert_eq!(w.nodes[id].role, Role::Honeypot);
-    assert_eq!(w.nodes[id].mutated_flash, 0);
+    assert_eq!(w.meshes[0].nodes[id].role, Role::Honeypot);
+    assert_eq!(w.meshes[0].nodes[id].mutated_flash, 0);
 }
 
 #[test]
@@ -438,12 +439,12 @@ fn mutation_flips_relay_role_and_flashes() {
     w.cfg.mutate_rate = 1.0;
     w.cfg.mutate_min_age = 0;
     w.cfg.virus_seed_rate = 0.0;
-    let id = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
+    let id = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1));
     w.maybe_mutate();
-    assert!(matches!(w.nodes[id].role, Role::Scanner | Role::Exfil));
-    assert!(w.nodes[id].mutated_flash > 0);
+    assert!(matches!(w.meshes[0].nodes[id].role, Role::Scanner | Role::Exfil));
+    assert!(w.meshes[0].nodes[id].mutated_flash > 0);
 }
 
 #[test]
@@ -455,7 +456,7 @@ fn zero_day_respects_min_node_floor() {
     // Only C2 alive: 1 node, well below the 10-node minimum.
     w.tick = 1;
     w.maybe_zero_day();
-    assert!(w.nodes.iter().all(|n| n.infection.is_none()));
+    assert!(w.meshes[0].nodes.iter().all(|n| n.infection.is_none()));
 }
 
 #[test]
@@ -467,11 +468,12 @@ fn zero_day_outbreak_picks_distinct_targets() {
     // Push exactly 4 alive candidates so picking 3-5 distinct should
     // saturate the candidate set without ever double-picking.
     for i in 0..4 {
-        w.nodes
-            .push(Node::fresh((10 + i, 10), Some(w.c2()), 0, Role::Relay, 1));
+        w.meshes[0].nodes
+            .push(Node::fresh((10 + i, 10), Some(w.primary_c2), 0, Role::Relay, 1));
     }
     w.zero_day_outbreak();
     let infected = w
+        .meshes[0]
         .nodes
         .iter()
         .filter(|n| n.infection.is_some())
@@ -495,13 +497,13 @@ fn infection_spread_skips_honeypots() {
     w.cfg.virus_spread_rate = 1.0;
     // Active-infected relay next to a honeypot. Spread fires every tick
     // but the honeypot must remain clean to keep its disguise.
-    let infected = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
-    let honey = w.nodes.len();
-    w.nodes
+    let infected = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1));
+    let honey = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
         .push(Node::fresh((12, 10), Some(infected), 0, Role::Honeypot, 1));
-    w.nodes[infected].infection = Some(Infection {
+    w.meshes[0].nodes[infected].infection = Some(Infection {
         strain: 0,
         stage: InfectionStage::Active,
         age: w.cfg.virus_incubation_ticks,
@@ -515,7 +517,7 @@ fn infection_spread_skips_honeypots() {
     for _ in 0..20 {
         w.tick((80, 30));
     }
-    assert!(w.nodes[honey].infection.is_none(), "honeypot must stay clean");
+    assert!(w.meshes[0].nodes[honey].infection.is_none(), "honeypot must stay clean");
 }
 
 #[test]
@@ -528,13 +530,13 @@ fn defender_pulse_cures_nearby_infection() {
     w.cfg.defender_pulse_period = 1; // fire on every tick
     w.cfg.defender_radius = 5;
     w.cfg.virus_cure_resist = 1; // single-pulse cure
-    let _defender = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Defender, 1));
-    let victim = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((12, 11), Some(w.c2()), 0, Role::Relay, 1));
-    w.nodes[victim].infection = Some(Infection {
+    let _defender = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Defender, 1));
+    let victim = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((12, 11), Some(w.primary_c2), 0, Role::Relay, 1));
+    w.meshes[0].nodes[victim].infection = Some(Infection {
         strain: 0,
         stage: InfectionStage::Active,
         age: w.cfg.virus_incubation_ticks,
@@ -546,7 +548,7 @@ fn defender_pulse_cures_nearby_infection() {
         veteran_rank: 0,
     });
     w.fire_defender_pulses();
-    assert!(w.nodes[victim].infection.is_none(), "defender should clear infection in radius");
+    assert!(w.meshes[0].nodes[victim].infection.is_none(), "defender should clear infection in radius");
 }
 
 #[test]
@@ -556,13 +558,13 @@ fn defender_immune_to_infection() {
     w.cfg.p_loss = 0.0;
     w.cfg.virus_seed_rate = 0.0;
     w.cfg.virus_spread_rate = 1.0;
-    let infected = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
-    let defender = w.nodes.len();
-    w.nodes
+    let infected = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1));
+    let defender = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
         .push(Node::fresh((12, 10), Some(infected), 0, Role::Defender, 1));
-    w.nodes[infected].infection = Some(Infection {
+    w.meshes[0].nodes[infected].infection = Some(Infection {
         strain: 0,
         stage: InfectionStage::Active,
         age: w.cfg.virus_incubation_ticks,
@@ -576,7 +578,7 @@ fn defender_immune_to_infection() {
     for _ in 0..20 {
         w.tick((80, 30));
     }
-    assert!(w.nodes[defender].infection.is_none(), "defender should never get infected");
+    assert!(w.meshes[0].nodes[defender].infection.is_none(), "defender should never get infected");
 }
 
 #[test]
@@ -587,17 +589,17 @@ fn multiple_c2s_each_get_distinct_factions() {
         ..Config::default()
     };
     let w = World::new(40, (120, 30), cfg);
-    assert_eq!(w.c2_nodes.len(), 3);
-    assert_eq!(w.nodes[w.c2_nodes[0]].faction, 0);
-    assert_eq!(w.nodes[w.c2_nodes[1]].faction, 1);
-    assert_eq!(w.nodes[w.c2_nodes[2]].faction, 2);
+    assert_eq!(w.meshes[0].c2_nodes.len(), 3);
+    assert_eq!(w.meshes[0].nodes[w.meshes[0].c2_nodes[0]].faction, 0);
+    assert_eq!(w.meshes[0].nodes[w.meshes[0].c2_nodes[1]].faction, 1);
+    assert_eq!(w.meshes[0].nodes[w.meshes[0].c2_nodes[2]].faction, 2);
     // Random placement with minimum spacing — every pair must be
     // at a distinct cell.
-    for i in 0..w.c2_nodes.len() {
-        for j in (i + 1)..w.c2_nodes.len() {
+    for i in 0..w.meshes[0].c2_nodes.len() {
+        for j in (i + 1)..w.meshes[0].c2_nodes.len() {
             assert_ne!(
-                w.nodes[w.c2_nodes[i]].pos,
-                w.nodes[w.c2_nodes[j]].pos,
+                w.meshes[0].nodes[w.meshes[0].c2_nodes[i]].pos,
+                w.meshes[0].nodes[w.meshes[0].c2_nodes[j]].pos,
                 "C2s {} and {} overlap",
                 i,
                 j
@@ -617,24 +619,24 @@ fn cascade_does_not_kill_other_factions() {
     };
     let mut w = World::new(41, (80, 30), cfg);
     // Build one child for each faction.
-    let f0 = w.c2_nodes[0];
-    let f1 = w.c2_nodes[1];
-    let child0 = w.nodes.len();
+    let f0 = w.meshes[0].c2_nodes[0];
+    let f1 = w.meshes[0].c2_nodes[1];
+    let child0 = w.meshes[0].nodes.len();
     let mut n0 = Node::fresh((10, 10), Some(f0), 0, Role::Relay, 1);
     n0.faction = 0;
-    w.nodes.push(n0);
-    let child1 = w.nodes.len();
+    w.meshes[0].nodes.push(n0);
+    let child1 = w.meshes[0].nodes.len();
     let mut n1 = Node::fresh((40, 10), Some(f1), 0, Role::Relay, 2);
     n1.faction = 1;
-    w.nodes.push(n1);
+    w.meshes[0].nodes.push(n1);
     // Trigger a cascade on faction 0's child. Faction 1 must survive.
     w.schedule_subtree_death(child0, 1.0);
     for _ in 0..20 {
         w.tick((80, 30));
     }
-    assert!(matches!(w.nodes[child0].state, State::Dead));
-    assert!(matches!(w.nodes[child1].state, State::Alive));
-    assert!(matches!(w.nodes[f1].state, State::Alive));
+    assert!(matches!(w.meshes[0].nodes[child0].state, State::Dead));
+    assert!(matches!(w.meshes[0].nodes[child1].state, State::Alive));
+    assert!(matches!(w.meshes[0].nodes[f1].state, State::Alive));
 }
 
 #[test]
@@ -664,14 +666,14 @@ fn link_load_accumulates_and_decays() {
         ..Config::default()
     };
     let mut w = World::new(60, (80, 30), cfg);
-    let a = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
-    let b = w.nodes.len();
-    w.nodes.push(Node::fresh((14, 10), Some(a), 0, Role::Exfil, 1));
+    let a = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1));
+    let b = w.meshes[0].nodes.len();
+    w.meshes[0].nodes.push(Node::fresh((14, 10), Some(a), 0, Role::Exfil, 1));
     let path: Vec<(i16, i16)> = (10..=14).map(|x| (x, 10)).collect();
     let len = path.len() as u16;
-    w.links.push(Link {
+    w.meshes[0].links.push(Link {
         a,
         b,
         path,
@@ -687,7 +689,7 @@ fn link_load_accumulates_and_decays() {
         latent: false,
     });
     // Park a packet on the link and tick the motion phase a few times.
-    w.packets.push(Packet {
+    w.meshes[0].packets.push(Packet {
         link_id: 0,
         pos: len - 1,
         ghost: false,
@@ -696,14 +698,14 @@ fn link_load_accumulates_and_decays() {
         w.decay_link_load();
         w.advance_packets();
     }
-    assert!(w.links[0].load > 0, "load should accumulate from in-flight packet");
+    assert!(w.meshes[0].links[0].load > 0, "load should accumulate from in-flight packet");
 
     // Stop feeding packets; load decays back to zero.
-    w.packets.clear();
+    w.meshes[0].packets.clear();
     for _ in 0..20 {
         w.decay_link_load();
     }
-    assert_eq!(w.links[0].load, 0, "load should decay to zero");
+    assert_eq!(w.meshes[0].links[0].load, 0, "load should decay to zero");
 }
 
 #[test]
@@ -719,22 +721,24 @@ fn honeypot_trip_reveals_backdoor_links() {
     let mut w = World::new(70, (80, 30), cfg);
     // Honeypot in its own branch, plus three alive neighbors in
     // separate branches within the backdoor radius.
-    let honey = w.nodes.len();
-    let mut h = Node::fresh((20, 10), Some(w.c2()), 0, Role::Honeypot, 1);
+    let honey = w.meshes[0].nodes.len();
+    let mut h = Node::fresh((20, 10), Some(w.primary_c2), 0, Role::Honeypot, 1);
     h.faction = 0;
-    w.nodes.push(h);
+    w.meshes[0].nodes.push(h);
     for (i, pos) in [(25, 10), (18, 15), (22, 12)].iter().enumerate() {
-        let mut n = Node::fresh(*pos, Some(w.c2()), 0, Role::Relay, 2 + i as u16);
+        let mut n = Node::fresh(*pos, Some(w.primary_c2), 0, Role::Relay, 2 + i as u16);
         n.faction = 0;
-        w.nodes.push(n);
+        w.meshes[0].nodes.push(n);
     }
     let before = w
+        .meshes[0]
         .links
         .iter()
         .filter(|l| l.kind == LinkKind::Cross)
         .count();
     w.reveal_honeypot_backdoors(honey);
     let after = w
+        .meshes[0]
         .links
         .iter()
         .filter(|l| l.kind == LinkKind::Cross)
@@ -747,6 +751,7 @@ fn honeypot_trip_reveals_backdoor_links() {
     );
     // All new cross-links should originate from the honeypot.
     let from_honey = w
+        .meshes[0]
         .links
         .iter()
         .filter(|l| l.kind == LinkKind::Cross && l.a == honey)
@@ -773,23 +778,23 @@ fn tower_absorbs_pwn_attempts_before_dying() {
     // guarantee probabilistic.
     w.era_rules = EraRules::default();
     // One tower adjacent to C2 — the only possible victim.
-    let tower = w.nodes.len();
-    let mut n = Node::fresh((11, 10), Some(w.c2()), 0, Role::Tower, 1);
+    let tower = w.meshes[0].nodes.len();
+    let mut n = Node::fresh((11, 10), Some(w.primary_c2), 0, Role::Tower, 1);
     n.pwn_resist = 2;
     n.faction = 0;
-    w.nodes.push(n);
+    w.meshes[0].nodes.push(n);
     // Three ticks of guaranteed loss rolls. First two should consume
     // the pwn_resist charges; third should finally pwn the tower.
     for _ in 0..2 {
         w.tick((80, 30));
         assert!(
-            matches!(w.nodes[tower].state, State::Alive),
+            matches!(w.meshes[0].nodes[tower].state, State::Alive),
             "tower should still be alive"
         );
     }
     w.tick((80, 30));
     assert!(
-        matches!(w.nodes[tower].state, State::Pwned { .. } | State::Dead),
+        matches!(w.meshes[0].nodes[tower].state, State::Pwned { .. } | State::Dead),
         "tower should be down after 3 hits"
     );
 }
@@ -890,7 +895,7 @@ fn diplomacy_pressure_escalates_to_cold_war_then_open_war() {
     };
     let mut w = World::new(1, (80, 30), cfg);
     // Two factions should be alive.
-    assert_eq!(w.c2_nodes.len(), 2);
+    assert_eq!(w.meshes[0].c2_nodes.len(), 2);
     // Push pressure past COLD_WAR_THRESHOLD and let the state
     // machine run one pass.
     w.bump_rivalry(0, 1, COLD_WAR_THRESHOLD);
@@ -921,10 +926,10 @@ fn defector_flips_faction_and_credits_intel() {
     let mut w = World::new(5, (80, 30), cfg);
     // Plant a single alive F0 node that's the only possible
     // defection candidate so we can assert its fate deterministically.
-    let target = w.nodes.len();
-    let mut n = Node::fresh((20, 15), Some(w.c2()), 0, Role::Relay, 1);
+    let target = w.meshes[0].nodes.len();
+    let mut n = Node::fresh((20, 15), Some(w.primary_c2), 0, Role::Relay, 1);
     n.faction = 0;
-    w.nodes.push(n);
+    w.meshes[0].nodes.push(n);
     let f1_intel_before = w.faction_stats[1].intel;
     let reward = w.cfg.defector_intel_reward;
     // roll_periodic returns false at tick 0, so advance one tick
@@ -933,13 +938,13 @@ fn defector_flips_faction_and_credits_intel() {
     w.maybe_defector();
     // Node should have flipped to F1 (the only rival with an
     // alive C2).
-    assert_eq!(w.nodes[target].faction, 1);
+    assert_eq!(w.meshes[0].nodes[target].faction, 1);
     // F1 should have received the intel reward.
     assert_eq!(w.faction_stats[1].intel, f1_intel_before + reward);
     // Parent should point at an alive F1 node (either the C2
     // or a same-faction sibling).
-    let parent = w.nodes[target].parent.expect("defector should have parent");
-    assert_eq!(w.nodes[parent].faction, 1);
+    let parent = w.meshes[0].nodes[target].parent.expect("defector should have parent");
+    assert_eq!(w.meshes[0].nodes[parent].faction, 1);
     // Mythic log fired.
     let logged = w
         .logs
@@ -956,14 +961,14 @@ fn ghost_packet_delivers_without_crediting_intel() {
     // Build c2 → a chain and park a ghost packet right at the
     // parent-end of the c2→a link so the next advance_packets
     // call drops it into C2.
-    let a = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
+    let a = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1));
     let path_ca: Vec<(i16, i16)> =
-        (w.nodes[w.c2()].pos.0..=10).map(|x| (x, 10)).collect();
+        (w.meshes[0].nodes[w.primary_c2].pos.0..=10).map(|x| (x, 10)).collect();
     let len_ca = path_ca.len() as u16;
-    w.links.push(Link {
-        a: w.c2(),
+    w.meshes[0].links.push(Link {
+        a: w.primary_c2,
         b: a,
         path: path_ca,
         drawn: len_ca,
@@ -979,14 +984,14 @@ fn ghost_packet_delivers_without_crediting_intel() {
     });
     let intel_before = w.faction_stats[0].intel;
     // Park a ghost packet at pos 0 — ready to drop into C2.
-    w.packets.push(Packet {
+    w.meshes[0].packets.push(Packet {
         link_id: 0,
         pos: 0,
         ghost: true,
     });
     w.advance_packets();
     // Packet should have been delivered (removed from the vec).
-    assert!(w.packets.is_empty());
+    assert!(w.meshes[0].packets.is_empty());
     // Intel should NOT have incremented — ghost packets skip the
     // reward path on C2 delivery.
     assert_eq!(w.faction_stats[0].intel, intel_before);
@@ -1095,7 +1100,7 @@ fn drought_tightens_effective_hot_link_while_active() {
     assert_eq!(w.effective_hot_link(&link), HOT_LINK);
     // Activate a drought and confirm the ceiling drops by the
     // configured penalty.
-    w.drought_until = w.tick + 100;
+    w.meshes[0].drought_until = w.tick + 100;
     assert!(w.is_droughted());
     assert_eq!(
         w.effective_hot_link(&link),
@@ -1136,11 +1141,11 @@ fn fission_splits_a_divergent_branch_into_new_faction() {
     // 50% threshold.
     let branch_id = 7u16;
     for x in 10..30 {
-        let mut n = Node::fresh((x, 12), Some(w.c2()), 0, Role::Defender, branch_id);
+        let mut n = Node::fresh((x, 12), Some(w.primary_c2), 0, Role::Defender, branch_id);
         n.faction = 0;
-        w.nodes.push(n);
+        w.meshes[0].nodes.push(n);
     }
-    let initial_c2_count = w.c2_nodes.len();
+    let initial_c2_count = w.meshes[0].c2_nodes.len();
     // Run the fission pass directly. Roll chance is 0.18 so we
     // may need multiple attempts; drive it deterministically by
     // looping up to a generous ceiling.
@@ -1152,18 +1157,18 @@ fn fission_splits_a_divergent_branch_into_new_faction() {
         }
     }
     assert!(split, "fission should have fired on a 20-defender Plague branch");
-    assert!(w.c2_nodes.len() > initial_c2_count);
+    assert!(w.meshes[0].c2_nodes.len() > initial_c2_count);
     // New faction should be Fortress (signature role = Defender).
-    let new_faction_id = (w.c2_nodes.len() - 1) as u8;
+    let new_faction_id = (w.meshes[0].c2_nodes.len() - 1) as u8;
     assert_eq!(w.personas[new_faction_id as usize], Persona::Fortress);
     // OpenWar relation should be live with high pressure.
     let rel = w.relation(0, new_faction_id);
     assert_eq!(rel.state, DiplomaticState::OpenWar);
     assert!(rel.pressure >= FISSION_INITIAL_PRESSURE);
     // The splinter faction's hub has C2 HP and no parent.
-    let hub = w.c2_nodes[new_faction_id as usize];
-    assert_eq!(w.nodes[hub].pwn_resist, C2_INITIAL_HP);
-    assert!(w.nodes[hub].parent.is_none());
+    let hub = w.meshes[0].c2_nodes[new_faction_id as usize];
+    assert_eq!(w.meshes[0].nodes[hub].pwn_resist, C2_INITIAL_HP);
+    assert!(w.meshes[0].nodes[hub].parent.is_none());
     // The war mythic log line should have fired.
     let fission_logged = w
         .logs
@@ -1188,16 +1193,16 @@ fn fission_ignores_opportunist_factions() {
     // any ideological persona, but Opportunist has no identity
     // to diverge from so fission should never fire.
     for x in 10..30 {
-        let mut n = Node::fresh((x, 12), Some(w.c2()), 0, Role::Defender, 9);
+        let mut n = Node::fresh((x, 12), Some(w.primary_c2), 0, Role::Defender, 9);
         n.faction = 0;
-        w.nodes.push(n);
+        w.meshes[0].nodes.push(n);
     }
-    let initial_c2_count = w.c2_nodes.len();
+    let initial_c2_count = w.meshes[0].c2_nodes.len();
     for _ in 0..500 {
         w.advance_fission();
     }
     assert_eq!(
-        w.c2_nodes.len(),
+        w.meshes[0].c2_nodes.len(),
         initial_c2_count,
         "Opportunist factions should never fission"
     );
@@ -1217,16 +1222,16 @@ fn fission_ignores_branches_below_size_threshold() {
     w.personas[0] = Persona::Plague;
     // Plant a 5-node divergent branch — below FISSION_MIN_BRANCH_SIZE.
     for x in 10..15 {
-        let mut n = Node::fresh((x, 12), Some(w.c2()), 0, Role::Defender, 3);
+        let mut n = Node::fresh((x, 12), Some(w.primary_c2), 0, Role::Defender, 3);
         n.faction = 0;
-        w.nodes.push(n);
+        w.meshes[0].nodes.push(n);
     }
-    let initial_c2_count = w.c2_nodes.len();
+    let initial_c2_count = w.meshes[0].c2_nodes.len();
     for _ in 0..500 {
         w.advance_fission();
     }
     assert_eq!(
-        w.c2_nodes.len(),
+        w.meshes[0].c2_nodes.len(),
         initial_c2_count,
         "branches below FISSION_MIN_BRANCH_SIZE should never fission"
     );
@@ -1243,10 +1248,10 @@ fn mercenary_auction_flips_unaffiliated_node_to_richest_bidder() {
     };
     let mut w = World::new(1, (80, 30), cfg);
     // Plant a mercenary node and give F1 enough intel to win.
-    let merc = w.nodes.len();
+    let merc = w.meshes[0].nodes.len();
     let mut n = Node::fresh((20, 15), None, 0, Role::Relay, 99);
     n.faction = MERCENARY_FACTION;
-    w.nodes.push(n);
+    w.meshes[0].nodes.push(n);
     w.faction_stats[0].intel = MERCENARY_MIN_BID_INTEL;
     w.faction_stats[1].intel = MERCENARY_MIN_BID_INTEL + 50;
     // Auction runs on a period cadence — advance tick to a
@@ -1254,7 +1259,7 @@ fn mercenary_auction_flips_unaffiliated_node_to_richest_bidder() {
     w.tick = MERCENARY_AUCTION_PERIOD;
     w.maybe_mercenary_auction();
     // Mercenary should have flipped to F1 (richer bidder).
-    assert_eq!(w.nodes[merc].faction, 1);
+    assert_eq!(w.meshes[0].nodes[merc].faction, 1);
     // F1 paid the bid cost.
     assert_eq!(
         w.faction_stats[1].intel,
@@ -1276,15 +1281,15 @@ fn extinction_triggers_reseed_after_silent_interval() {
         ..Config::default()
     };
     let mut w = World::new(7, (80, 30), cfg);
-    let initial_c2_count = w.c2_nodes.len();
+    let initial_c2_count = w.meshes[0].c2_nodes.len();
     // Kill every node so the mesh is fully extinct.
-    for n in w.nodes.iter_mut() {
+    for n in w.meshes[0].nodes.iter_mut() {
         n.state = State::Dead;
     }
     // First detection should flag extinction and log the mythic.
     w.check_extinction_and_reseed();
     assert!(
-        w.extinction_since_tick.is_some(),
+        w.meshes[0].extinction_since_tick.is_some(),
         "extinction should be detected on first all-dead check"
     );
     let extinction_logged = w
@@ -1293,18 +1298,18 @@ fn extinction_triggers_reseed_after_silent_interval() {
         .any(|(s, _)| s.starts_with("✦ MYTHIC ✦ EXTINCTION"));
     assert!(extinction_logged, "extinction mythic line should fire");
     // No reseed yet — cooldown hasn't elapsed.
-    assert_eq!(w.c2_nodes.len(), initial_c2_count);
+    assert_eq!(w.meshes[0].c2_nodes.len(), initial_c2_count);
     // Fast-forward past the cooldown and trigger the check again.
     w.tick = EXTINCTION_RESEED_DELAY_TICKS + 10;
     w.check_extinction_and_reseed();
     // A fresh cohort should now be appended and the timer cleared.
     assert!(
-        w.c2_nodes.len() > initial_c2_count,
+        w.meshes[0].c2_nodes.len() > initial_c2_count,
         "reseed should have appended fresh C2s: got {} (was {})",
-        w.c2_nodes.len(),
+        w.meshes[0].c2_nodes.len(),
         initial_c2_count
     );
-    assert!(w.extinction_since_tick.is_none());
+    assert!(w.meshes[0].extinction_since_tick.is_none());
     let reseed_logged = w
         .logs
         .iter()
@@ -1312,10 +1317,10 @@ fn extinction_triggers_reseed_after_silent_interval() {
     assert!(reseed_logged, "reseed mythic line should fire");
     // Reseeded C2s are alive, have C2_INITIAL_HP, and use fresh
     // faction ids beyond the original count.
-    let new_c2_id = w.c2_nodes.last().copied().unwrap();
-    assert!(matches!(w.nodes[new_c2_id].state, State::Alive));
-    assert_eq!(w.nodes[new_c2_id].pwn_resist, C2_INITIAL_HP);
-    assert!((w.nodes[new_c2_id].faction as usize) >= initial_c2_count);
+    let new_c2_id = w.meshes[0].c2_nodes.last().copied().unwrap();
+    assert!(matches!(w.meshes[0].nodes[new_c2_id].state, State::Alive));
+    assert_eq!(w.meshes[0].nodes[new_c2_id].pwn_resist, C2_INITIAL_HP);
+    assert!((w.meshes[0].nodes[new_c2_id].faction as usize) >= initial_c2_count);
     // Extinction cycle counter should have incremented.
     assert_eq!(w.extinction_cycles, 1);
 }
@@ -1338,7 +1343,7 @@ fn diplomacy_vassalage_derivation_is_correct_under_both_key_orderings() {
         ..Config::default()
     };
     let mut w = World::new(1, (80, 30), cfg);
-    assert_eq!(w.c2_nodes.len(), 3);
+    assert_eq!(w.meshes[0].c2_nodes.len(), 3);
     // Case A: overlord = F0 (the smaller id). Canonical key = (0, 2).
     w.relations.insert(
         (0, 2),
@@ -1417,23 +1422,23 @@ fn diplomacy_rebirth_produces_a_clean_relation_slate_for_the_new_faction() {
         },
     );
     // Kill F1's C2 directly (assimilation-style path).
-    let f1_c2 = w.c2_nodes[1];
-    w.nodes[f1_c2].state = State::Dead;
+    let f1_c2 = w.meshes[0].c2_nodes[1];
+    w.meshes[0].nodes[f1_c2].state = State::Dead;
     // Simulate rebirth by allocating a new faction slot — this
     // is what maybe_resurrect_c2_from_cascade does internally
     // when it picks a doomed node to promote.
-    let new_faction_id = w.c2_nodes.len() as u8;
+    let new_faction_id = w.meshes[0].c2_nodes.len() as u8;
     let new_branch = w.alloc_branch_id();
-    w.nodes.push(Node::fresh(
+    w.meshes[0].nodes.push(Node::fresh(
         (40, 20),
         None,
         0,
         Role::Relay,
         new_branch,
     ));
-    let new_c2 = w.nodes.len() - 1;
-    w.nodes[new_c2].faction = new_faction_id;
-    w.c2_nodes.push(new_c2);
+    let new_c2 = w.meshes[0].nodes.len() - 1;
+    w.meshes[0].nodes[new_c2].faction = new_faction_id;
+    w.meshes[0].c2_nodes.push(new_c2);
     w.faction_stats.push(FactionStats::default());
     w.personas.push(Persona::Opportunist);
     w.faction_colors.push(0);
@@ -1480,8 +1485,8 @@ fn diplomacy_vassalage_transfers_tribute_from_vassal_to_overlord() {
     );
     // Keep both factions "alive" for the sweep — they already
     // are from World::new, but make sure we haven't regressed.
-    assert!(matches!(w.nodes[w.c2_nodes[0]].state, State::Alive));
-    assert!(matches!(w.nodes[w.c2_nodes[1]].state, State::Alive));
+    assert!(matches!(w.meshes[0].nodes[w.meshes[0].c2_nodes[0]].state, State::Alive));
+    assert!(matches!(w.meshes[0].nodes[w.meshes[0].c2_nodes[1]].state, State::Alive));
     let intel_before = w.faction_stats[0].intel;
     w.advance_diplomacy();
     assert!(
@@ -1511,27 +1516,29 @@ fn diplomacy_vassalage_rebels_when_vassal_recovers() {
     // needs >= 70% of the overlord's count. Give F0 (overlord)
     // 10 alive children and F1 (vassal) 9 alive children so the
     // vassal sits at 90% of the overlord's size.
+    let c2_0 = w.meshes[0].c2_nodes[0];
+    let c2_1 = w.meshes[0].c2_nodes[1];
     for x in 15..25 {
-        w.nodes.push(Node::fresh(
+        w.meshes[0].nodes.push(Node::fresh(
             (x, 10),
-            Some(w.c2_nodes[0]),
+            Some(c2_0),
             0,
             Role::Relay,
             1,
         ));
-        let last = w.nodes.len() - 1;
-        w.nodes[last].faction = 0;
+        let last = w.meshes[0].nodes.len() - 1;
+        w.meshes[0].nodes[last].faction = 0;
     }
     for x in 15..24 {
-        w.nodes.push(Node::fresh(
+        w.meshes[0].nodes.push(Node::fresh(
             (x, 15),
-            Some(w.c2_nodes[1]),
+            Some(c2_1),
             0,
             Role::Relay,
             1,
         ));
-        let last = w.nodes.len() - 1;
-        w.nodes[last].faction = 1;
+        let last = w.meshes[0].nodes.len() - 1;
+        w.meshes[0].nodes[last].faction = 1;
     }
     w.relations.insert(
         (0, 1),
@@ -1573,8 +1580,8 @@ fn diplomacy_sweep_drops_relation_when_overlord_dies() {
     );
     // Kill F0's C2 directly — this is the assimilation-style
     // path that bypasses the cascade's inline purge.
-    let c2_0 = w.c2_nodes[0];
-    w.nodes[c2_0].state = State::Dead;
+    let c2_0 = w.meshes[0].c2_nodes[0];
+    w.meshes[0].nodes[c2_0].state = State::Dead;
     w.advance_diplomacy();
     assert!(
         !w.relations.contains_key(&(0, 1)),
@@ -1600,7 +1607,7 @@ fn diplomacy_sweep_drops_vassalage_when_overlord_dies_but_both_endpoints_live() 
         ..Config::default()
     };
     let mut w = World::new(1, (80, 30), cfg);
-    assert_eq!(w.c2_nodes.len(), 3);
+    assert_eq!(w.meshes[0].c2_nodes.len(), 3);
     // Plant a Vassalage with F2 as overlord, canonical key (0, 1).
     // This is an intentionally malformed state to test the
     // defensive branch — in practice Vassalage always keys one
@@ -1616,8 +1623,8 @@ fn diplomacy_sweep_drops_vassalage_when_overlord_dies_but_both_endpoints_live() 
         },
     );
     // Kill F2 (the overlord).
-    let c2_2 = w.c2_nodes[2];
-    w.nodes[c2_2].state = State::Dead;
+    let c2_2 = w.meshes[0].c2_nodes[2];
+    w.meshes[0].nodes[c2_2].state = State::Dead;
     w.advance_diplomacy();
     assert!(
         !w.relations.contains_key(&(0, 1)),
@@ -1741,7 +1748,7 @@ fn c2_count_randomized_within_range() {
             ..Config::default()
         };
         let w = World::new(seed, (120, 30), cfg);
-        let n = w.c2_nodes.len();
+        let n = w.meshes[0].c2_nodes.len();
         assert!((2..=4).contains(&n), "seed {} gave {} c2s", seed, n);
         counts.insert(n);
     }
@@ -1763,13 +1770,13 @@ fn large_cascade_can_resurrect_a_new_c2() {
     // Build a short chain c2 -> a -> b -> c, where c is the
     // cascade root. schedule_subtree_death(c) should doom c and
     // roll the resurrection (threshold=3, chance=1.0 = guaranteed).
-    let a = w.nodes.len();
-    w.nodes
-        .push(Node::fresh((10, 10), Some(w.c2()), 0, Role::Relay, 1));
-    let b = w.nodes.len();
-    w.nodes.push(Node::fresh((11, 10), Some(a), 0, Role::Relay, 1));
-    let c = w.nodes.len();
-    w.nodes.push(Node::fresh((12, 10), Some(b), 0, Role::Relay, 1));
+    let a = w.meshes[0].nodes.len();
+    w.meshes[0].nodes
+        .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1));
+    let b = w.meshes[0].nodes.len();
+    w.meshes[0].nodes.push(Node::fresh((11, 10), Some(a), 0, Role::Relay, 1));
+    let c = w.meshes[0].nodes.len();
+    w.meshes[0].nodes.push(Node::fresh((12, 10), Some(b), 0, Role::Relay, 1));
     // Full parent-link chain so compute_cascade can walk it.
     let make_path = |x0: i16, x1: i16| -> Vec<(i16, i16)> {
         (x0..=x1).map(|x| (x, 10)).collect()
@@ -1777,7 +1784,7 @@ fn large_cascade_can_resurrect_a_new_c2() {
     let push_link = |w: &mut World, a: usize, b: usize, x0: i16, x1: i16| {
         let path = make_path(x0, x1);
         let len = path.len() as u16;
-        w.links.push(Link {
+        w.meshes[0].links.push(Link {
             a,
             b,
             path,
@@ -1793,15 +1800,15 @@ fn large_cascade_can_resurrect_a_new_c2() {
             latent: false,
         });
     };
-    let c2 = w.c2();
+    let c2 = w.primary_c2;
     push_link(&mut w, c2, a, 0, 10);
     push_link(&mut w, a, b, 10, 11);
     push_link(&mut w, b, c, 11, 12);
 
-    let before = w.c2_nodes.len();
+    let before = w.meshes[0].c2_nodes.len();
     // Schedule the whole subtree rooted at `a` (a, b, c → 3 nodes).
     w.schedule_subtree_death(a, 1.0);
-    let after = w.c2_nodes.len();
+    let after = w.meshes[0].c2_nodes.len();
     assert_eq!(
         after,
         before + 1,
@@ -1810,9 +1817,9 @@ fn large_cascade_can_resurrect_a_new_c2() {
         after
     );
     // The resurrected C2 should be parentless and alive.
-    let new_c2 = *w.c2_nodes.last().unwrap();
-    assert!(matches!(w.nodes[new_c2].state, State::Alive));
-    assert!(w.nodes[new_c2].parent.is_none());
+    let new_c2 = *w.meshes[0].c2_nodes.last().unwrap();
+    assert!(matches!(w.meshes[0].nodes[new_c2].state, State::Alive));
+    assert!(w.meshes[0].nodes[new_c2].parent.is_none());
 }
 
 #[test]
@@ -1821,5 +1828,5 @@ fn tick_runs_without_panic_and_grows() {
     for _ in 0..500 {
         w.tick((80, 24));
     }
-    assert!(w.nodes.len() > 1);
+    assert!(w.meshes[0].nodes.len() > 1);
 }

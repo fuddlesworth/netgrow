@@ -18,23 +18,24 @@ use super::{
 
 impl World {
     pub(super) fn advance_patch_waves(&mut self) {
-        if self.patch_waves.is_empty() {
+        if self.meshes[0].patch_waves.is_empty() {
             return;
         }
         let max_r = self.cfg.patch_wave_radius;
         let immunity_ticks = self.era_immunity_ticks();
-        for wave in self.patch_waves.iter_mut() {
+        for wave in self.meshes[0].patch_waves.iter_mut() {
             wave.radius += 1;
         }
-        // Snapshot wave geometry so we can mutably borrow self.nodes.
+        // Snapshot wave geometry so we can mutably borrow self.meshes[0].nodes.
         let geo: Vec<(i16, i16, i16)> = self
+            .meshes[0]
             .patch_waves
             .iter()
             .map(|w| (w.origin.0, w.origin.1, w.radius))
             .collect();
         let mut cured: Vec<((i16, i16), u8)> = Vec::new();
         let mut promoted: Vec<((i16, i16), u8, u8)> = Vec::new();
-        for n in self.nodes.iter_mut() {
+        for n in self.meshes[0].nodes.iter_mut() {
             if n.infection.is_none() {
                 continue;
             }
@@ -79,7 +80,7 @@ impl World {
                 }
             }
         }
-        self.patch_waves.retain(|w| w.radius <= max_r);
+        self.meshes[0].patch_waves.retain(|w| w.radius <= max_r);
         for (pos, faction) in cured {
             self.log_node(pos, "cured");
             if let Some(s) = self.faction_stats.get_mut(faction as usize) {
@@ -105,7 +106,7 @@ impl World {
         // Pass 1: stage advancement + terminal expiry collection.
         let mut to_pwn: Vec<NodeId> = Vec::new();
         let mut newly_active: Vec<(i16, i16)> = Vec::new();
-        for (id, n) in self.nodes.iter_mut().enumerate() {
+        for (id, n) in self.meshes[0].nodes.iter_mut().enumerate() {
             if !matches!(n.state, State::Alive) {
                 continue;
             }
@@ -155,11 +156,11 @@ impl World {
         // in the same tick.
         let spread_rate = self.cfg.virus_spread_rate * self.era_rules.virus_spread_mult;
         let cure_resist = self.cfg.virus_cure_resist;
-        let c2_set: HashSet<NodeId> = self.c2_nodes.iter().copied().collect();
+        let c2_set: HashSet<NodeId> = self.meshes[0].c2_nodes.iter().copied().collect();
         let adj = self.live_adjacency();
         let mut newly_infected: Vec<(NodeId, u8)> = Vec::new();
         if spread_rate > 0.0 {
-            for (id, n) in self.nodes.iter().enumerate() {
+            for (id, n) in self.meshes[0].nodes.iter().enumerate() {
                 if c2_set.contains(&id) {
                     continue;
                 }
@@ -177,7 +178,7 @@ impl World {
                 let mut tally: [u32; STRAIN_COUNT] = [0; STRAIN_COUNT];
                 let mut infected_count: u32 = 0;
                 for &m in neighbors {
-                    if let Some(inf) = self.nodes[m].infection {
+                    if let Some(inf) = self.meshes[0].nodes[m].infection {
                         if !matches!(inf.stage, InfectionStage::Incubating) {
                             tally[(inf.strain as usize) % STRAIN_COUNT] += 1;
                             infected_count += 1;
@@ -206,7 +207,7 @@ impl World {
             }
         }
         for (id, strain) in newly_infected {
-            self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
+            self.meshes[0].nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
         }
 
         // Strain ecology: when multiple strains coexist, the
@@ -216,7 +217,7 @@ impl World {
         // there's a ≥2x strength gap so minor diversity isn't
         // squashed out immediately.
         let mut strain_strength: [u32; STRAIN_COUNT] = [0; STRAIN_COUNT];
-        for n in &self.nodes {
+        for n in &self.meshes[0].nodes {
             if !matches!(n.state, State::Alive) {
                 continue;
             }
@@ -229,7 +230,7 @@ impl World {
         let max_strength = strain_strength.iter().copied().max().unwrap_or(0);
         if max_strength >= 3 {
             let mut outcompeted: Vec<NodeId> = Vec::new();
-            for (id, n) in self.nodes.iter().enumerate() {
+            for (id, n) in self.meshes[0].nodes.iter().enumerate() {
                 let Some(inf) = n.infection else {
                     continue;
                 };
@@ -251,15 +252,16 @@ impl World {
                 }
             }
             for id in outcompeted {
-                let pos = self.nodes[id].pos;
+                let pos = self.meshes[0].nodes[id].pos;
                 let strain = self
+                    .meshes[0]
                     .nodes[id]
                     .infection
                     .map(|i| i.strain)
                     .unwrap_or(0);
-                self.nodes[id].infection = None;
-                self.nodes[id].immunity_strain = Some(strain);
-                self.nodes[id].immunity_ticks = self.era_immunity_ticks();
+                self.meshes[0].nodes[id].infection = None;
+                self.meshes[0].nodes[id].immunity_strain = Some(strain);
+                self.meshes[0].nodes[id].immunity_ticks = self.era_immunity_ticks();
                 let name = self.strain_name(strain);
                 self.log_node(pos, &format!("{} outcompeted", name));
             }
@@ -268,8 +270,8 @@ impl World {
         // Terminal nodes crash the host — route into the loss/cascade pipeline.
         let pwned_flash = self.cfg.pwned_flash_ticks;
         for id in to_pwn {
-            let pos = self.nodes[id].pos;
-            let node = &mut self.nodes[id];
+            let pos = self.meshes[0].nodes[id].pos;
+            let node = &mut self.meshes[0].nodes[id];
             node.infection = None;
             node.state = State::Pwned {
                 ticks_left: pwned_flash,
@@ -285,7 +287,7 @@ impl World {
         // STRAIN_COUNT strains is simultaneously alive in the mesh.
         if !self.mythic_pandemic_seen {
             let mut seen = [false; STRAIN_COUNT];
-            for n in &self.nodes {
+            for n in &self.meshes[0].nodes {
                 if let Some(inf) = n.infection {
                     seen[(inf.strain as usize) % STRAIN_COUNT] = true;
                 }
@@ -301,7 +303,7 @@ impl World {
         if self.cfg.virus_seed_rate <= 0.0 {
             return;
         }
-        if self.nodes.iter().any(|n| n.infection.is_some()) {
+        if self.meshes[0].nodes.iter().any(|n| n.infection.is_some()) {
             return;
         }
         // Plague-persona factions seed about twice as fast as the
@@ -328,6 +330,7 @@ impl World {
         // a visible effect — Plague factions become outbreak
         // epicenters more often.
         let candidates: Vec<NodeId> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -355,14 +358,14 @@ impl World {
         let is_ransom = !is_carrier
             && self.cfg.ransom_chance > 0.0
             && self.rng.gen_bool(self.cfg.ransom_chance as f64);
-        self.nodes[id].infection = Some(if is_carrier {
+        self.meshes[0].nodes[id].infection = Some(if is_carrier {
             Infection::seeded_carrier(strain, cure_resist)
         } else if is_ransom {
             Infection::seeded_ransom(strain, cure_resist)
         } else {
             Infection::seeded(strain, cure_resist)
         });
-        let pos = self.nodes[id].pos;
+        let pos = self.meshes[0].nodes[id].pos;
         let (a, b) = octet_pair(pos);
         let name = self.strain_name(strain);
         let label = if is_carrier {
@@ -384,6 +387,7 @@ impl World {
         let now = self.tick;
         // Collect eligible candidates first to avoid aliasing rng borrow.
         let candidates: Vec<NodeId> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -410,7 +414,7 @@ impl World {
             if !self.rng.gen_bool(rate as f64) {
                 continue;
             }
-            let current = self.nodes[id].role;
+            let current = self.meshes[0].nodes[id].role;
             let choices: [Role; 3] = match current {
                 Role::Relay => [Role::Scanner, Role::Exfil, Role::Relay],
                 Role::Scanner => [Role::Relay, Role::Exfil, Role::Scanner],
@@ -426,9 +430,9 @@ impl World {
             };
             // Pick uniformly from the first two (the third is the sentinel).
             let new_role = choices[self.rng.gen_range(0..2)];
-            let pos = self.nodes[id].pos;
-            self.nodes[id].role = new_role;
-            self.nodes[id].mutated_flash = 6;
+            let pos = self.meshes[0].nodes[id].pos;
+            self.meshes[0].nodes[id].role = new_role;
+            self.meshes[0].nodes[id].mutated_flash = 6;
             self.log_node(pos, &format!("mutated → {}", new_role.display_name()));
         }
     }
@@ -437,6 +441,7 @@ impl World {
         // Need enough alive nodes before the roll even becomes
         // meaningful — preserve the existing ZERO_DAY_MIN_ALIVE floor.
         let alive_count = self
+            .meshes[0]
             .nodes
             .iter()
             .filter(|n| matches!(n.state, State::Alive))
@@ -466,6 +471,7 @@ impl World {
         let count = self.rng.gen_range(ZERO_DAY_OUTBREAK_MIN..=ZERO_DAY_OUTBREAK_MAX);
         let cure_resist = self.cfg.virus_cure_resist.saturating_mul(2);
         let mut candidates: Vec<NodeId> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -489,7 +495,7 @@ impl World {
         candidates.shuffle(&mut self.rng);
         let take = (count as usize).min(candidates.len());
         for &id in candidates.iter().take(take) {
-            self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
+            self.meshes[0].nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
         }
         let name = self.strain_name(strain);
         self.push_log(format!("ZERO-DAY: {} outbreak ({})", name, take));
@@ -497,7 +503,7 @@ impl World {
 
     fn zero_day_emergency_patch(&mut self) {
         let mut cleared = 0u32;
-        for n in self.nodes.iter_mut() {
+        for n in self.meshes[0].nodes.iter_mut() {
             if let Some(inf) = n.infection {
                 if matches!(inf.stage, InfectionStage::Incubating) {
                     n.infection = None;
@@ -515,7 +521,7 @@ impl World {
         // One-shot boost: raise cure_resist on any active infection so the
         // next patch wave won't clear them quite as fast. Mostly flavor.
         let mut boosted = 0u32;
-        for n in self.nodes.iter_mut() {
+        for n in self.meshes[0].nodes.iter_mut() {
             if let Some(inf) = n.infection.as_mut() {
                 inf.cure_resist = inf.cure_resist.saturating_add(2);
                 boosted += 1;
@@ -536,6 +542,7 @@ impl World {
             return None;
         }
         let candidates: Vec<NodeId> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -557,8 +564,8 @@ impl World {
         let id = candidates[self.rng.gen_range(0..candidates.len())];
         let strain = self.rng.gen_range(0..STRAIN_COUNT as u8);
         let cure_resist = self.cfg.virus_cure_resist;
-        self.nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
-        let pos = self.nodes[id].pos;
+        self.meshes[0].nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
+        let pos = self.meshes[0].nodes[id].pos;
         let (a, b) = octet_pair(pos);
         let name = self.strain_name(strain);
         self.push_log(format!("INJECTED {} @ 10.0.{}.{}", name, a, b));

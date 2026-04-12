@@ -14,7 +14,7 @@ use super::{
 
 impl World {
     pub(super) fn advance_role_cooldowns(&mut self) {
-        for n in self.nodes.iter_mut() {
+        for n in self.meshes[0].nodes.iter_mut() {
             if n.role_cooldown > 0 {
                 n.role_cooldown -= 1;
             }
@@ -46,6 +46,7 @@ impl World {
         let base_period = self.cfg.scanner_ping_period;
         let now = self.tick;
         let scanner_ids: Vec<NodeId> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -75,20 +76,20 @@ impl World {
             // Synergy: a scanner adjacent to a Beacon doubles its
             // pulse duration so the linked-up cluster reads as a
             // brighter scan zone for twice as long.
-            let pos = self.nodes[id].pos;
+            let pos = self.meshes[0].nodes[id].pos;
             let beacon_boost = self.has_neighbor_role(pos, Role::Beacon);
             let pulse_ticks = if beacon_boost {
                 SCANNER_PULSE_TICKS.saturating_mul(2)
             } else {
                 SCANNER_PULSE_TICKS
             };
-            let faction = self.nodes[id].faction;
+            let faction = self.meshes[0].nodes[id].faction;
             // Aggressor Tier 2 scales scanner period down, so
             // recon fires more often for tech-advanced factions.
             let period = ((base_period as f32)
                 * self.tech_effects(faction).scanner_period_mult)
             .max(1.0) as u16;
-            let n = &mut self.nodes[id];
+            let n = &mut self.meshes[0].nodes[id];
             n.role_cooldown = period;
             n.last_ping_tick = now;
             n.last_ping_dir = Some((dx as i8, dy as i8));
@@ -106,7 +107,7 @@ impl World {
                 // Collect candidate enemy positions for this
                 // scanner and pick one.
                 let mut cands: Vec<(i16, i16, u8)> = Vec::new();
-                for n in &self.nodes {
+                for n in &self.meshes[0].nodes {
                     if !matches!(n.state, State::Alive) {
                         continue;
                     }
@@ -137,7 +138,7 @@ impl World {
         // up a chain of connected proxies.
         if !fired_positions.is_empty() {
             let radius = self.cfg.proxy_radius;
-            for n in self.nodes.iter_mut() {
+            for n in self.meshes[0].nodes.iter_mut() {
                 if !matches!(n.state, State::Alive) || n.role != Role::Proxy {
                     continue;
                 }
@@ -158,6 +159,7 @@ impl World {
             .max(1.0) as u16;
         let inbound = self.build_inbound_links();
         let exfil_ids: Vec<NodeId> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -176,28 +178,34 @@ impl World {
             .collect();
         for id in exfil_ids {
             if let Some(&link_id) = inbound.get(&id) {
-                let link = &self.links[link_id];
-                if link.path.is_empty() {
-                    self.nodes[id].role_cooldown = period;
+                // Snapshot link fields up-front so we can mutate
+                // self.meshes[0].nodes below without a split-borrow
+                // conflict on self.meshes.
+                let (link_empty, link_path_len, link_load, link_quarantined) = {
+                    let link = &self.meshes[0].links[link_id];
+                    (link.path.is_empty(), link.path.len(), link.load, link.quarantined)
+                };
+                if link_empty {
+                    self.meshes[0].nodes[id].role_cooldown = period;
                     continue;
                 }
                 // Synergy: an exfil adjacent to a Router gets a much
                 // higher backpressure ceiling — its packets can ride
                 // up to HOT_LINK before throttling instead of WARM.
                 // Rewards spawning routers next to busy exfils.
-                let exfil_pos = self.nodes[id].pos;
+                let exfil_pos = self.meshes[0].nodes[id].pos;
                 let router_adjacent =
                     self.has_neighbor_role(exfil_pos, Role::Router);
                 let pressure_ceiling = if router_adjacent { HOT_LINK } else { WARM_LINK };
-                if link.load >= pressure_ceiling || link.quarantined > 0 {
+                if link_load >= pressure_ceiling || link_quarantined > 0 {
                     // Quick-retry backpressure: shorter than a full
                     // period so the exfil resumes firing as soon as
                     // the link cools, instead of sitting idle while
                     // the traffic has long since drained.
-                    self.nodes[id].role_cooldown = (period / 3).max(1);
+                    self.meshes[0].nodes[id].role_cooldown = (period / 3).max(1);
                     continue;
                 }
-                self.nodes[id].role_cooldown = period;
+                self.meshes[0].nodes[id].role_cooldown = period;
                 // Ghost-packet roll: Opportunist and Plague
                 // exfils occasionally emit a decoy packet with
                 // no payload. Adds load and clogs router caches
@@ -205,7 +213,7 @@ impl World {
                 // Rolled per fire so a busy exfil produces a
                 // steady stream of ghosts without drowning the
                 // real traffic channel.
-                let faction = self.nodes[id].faction;
+                let faction = self.meshes[0].nodes[id].faction;
                 let persona = self
                     .personas
                     .get(faction as usize)
@@ -217,13 +225,13 @@ impl World {
                     _ => 0.0,
                 };
                 let is_ghost = ghost_chance > 0.0 && self.rng.gen_bool(ghost_chance);
-                self.packets.push(Packet {
+                self.meshes[0].packets.push(Packet {
                     link_id,
-                    pos: (link.path.len() - 1) as u16,
+                    pos: (link_path_len - 1) as u16,
                     ghost: is_ghost,
                 });
             } else {
-                self.nodes[id].role_cooldown = period;
+                self.meshes[0].nodes[id].role_cooldown = period;
             }
         }
     }
@@ -238,6 +246,7 @@ impl World {
         let period = self.cfg.scanner_ping_period; // reuse the scanner timer
         let pwned_flash = self.cfg.pwned_flash_ticks;
         let hunters: Vec<NodeId> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -257,16 +266,16 @@ impl World {
         }
         // Build pos → id map once so neighbor lookup is O(neighbors).
         let mut pos_to_id: std::collections::HashMap<(i16, i16), NodeId> =
-            std::collections::HashMap::with_capacity(self.nodes.len());
-        for (i, n) in self.nodes.iter().enumerate() {
+            std::collections::HashMap::with_capacity(self.meshes[0].nodes.len());
+        for (i, n) in self.meshes[0].nodes.iter().enumerate() {
             if matches!(n.state, State::Alive) {
                 pos_to_id.insert(n.pos, i);
             }
         }
         let mut kills: Vec<(NodeId, (i16, i16))> = Vec::new();
         for hid in hunters {
-            self.nodes[hid].role_cooldown = period;
-            let (hpos, hfaction) = (self.nodes[hid].pos, self.nodes[hid].faction);
+            self.meshes[0].nodes[hid].role_cooldown = period;
+            let (hpos, hfaction) = (self.meshes[0].nodes[hid].pos, self.meshes[0].nodes[hid].faction);
             let mut target: Option<NodeId> = None;
             'outer: for dy in -1i16..=1 {
                 for dx in -1i16..=1 {
@@ -277,7 +286,7 @@ impl World {
                     let Some(&nid) = pos_to_id.get(&np) else {
                         continue;
                     };
-                    let n = &self.nodes[nid];
+                    let n = &self.meshes[0].nodes[nid];
                     if n.faction != hfaction {
                         continue;
                     }
@@ -294,12 +303,12 @@ impl World {
                 }
             }
             if let Some(tid) = target {
-                let pos = self.nodes[tid].pos;
-                self.nodes[tid].infection = None;
-                self.nodes[tid].state = State::Pwned {
+                let pos = self.meshes[0].nodes[tid].pos;
+                self.meshes[0].nodes[tid].infection = None;
+                self.meshes[0].nodes[tid].state = State::Pwned {
                     ticks_left: pwned_flash,
                 };
-                self.nodes[hid].scan_pulse = 6;
+                self.meshes[0].nodes[hid].scan_pulse = 6;
                 kills.push((tid, pos));
             }
         }
@@ -314,6 +323,7 @@ impl World {
         let immunity_ticks = self.era_immunity_ticks();
         // Active defenders ready to pulse this tick.
         let defenders: Vec<(NodeId, (i16, i16))> = self
+            .meshes[0]
             .nodes
             .iter()
             .enumerate()
@@ -339,13 +349,13 @@ impl World {
             // Fortress Tier 2 stretches this defender's effective
             // cure radius so fortified factions feel decisively
             // more antiviral as they tech up.
-            let faction = self.nodes[id].faction;
+            let faction = self.meshes[0].nodes[id].faction;
             let radius = base_radius + self.tech_effects(faction).defender_radius_bonus;
-            self.nodes[id].role_cooldown = period;
-            self.nodes[id].pulse = 2;
+            self.meshes[0].nodes[id].role_cooldown = period;
+            self.meshes[0].nodes[id].pulse = 2;
             // Scan for infected neighbors within radius and decrement
             // their cure_resist; clear infections that drop to zero.
-            for n in self.nodes.iter_mut() {
+            for n in self.meshes[0].nodes.iter_mut() {
                 let Some(inf) = n.infection.as_mut() else {
                     continue;
                 };
@@ -384,6 +394,7 @@ impl World {
                 continue;
             }
             let outgoing: Vec<(usize, bool)> = self
+                .meshes[0]
                 .links
                 .iter()
                 .enumerate()
@@ -404,19 +415,19 @@ impl World {
                 continue;
             }
             let (link_id, from_a) = outgoing[self.rng.gen_range(0..outgoing.len())];
-            let len = self.links[link_id].path.len();
+            let len = self.meshes[0].links[link_id].path.len();
             if len < 2 {
                 continue;
             }
             let pos = if from_a { 1 } else { (len - 2) as u16 };
-            self.worms.push(Worm {
+            self.meshes[0].worms.push(Worm {
                 link_id,
                 pos,
                 outbound_from_a: from_a,
                 strain: 0,
                 is_antibody: true,
             });
-            let dpos = self.nodes[did].pos;
+            let dpos = self.meshes[0].nodes[did].pos;
             self.log_node(dpos, "antibody launched");
         }
     }

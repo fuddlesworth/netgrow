@@ -424,8 +424,8 @@ fn main() -> io::Result<()> {
         ),
         format!(
             "> spawning {} c2 {} [ok]",
-            world.c2_nodes.len(),
-            if world.c2_nodes.len() == 1 { "node" } else { "nodes" }
+            world.meshes[0].c2_nodes.len(),
+            if world.meshes[0].c2_nodes.len() == 1 { "node" } else { "nodes" }
         ),
         format!(
             "> era :: {} [ok]",
