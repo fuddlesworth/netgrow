@@ -2870,14 +2870,30 @@ impl<'a> Widget for MeshWidget<'a> {
             put(buf, area, (pos.0 + 1, pos.1 + 1), "┘", bracket_style);
         }
 
-        // Spectral view: walk every cell in the rendered area
-        // and fold its fg toward the ghost color, stripping BOLD
-        // so live glyphs dim and ghost tombstones stand out.
-        // Dead-node glyphs already render in their ghost hue so
-        // this pass lets them read as the "bright layer" while
-        // everything else recedes.
+        // Spectral view: invert the visual hierarchy so the
+        // mesh's HISTORY is the dominant layer and the living
+        // mesh recedes into shadow. Two passes:
+        //
+        // 1. Ghost/dead glyphs (†, ·, cells already in the ghost
+        //    palette color) get BOOSTED to bright accent + BOLD
+        //    so tombstones, legendary remnants, and decayed link
+        //    echoes pop out of the background.
+        //
+        // 2. Everything else (alive nodes, links, packets) gets
+        //    replaced with a uniform dim dot · in a very dark
+        //    color so the living mesh reads as a faint underlay,
+        //    not the focus. The role glyph is stripped — you
+        //    can't tell a Scanner from a Relay in spectral mode,
+        //    only that something's alive there.
+        //
+        // The result: long-dead arcs of the mesh glow while the
+        // active sim is barely visible. Good for studying where
+        // factions grew, where they died, and which routes
+        // carried traffic.
         if matches!(self.view, ViewMode::Spectral) {
             let ghost = theme().ghost;
+            let bright = theme().accent;
+            let dark = Color::DarkGray;
             for y in area.y..area.bottom() {
                 for x in area.x..area.right() {
                     if let Some(cell) = buf.cell_mut((x, y)) {
@@ -2885,18 +2901,33 @@ impl<'a> Widget for MeshWidget<'a> {
                         if sym == " " {
                             continue;
                         }
-                        // Skip cells already in the ghost color —
-                        // those are the dead tombstones / decayed
-                        // links we want to preserve at full
-                        // brightness.
                         let style = cell.style();
+                        // Ghost-colored cells = history layer →
+                        // boost to bright accent with BOLD.
                         if style.fg == Some(ghost) {
-                            continue;
+                            cell.set_style(
+                                Style::default()
+                                    .fg(bright)
+                                    .add_modifier(Modifier::BOLD),
+                            );
+                        } else if sym == "†" {
+                            // Legendary tombstones might use
+                            // accent rather than ghost — boost
+                            // them too.
+                            cell.set_style(
+                                Style::default()
+                                    .fg(bright)
+                                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                            );
+                        } else {
+                            // Alive content → dim dot.
+                            cell.set_symbol("·");
+                            cell.set_style(
+                                Style::default()
+                                    .fg(dark)
+                                    .add_modifier(Modifier::DIM),
+                            );
                         }
-                        let dimmed = Style::default()
-                            .fg(ghost)
-                            .add_modifier(Modifier::DIM);
-                        cell.set_style(dimmed);
                     }
                 }
             }
