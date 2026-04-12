@@ -1181,11 +1181,30 @@ fn factions_block(world: &World) -> Paragraph<'static> {
                 format!("{}{}", sign, abs)
             }
         };
+        // Home-layer indicator: a 1-char suffix showing where the
+        // faction was born. "s" = surface, "u" = undernet,
+        // "o" = orbital. Dim so it doesn't compete with the
+        // faction hue but readable when you're looking for it.
+        let home_mesh = world
+            .faction_home_mesh
+            .get(i)
+            .copied()
+            .unwrap_or(0);
+        let layer_tag = match home_mesh {
+            0 => "s",
+            1 => "u",
+            2 => "o",
+            _ => "?",
+        };
         lines.push(Line::from(vec![
             Span::raw(" "),
             Span::styled(
                 format!("F{}", i),
                 Style::default().fg(hue).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                layer_tag.to_string(),
+                Style::default().fg(theme().ghost),
             ),
             Span::raw(" "),
             Span::styled(
