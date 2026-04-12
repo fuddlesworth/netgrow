@@ -390,7 +390,7 @@ impl World {
         }
         let idx = self.rng.gen_range(0..candidates.len());
         let reborn = candidates.swap_remove(idx);
-        let new_faction = self.meshes[0].c2_nodes.len() as u8;
+        let new_faction = self.faction_stats.len() as u8;
         let new_branch = self.alloc_branch_id();
         let pos = self.meshes[0].nodes[reborn].pos;
         // Cancel the pending death and reset the node to a fresh C2

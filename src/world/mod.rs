@@ -449,6 +449,19 @@ impl World {
         self.meshes[0].c2_nodes.contains(&id)
     }
 
+    /// True if the given faction has at least one alive C2 on
+    /// any mesh. Used by sweep_stale_relations, syndicate vote,
+    /// defector, etc. to determine whether a faction is still
+    /// operational across the whole world.
+    pub fn is_faction_alive(&self, faction: u8) -> bool {
+        self.meshes.iter().any(|m| {
+            m.c2_nodes.iter().any(|&cid| {
+                m.nodes[cid].faction == faction
+                    && matches!(m.nodes[cid].state, State::Alive)
+            })
+        })
+    }
+
     /// Push one sample of each faction's alive-node count into its
     /// history ring, plus one sample of the total alive count into
     /// the activity history window.
@@ -661,7 +674,8 @@ impl World {
                 // Already wiped out — nothing to burn.
                 continue;
             }
-            // Find the faction's C2 node (if any still alive).
+            // Find the faction's C2 node on the surface mesh.
+            // Scorched-earth only fires on mesh 0 for now.
             let fid = fid_usize as u8;
             let c2 = self
                 .meshes[0]
@@ -669,8 +683,8 @@ impl World {
                 .iter()
                 .copied()
                 .find(|&id| {
-                    matches!(self.meshes[0].nodes[id].state, State::Alive)
-                        && self.meshes[0].nodes[id].faction == fid
+                    self.meshes[0].nodes[id].faction == fid
+                        && matches!(self.meshes[0].nodes[id].state, State::Alive)
                 });
             if let Some(c2_id) = c2 {
                 eligible.push((fid, c2_id));
@@ -745,10 +759,12 @@ impl World {
     /// dominance checks and by `advance_diplomacy`'s trade rolls.
     fn faction_alive_counts(&self) -> Vec<u32> {
         let mut counts = vec![0u32; self.faction_stats.len()];
-        for n in &self.meshes[0].nodes {
-            if matches!(n.state, State::Alive) {
-                if let Some(slot) = counts.get_mut(n.faction as usize) {
-                    *slot += 1;
+        for mesh in &self.meshes {
+            for n in &mesh.nodes {
+                if matches!(n.state, State::Alive) {
+                    if let Some(slot) = counts.get_mut(n.faction as usize) {
+                        *slot += 1;
+                    }
                 }
             }
         }
@@ -1129,7 +1145,7 @@ impl World {
             .filter(|(_, n)| *n > 0)
             .map(|(p, _)| *p)
             .unwrap_or(Persona::Opportunist);
-        let new_faction = self.meshes[0].c2_nodes.len() as u8;
+        let new_faction = self.faction_stats.len() as u8;
         let new_branch = self.alloc_branch_id();
         // Cut the hub's old parent chain and drop any link that
         // connected hub to its previous parent. The rest of the
@@ -1300,7 +1316,7 @@ impl World {
         let palette_len = crate::theme::theme().faction_palette.len().max(1);
         let mut spawned = 0u32;
         for pos in chosen_positions {
-            let new_faction = self.meshes[0].c2_nodes.len() as u8;
+            let new_faction = self.faction_stats.len() as u8;
             let new_branch = self.alloc_branch_id();
             let mut node = Node::fresh(pos, None, self.tick, Role::Relay, new_branch);
             node.faction = new_faction;
@@ -1341,7 +1357,7 @@ impl World {
     /// method was one 250-line block with tangled early-exit
     /// paths that masked a `return`-based control-flow bug.
     fn advance_diplomacy(&mut self) {
-        let faction_count = self.meshes[0].c2_nodes.len() as u8;
+        let faction_count = self.faction_stats.len() as u8;
         if faction_count < 2 {
             return;
         }
@@ -1357,23 +1373,26 @@ impl World {
     /// deaths, but assimilation (which flips C2s to Dead directly)
     /// and any future path rely on this safety sweep.
     fn sweep_stale_relations(&mut self) {
-        let alive_c2: Vec<bool> = self
-            .meshes[0]
-            .c2_nodes
-            .iter()
-            .map(|&id| matches!(self.meshes[0].nodes[id].state, State::Alive))
-            .collect();
-        // Faction id must equal `c2_nodes` index — asserted in
-        // debug builds only, since every call site currently
-        // preserves this invariant and the runtime cost matters
-        // on the diplomacy hot path.
-        debug_assert_eq!(
-            alive_c2.len(),
-            self.meshes[0].c2_nodes.len(),
-            "faction id / c2_nodes index invariant broken"
-        );
+        // Build a global faction-alive map by scanning C2s across
+        // EVERY mesh. A faction is alive if it has at least one
+        // alive C2 on any layer.
+        let total_factions = self.faction_stats.len();
+        let mut faction_alive_map = vec![false; total_factions];
+        for mesh in &self.meshes {
+            for &c2_id in &mesh.c2_nodes {
+                let faction = mesh.nodes[c2_id].faction as usize;
+                if faction < total_factions
+                    && matches!(mesh.nodes[c2_id].state, State::Alive)
+                {
+                    faction_alive_map[faction] = true;
+                }
+            }
+        }
         let faction_alive = |f: u8| -> bool {
-            alive_c2.get(f as usize).copied().unwrap_or(false)
+            faction_alive_map
+                .get(f as usize)
+                .copied()
+                .unwrap_or(false)
         };
         let before = self.relations.len();
         self.relations.retain(|&(a, b), rel| {
@@ -2340,7 +2359,7 @@ impl World {
             self.push_log("c2 plant refused: cell occupied".to_string());
             return;
         }
-        let new_faction = self.meshes[0].c2_nodes.len() as u8;
+        let new_faction = self.faction_stats.len() as u8;
         let mut node = Node::fresh(origin, None, self.tick, Role::Relay, 0);
         node.faction = new_faction;
         node.pwn_resist = C2_INITIAL_HP;
@@ -2419,8 +2438,8 @@ impl World {
         }
         let alive_factions: Vec<u8> = (0..counts.len() as u8)
             .filter(|&f| {
-                let c2 = self.meshes[0].c2_nodes[f as usize];
-                matches!(self.meshes[0].nodes[c2].state, State::Alive) && counts[f as usize] > 0
+                counts[f as usize] > 0
+                    && self.is_faction_alive(f)
             })
             .collect();
         if alive_factions.len() < 3 {
@@ -2466,15 +2485,20 @@ impl World {
             return;
         }
         // Pick one Opportunist faction that's still alive.
-        let opportunists: Vec<u8> = (0..self.meshes[0].c2_nodes.len() as u8)
+        let opportunists: Vec<u8> = (0..self.faction_stats.len() as u8)
             .filter(|&f| {
                 let persona =
                     self.personas.get(f as usize).copied().unwrap_or(Persona::Aggressor);
                 if !matches!(persona, Persona::Opportunist) {
                     return false;
                 }
-                let c2 = self.meshes[0].c2_nodes[f as usize];
-                matches!(self.meshes[0].nodes[c2].state, State::Alive)
+                // Check if this faction has an alive C2 on ANY mesh.
+                self.meshes.iter().any(|m| {
+                    m.c2_nodes.iter().any(|&cid| {
+                        m.nodes[cid].faction == f
+                            && matches!(m.nodes[cid].state, State::Alive)
+                    })
+                })
             })
             .collect();
         if opportunists.is_empty() {
@@ -2584,7 +2608,15 @@ impl World {
                         })
                         .min_by_key(|(_, d)| *d)
                         .map(|(i, _)| i)
-                        .unwrap_or_else(|| self.meshes[0].c2_nodes[buyer as usize]);
+                        .unwrap_or_else(|| {
+                            // Fallback: find buyer's C2 on this mesh.
+                            self.meshes[0]
+                                .c2_nodes
+                                .iter()
+                                .copied()
+                                .find(|&cid| self.meshes[0].nodes[cid].faction == buyer)
+                                .unwrap_or(0)
+                        });
                     self.meshes[0].nodes[merc].faction = buyer;
                     self.meshes[0].nodes[merc].parent = Some(anchor);
                     self.meshes[0].nodes[merc].mutated_flash = 10;
@@ -3115,7 +3147,7 @@ impl World {
         }
 
         // Pick a persona per faction before moving rng into self.
-        let personas: Vec<Persona> = (0..count)
+        let mut personas: Vec<Persona> = (0..count)
             .map(|_| match rng.gen_range(0..4) {
                 0 => Persona::Aggressor,
                 1 => Persona::Fortress,
@@ -3173,18 +3205,64 @@ impl World {
             rules: layer_rules_for(0),
             name: "surface",
         };
-        // Build the global faction_c2s reverse map: one entry
-        // per faction, each holding a single (mesh_idx, node_id)
-        // pair on mesh 0. Subsequent commits can append entries
-        // when breach projection creates cross-layer C2 presence.
-        let faction_c2s: Vec<Vec<(usize, NodeId)>> = c2_nodes
+        // Build the undernet mesh: same bounds, own hotspot roll,
+        // one Plague-biased C2 faction. The undernet faction gets
+        // a globally-unique id that continues the surface roster.
+        let undernet_faction_id = count as u8;
+        let undernet_pos = (rng.gen_range(10..bounds.0 - 10), rng.gen_range(5..bounds.1 - 5));
+        let mut undernet_c2 = Node::fresh(undernet_pos, None, 0, Role::Relay, 0);
+        undernet_c2.faction = undernet_faction_id;
+        undernet_c2.pwn_resist = C2_INITIAL_HP;
+        let undernet_c2_id: NodeId = 0;
+        let mut undernet_mesh = Mesh::empty(bounds, "undernet", layer_rules_for(1));
+        undernet_mesh.nodes.push(undernet_c2);
+        undernet_mesh.occupied.insert(undernet_pos);
+        undernet_mesh.c2_nodes.push(undernet_c2_id);
+        // Roll 1-2 hotspots for the undernet mesh.
+        let un_hotspot_count = rng.gen_range(1..=2);
+        for _ in 0..un_hotspot_count {
+            if bounds.0 >= 12 && bounds.1 >= 12 {
+                let w_side = rng.gen_range(5..=9).min(bounds.0 - 6);
+                let h_side = rng.gen_range(5..=9).min(bounds.1 - 6);
+                let x0 = rng.gen_range(3..(bounds.0 - w_side - 3));
+                let y0 = rng.gen_range(3..(bounds.1 - h_side - 3));
+                undernet_mesh.hotspots.push(Hotspot {
+                    min: (x0, y0),
+                    max: (x0 + w_side, y0 + h_side),
+                });
+            }
+        }
+        // Extend global faction registry for the undernet faction.
+        personas.push(Persona::Plague);
+        faction_colors.push(rng.gen_range(0..palette_len));
+        let total_factions = count + 1;
+        logs.push_back((
+            format!(
+                "c2[{}] online @ {},{} (undernet)",
+                undernet_faction_id, undernet_pos.0, undernet_pos.1
+            ),
+            1,
+        ));
+        logs.push_back((
+            format!(
+                "c2[{}] persona = {}",
+                undernet_faction_id,
+                Persona::Plague.display_name()
+            ),
+            1,
+        ));
+        // Build the global faction_c2s reverse map. Surface factions
+        // get (mesh=0, id), undernet faction gets (mesh=1, id=0).
+        let mut faction_c2s: Vec<Vec<(usize, NodeId)>> = c2_nodes
             .iter()
             .map(|&id| vec![(0usize, id)])
             .collect();
-        let faction_home_mesh: Vec<usize> = (0..count).map(|_| 0usize).collect();
+        faction_c2s.push(vec![(1usize, undernet_c2_id)]);
+        let mut faction_home_mesh: Vec<usize> = (0..count).map(|_| 0usize).collect();
+        faction_home_mesh.push(1);
         let primary_c2 = c2_nodes[0];
         let mut world = Self {
-            meshes: vec![primary_mesh],
+            meshes: vec![primary_mesh, undernet_mesh],
             active_mesh: 0,
             primary_c2,
             rng,
@@ -3192,7 +3270,7 @@ impl World {
             logs,
             cfg,
             strain_names,
-            faction_stats: vec![FactionStats::default(); count],
+            faction_stats: vec![FactionStats::default(); total_factions],
             faction_c2s,
             faction_home_mesh,
             mythic_pandemic_seen: false,
@@ -3229,7 +3307,9 @@ impl World {
     }
 
     pub fn tick(&mut self, bounds: (i16, i16)) {
-        self.meshes[0].bounds = bounds;
+        for mesh in self.meshes.iter_mut() {
+            mesh.bounds = bounds;
+        }
 
         // Day/night transition detection. Log the change before the tick
         // so operators can see the phase swap lined up with the new events.

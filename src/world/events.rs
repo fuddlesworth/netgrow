@@ -277,7 +277,14 @@ impl World {
             })
             .min_by_key(|(_, d)| *d)
             .map(|(i, _)| i)
-            .unwrap_or(self.meshes[0].c2_nodes[new_faction as usize]);
+            .unwrap_or_else(|| {
+                self.meshes[0]
+                    .c2_nodes
+                    .iter()
+                    .copied()
+                    .find(|&cid| self.meshes[0].nodes[cid].faction == new_faction)
+                    .unwrap_or(0)
+            });
         // Flip the defector.
         {
             let n = &mut self.meshes[0].nodes[defector];

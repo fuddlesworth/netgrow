@@ -234,11 +234,21 @@ fn reconnect_refuses_same_branch() {
 
 #[test]
 fn infection_spreads_along_parent_edges() {
-    let mut w = World::new(21, (80, 30), Config::default());
-    w.cfg.p_spawn = 0.0;
-    w.cfg.p_loss = 0.0;
-    w.cfg.virus_seed_rate = 0.0;
-    w.cfg.virus_spread_rate = 1.0;
+    let cfg = Config {
+        p_spawn: 0.0,
+        p_loss: 0.0,
+        virus_seed_rate: 0.0,
+        virus_spread_rate: 1.0,
+        worm_spawn_rate: 0.0,
+        reconnect_rate: 0.0,
+        mutate_rate: 0.0,
+        ..Config::default()
+    };
+    let mut w = World::new(21, (80, 30), cfg);
+    w.era_rules = EraRules::default();
+    // Suppress custom events so a ForcedCascade doesn't kill our
+    // test nodes out from under us.
+    w.custom_events.clear();
     // Build c2 -> a -> b, infect a and drive it straight to Active so it
     // can infect neighbors.
     let a = w.meshes[0].nodes.len();
@@ -257,11 +267,18 @@ fn infection_spreads_along_parent_edges() {
         wave_survivals: 0,
         veteran_rank: 0,
     });
-    // Run a few ticks: spread probability is 1.0 so b should catch it fast.
-    for _ in 0..5 {
+    // Run a few ticks: spread probability is 1.0 so b should catch
+    // it on the very first tick. Give it 20 ticks for margin.
+    for _ in 0..20 {
         w.tick((80, 30));
     }
-    assert!(w.meshes[0].nodes[b].infection.is_some());
+    assert!(
+        w.meshes[0].nodes[b].infection.is_some(),
+        "b should be infected: state={:?}, alive={}, immunity={}",
+        w.meshes[0].nodes[b].state,
+        matches!(w.meshes[0].nodes[b].state, State::Alive),
+        w.meshes[0].nodes[b].immunity_ticks,
+    );
     assert_eq!(w.meshes[0].nodes[b].infection.unwrap().strain, 3);
 }
 
@@ -1159,14 +1176,22 @@ fn fission_splits_a_divergent_branch_into_new_faction() {
     assert!(split, "fission should have fired on a 20-defender Plague branch");
     assert!(w.meshes[0].c2_nodes.len() > initial_c2_count);
     // New faction should be Fortress (signature role = Defender).
-    let new_faction_id = (w.meshes[0].c2_nodes.len() - 1) as u8;
+    // The new faction id is the global count before the push,
+    // not the mesh-local c2_nodes count.
+    let new_faction_id = (w.faction_stats.len() - 1) as u8;
     assert_eq!(w.personas[new_faction_id as usize], Persona::Fortress);
     // OpenWar relation should be live with high pressure.
     let rel = w.relation(0, new_faction_id);
     assert_eq!(rel.state, DiplomaticState::OpenWar);
     assert!(rel.pressure >= FISSION_INITIAL_PRESSURE);
     // The splinter faction's hub has C2 HP and no parent.
-    let hub = w.meshes[0].c2_nodes[new_faction_id as usize];
+    // Find the hub by scanning the mesh's c2_nodes for the
+    // one owned by the new faction.
+    let hub = *w.meshes[0]
+        .c2_nodes
+        .iter()
+        .find(|&&cid| w.meshes[0].nodes[cid].faction == new_faction_id)
+        .expect("splinter should have a C2 on mesh 0");
     assert_eq!(w.meshes[0].nodes[hub].pwn_resist, C2_INITIAL_HP);
     assert!(w.meshes[0].nodes[hub].parent.is_none());
     // The war mythic log line should have fired.
@@ -1427,7 +1452,7 @@ fn diplomacy_rebirth_produces_a_clean_relation_slate_for_the_new_faction() {
     // Simulate rebirth by allocating a new faction slot — this
     // is what maybe_resurrect_c2_from_cascade does internally
     // when it picks a doomed node to promote.
-    let new_faction_id = w.meshes[0].c2_nodes.len() as u8;
+    let new_faction_id = w.faction_stats.len() as u8;
     let new_branch = w.alloc_branch_id();
     w.meshes[0].nodes.push(Node::fresh(
         (40, 20),
