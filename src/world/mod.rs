@@ -1153,7 +1153,7 @@ impl World {
     /// routing and exfil throttling read this to apply the
     /// tighter hot-link ceiling.
     pub fn is_droughted(&self) -> bool {
-        self.meshes[0].drought_until > self.tick
+        self.meshes[self.active_mesh].drought_until > self.tick
     }
 
     /// Effective hot-link ceiling for a given link, folding in
@@ -3006,9 +3006,11 @@ impl World {
         (self.tick % period) >= period / 2
     }
 
-    /// True while a network storm is currently active.
+    /// True while a network storm is currently active on the
+    /// active mesh. Used by render and era/spawn multiplier
+    /// lookups to determine whether storm effects apply.
     pub fn is_storming(&self) -> bool {
-        self.meshes[0].storm_until > self.tick
+        self.meshes[self.active_mesh].storm_until > self.tick
     }
 
     /// Unified periodic-event gate. Returns true once every `period`
@@ -3174,9 +3176,10 @@ const FACTION_SAMPLE_PERIOD: u64 = 50;
 
 impl World {
     pub fn stats(&self) -> WorldStats {
+        let m = self.active_mesh;
         let mut s = WorldStats::default();
         let mut branches: HashSet<u16> = HashSet::new();
-        for n in &self.meshes[0].nodes {
+        for n in &self.meshes[m].nodes {
             match n.state {
                 State::Alive => s.alive += 1,
                 State::Pwned { .. } => s.pwned += 1,
@@ -3194,19 +3197,19 @@ impl World {
         }
         s.branches = branches.len();
         s.factions = self
-            .meshes[0]
+            .meshes[m]
             .c2_nodes
             .iter()
-            .filter(|&&id| !matches!(self.meshes[0].nodes[id].state, State::Dead))
+            .filter(|&&id| !matches!(self.meshes[m].nodes[id].state, State::Dead))
             .count();
-        s.links = self.meshes[0].links.len();
+        s.links = self.meshes[m].links.len();
         s.cross_links = self
-            .meshes[0]
+            .meshes[m]
             .links
             .iter()
             .filter(|l| l.kind == LinkKind::Cross)
             .count();
-        s.packets = self.meshes[0].packets.len();
+        s.packets = self.meshes[m].packets.len();
         s
     }
 
