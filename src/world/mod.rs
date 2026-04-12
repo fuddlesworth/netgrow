@@ -1159,6 +1159,85 @@ impl World {
         }
     }
 
+    /// Cross-layer raid pass. When two factions are at OpenWar
+    /// and one has presence on a layer the other doesn't, roll
+    /// a chance to send a targeted raid — plant a hostile
+    /// infection on the defender's mesh from the attacker's
+    /// most veteran strain. Runs on the sample cadence alongside
+    /// other cross-layer events, but only fires during wars.
+    fn advance_cross_layer_raids(&mut self) {
+        if self.meshes.len() < 2 {
+            return;
+        }
+        // Find OpenWar pairs where both factions are alive.
+        let war_pairs: Vec<(u8, u8)> = self
+            .relations
+            .iter()
+            .filter(|(_, r)| matches!(r.state, DiplomaticState::OpenWar))
+            .map(|(&(a, b), _)| (a, b))
+            .collect();
+        for (a, b) in war_pairs {
+            if !self.rng.gen_bool(0.12) {
+                continue;
+            }
+            // For each belligerent, find meshes where they have
+            // presence but the enemy doesn't. That's where the
+            // raid targets.
+            let a_meshes: Vec<usize> = (0..self.meshes.len())
+                .filter(|&mi| {
+                    self.meshes[mi]
+                        .nodes
+                        .iter()
+                        .any(|n| n.faction == a && matches!(n.state, State::Alive))
+                })
+                .collect();
+            let b_meshes: Vec<usize> = (0..self.meshes.len())
+                .filter(|&mi| {
+                    self.meshes[mi]
+                        .nodes
+                        .iter()
+                        .any(|n| n.faction == b && matches!(n.state, State::Alive))
+                })
+                .collect();
+            // A raids B's exclusive meshes (where A is absent).
+            for &target_mesh in &b_meshes {
+                if a_meshes.contains(&target_mesh) {
+                    continue; // both present — normal war, no raid needed
+                }
+                // Pick a random alive B node on the target mesh
+                // and plant a hostile infection.
+                let targets: Vec<NodeId> = self.meshes[target_mesh]
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, n)| {
+                        (n.faction == b
+                            && matches!(n.state, State::Alive)
+                            && n.infection.is_none()
+                            && !n.role.is_virus_immune())
+                        .then_some(i)
+                    })
+                    .collect();
+                if targets.is_empty() {
+                    continue;
+                }
+                let victim = targets[self.rng.gen_range(0..targets.len())];
+                let strain = self.rng.gen_range(0..STRAIN_COUNT as u8);
+                let cure_resist = self.cfg.virus_cure_resist.saturating_add(2);
+                self.meshes[target_mesh].nodes[victim].infection =
+                    Some(Infection::seeded(strain, cure_resist));
+                let pos = self.meshes[target_mesh].nodes[victim].pos;
+                let (oa, ob) = octet_pair(pos);
+                let layer = self.meshes[target_mesh].name;
+                self.push_log(format!(
+                    "✦ raid ✦ F{} strikes F{} on {} @ 10.0.{}.{}",
+                    a, b, layer, oa, ob
+                ));
+                break; // one raid per pair per pass
+            }
+        }
+    }
+
     /// True while a bandwidth drought is in effect. Packet
     /// routing and exfil throttling read this to apply the
     /// tighter hot-link ceiling.
@@ -1542,6 +1621,7 @@ impl World {
         }
         self.sweep_stale_relations();
         self.advance_relation_transitions();
+        self.maybe_propose_treaty();
         self.maybe_propose_trade(faction_count);
     }
 
@@ -1826,6 +1906,102 @@ impl World {
             };
             if fire_log {
                 self.push_log(msg);
+            }
+        }
+    }
+
+    /// Treaty mechanics: factions in Trade or NonAggression can
+    /// propose formal terms that grant concrete benefits. Runs
+    /// on the diplomacy cadence after transitions. Each eligible
+    /// pair rolls once per pass; if a treaty fires, both sides
+    /// get a one-time bonus (intel swap, research boost, or
+    /// mutual cure pulse) and the relation's trust bumps up.
+    fn maybe_propose_treaty(&mut self) {
+        let tick = self.tick;
+        let keys: Vec<(u8, u8)> = self.relations.keys().copied().collect();
+        for key in keys {
+            let rel = self.relations[&key];
+            if !matches!(
+                rel.state,
+                DiplomaticState::Trade | DiplomaticState::NonAggression
+            ) {
+                continue;
+            }
+            // Rate-limit: one treaty per pair per 800 ticks.
+            if rel.entered_tick + 800 > tick {
+                continue;
+            }
+            if !self.rng.gen_bool(0.15) {
+                continue;
+            }
+            let (a, b) = key;
+            // Pick a treaty type based on the pair's personas.
+            let treaty_type = self.rng.gen_range(0..3u8);
+            match treaty_type {
+                0 => {
+                    // Intel swap: both sides gain +10 intel.
+                    if let Some(sa) = self.faction_stats.get_mut(a as usize) {
+                        sa.intel = sa.intel.saturating_add(10);
+                    }
+                    if let Some(sb) = self.faction_stats.get_mut(b as usize) {
+                        sb.intel = sb.intel.saturating_add(10);
+                    }
+                    self.push_log(format!(
+                        "✦ treaty ✦ F{}↔F{} intel exchange (+10 each)",
+                        a, b
+                    ));
+                }
+                1 => {
+                    // Research pact: both sides gain +30 research.
+                    if let Some(sa) = self.faction_stats.get_mut(a as usize) {
+                        sa.research = sa.research.saturating_add(30);
+                    }
+                    if let Some(sb) = self.faction_stats.get_mut(b as usize) {
+                        sb.research = sb.research.saturating_add(30);
+                    }
+                    self.push_log(format!(
+                        "✦ treaty ✦ F{}↔F{} research pact (+30 each)",
+                        a, b
+                    ));
+                }
+                _ => {
+                    // Mutual cure: fire a patch wave from each
+                    // side's C2 position on the first mesh they
+                    // share. Clears infections near both factions.
+                    for mesh in &mut self.meshes {
+                        let a_c2 = mesh
+                            .c2_nodes
+                            .iter()
+                            .find(|&&cid| mesh.nodes[cid].faction == a)
+                            .copied();
+                        let b_c2 = mesh
+                            .c2_nodes
+                            .iter()
+                            .find(|&&cid| mesh.nodes[cid].faction == b)
+                            .copied();
+                        if let (Some(ac), Some(bc)) = (a_c2, b_c2) {
+                            let a_pos = mesh.nodes[ac].pos;
+                            let b_pos = mesh.nodes[bc].pos;
+                            mesh.patch_waves.push(PatchWave {
+                                origin: a_pos,
+                                radius: 0,
+                            });
+                            mesh.patch_waves.push(PatchWave {
+                                origin: b_pos,
+                                radius: 0,
+                            });
+                            break;
+                        }
+                    }
+                    self.push_log(format!(
+                        "✦ treaty ✦ F{}↔F{} mutual cure pact",
+                        a, b
+                    ));
+                }
+            }
+            // Trust bump from the successful negotiation.
+            if let Some(r) = self.relations.get_mut(&key) {
+                r.trust = r.trust.saturating_add(8).clamp(-TRUST_CAP, TRUST_CAP);
             }
         }
     }
@@ -2936,6 +3112,22 @@ impl World {
                     .saturating_sub(amount as i16)
                     .clamp(-TRUST_CAP, TRUST_CAP);
             }
+            // Research sabotage: during an active OpenWar, every
+            // hostile event (skirmish, worm crossing, siege hit,
+            // spy reveal) shaves research off BOTH sides of the
+            // conflict. The cost scales with the event weight:
+            // a skirmish shielded (+2 pressure) costs 2 RP, a
+            // spy reveal (+12) costs 12 RP. War is now a
+            // permanent tech setback, not just node churn.
+            if matches!(entry.state, DiplomaticState::OpenWar) {
+                let sabotage = amount as u32;
+                if let Some(sa) = self.faction_stats.get_mut(a as usize) {
+                    sa.research = sa.research.saturating_sub(sabotage);
+                }
+                if let Some(sb) = self.faction_stats.get_mut(b as usize) {
+                    sb.research = sb.research.saturating_sub(sabotage);
+                }
+            }
         }
     }
 
@@ -3663,6 +3855,7 @@ impl World {
             self.advance_custom_events();
             self.advance_fission();
             self.advance_cross_layer_events();
+            self.advance_cross_layer_raids();
             self.check_extinction_and_reseed();
         }
         // Expire the faction favoritism boost.
