@@ -950,6 +950,8 @@ fn footer_bar(ui: UiState) -> Paragraph<'static> {
             lab(" plant c2 "),
             key("w"),
             lab(" wormhole "),
+            key("g"),
+            lab(" graffiti "),
         ]);
     } else {
         spans.extend([
@@ -967,6 +969,9 @@ fn footer_bar(ui: UiState) -> Paragraph<'static> {
                 format!(" view ({}) ", ui.view.label()),
                 Style::default().fg(th.label),
             ),
+            key("["),
+            key("]"),
+            lab(" layer "),
             key("i"),
             lab(" infect "),
             key("1-9"),
