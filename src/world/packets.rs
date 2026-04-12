@@ -16,14 +16,14 @@ use super::{
 };
 
 impl World {
-    pub(super) fn advance_packets(&mut self) {
-        if self.meshes[0].packets.is_empty() {
+    pub(super) fn advance_packets(&mut self, mi: usize) {
+        if self.meshes[mi].packets.is_empty() {
             return;
         }
-        let inbound = self.build_inbound_links();
+        let inbound = self.build_inbound_links(mi);
         // Index fully-drawn cross-links by endpoint for O(1) reroute lookups.
         let mut cross_at: HashMap<NodeId, Vec<usize>> = HashMap::new();
-        for (li, l) in self.meshes[0].links.iter().enumerate() {
+        for (li, l) in self.meshes[mi].links.iter().enumerate() {
             if l.kind != LinkKind::Cross {
                 continue;
             }
@@ -37,7 +37,7 @@ impl World {
             cross_at.entry(l.b).or_default().push(li);
         }
 
-        let mut keep: Vec<Packet> = Vec::with_capacity(self.meshes[0].packets.len());
+        let mut keep: Vec<Packet> = Vec::with_capacity(self.meshes[mi].packets.len());
         let mut dropped_count: u32 = 0;
         let mut last_drop_pos: Option<(i16, i16)> = None;
         let mut rerouted_count: u32 = 0;
@@ -45,15 +45,15 @@ impl World {
         // after the packet loop so we don't have to mutate links and
         // packets in the same borrow.
         let mut delivery_credits: HashMap<usize, u16> = HashMap::new();
-        for mut pkt in std::mem::take(&mut self.meshes[0].packets) {
+        for mut pkt in std::mem::take(&mut self.meshes[mi].packets) {
             let (link_a, link_b) = {
-                let link = &self.meshes[0].links[pkt.link_id];
+                let link = &self.meshes[mi].links[pkt.link_id];
                 (link.a, link.b)
             };
-            let a_state = self.meshes[0].nodes[link_a].state;
-            let b_state = self.meshes[0].nodes[link_b].state;
-            let a_dying = self.meshes[0].nodes[link_a].dying_in > 0;
-            let b_dying = self.meshes[0].nodes[link_b].dying_in > 0;
+            let a_state = self.meshes[mi].nodes[link_a].state;
+            let b_state = self.meshes[mi].nodes[link_b].state;
+            let a_dying = self.meshes[mi].nodes[link_a].dying_in > 0;
+            let b_dying = self.meshes[mi].nodes[link_b].dying_in > 0;
             if matches!(a_state, State::Dead)
                 || matches!(b_state, State::Dead)
                 || a_dying
@@ -64,21 +64,21 @@ impl World {
             // Network partition: drop if the link's endpoints
             // straddle any active partition line. The packet is
             // silently lost — the cut severed its route.
-            let a_pos = self.meshes[0].nodes[link_a].pos;
-            let b_pos = self.meshes[0].nodes[link_b].pos;
-            if self.meshes[0].partitions.iter().any(|p| p.crosses(a_pos, b_pos)) {
+            let a_pos = self.meshes[mi].nodes[link_a].pos;
+            let b_pos = self.meshes[mi].nodes[link_b].pos;
+            if self.meshes[mi].partitions.iter().any(|p| p.crosses(a_pos, b_pos)) {
                 dropped_count += 1;
                 last_drop_pos = Some(a_pos);
                 continue;
             }
             // Each in-flight packet heats up its current link.
-            self.meshes[0].links[pkt.link_id].load =
-                self.meshes[0].links[pkt.link_id].load.saturating_add(PACKET_LOAD_INCREMENT);
+            self.meshes[mi].links[pkt.link_id].load =
+                self.meshes[mi].links[pkt.link_id].load.saturating_add(PACKET_LOAD_INCREMENT);
             if pkt.pos == 0 {
                 // Reached the parent end of this link. Hop to the parent's
                 // own inbound link, or drop if parent is C2.
                 let parent_id = link_a;
-                if self.is_c2(parent_id) {
+                if self.is_c2(mi, parent_id) {
                     *delivery_credits.entry(pkt.link_id).or_default() += 1;
                     // Credit the C2's faction with one unit of
                     // intel for the successful exfil delivery.
@@ -87,7 +87,7 @@ impl World {
                     // delivered packet for backbone-promotion
                     // bookkeeping, just without the reward.
                     if !pkt.ghost {
-                        let fac = self.meshes[0].nodes[parent_id].faction as usize;
+                        let fac = self.meshes[mi].nodes[parent_id].faction as usize;
                         if let Some(s) = self.faction_stats.get_mut(fac) {
                             s.intel = s.intel.saturating_add(1);
                         }
@@ -98,10 +98,10 @@ impl World {
                 // the packets it sees, relieving the upstream
                 // chain, but lets ~35% pass through so backbones
                 // still carry traffic past the cache.
-                if self.meshes[0].nodes[parent_id].role == Role::Router
+                if self.meshes[mi].nodes[parent_id].role == Role::Router
                     && self.rng.gen_bool(0.65)
                 {
-                    self.meshes[0].nodes[parent_id].pulse = 3;
+                    self.meshes[mi].nodes[parent_id].pulse = 3;
                     *delivery_credits.entry(pkt.link_id).or_default() += 1;
                     // Router caches also contribute intel to the
                     // owning faction — the data made it to a
@@ -109,7 +109,7 @@ impl World {
                     // wire. Ghost packets pollute the cache without
                     // crediting intel.
                     if !pkt.ghost {
-                        let fac = self.meshes[0].nodes[parent_id].faction as usize;
+                        let fac = self.meshes[mi].nodes[parent_id].faction as usize;
                         if let Some(s) = self.faction_stats.get_mut(fac) {
                             s.intel = s.intel.saturating_add(1);
                         }
@@ -117,7 +117,7 @@ impl World {
                     continue;
                 }
                 if let Some(&next_link) = inbound.get(&parent_id) {
-                    let next = &self.meshes[0].links[next_link];
+                    let next = &self.meshes[mi].links[next_link];
                     let next_hot_ceiling = self.effective_hot_link(next);
                     let primary_usable = !next.path.is_empty()
                         && next.load < next_hot_ceiling
@@ -132,24 +132,24 @@ impl World {
                     // for a cross-link bypass: any cross-link touching
                     // `parent_id` whose far endpoint has a cooler
                     // inbound path we can jump onto.
-                    let parent_faction = self.meshes[0].nodes[parent_id].faction;
+                    let parent_faction = self.meshes[mi].nodes[parent_id].faction;
                     let mut rerouted = false;
                     if let Some(crosses) = cross_at.get(&parent_id) {
                         for &cli in crosses {
-                            let c = &self.meshes[0].links[cli];
+                            let c = &self.meshes[mi].links[cli];
                             let other = if c.a == parent_id { c.b } else { c.a };
-                            if !matches!(self.meshes[0].nodes[other].state, State::Alive)
-                                || self.meshes[0].nodes[other].dying_in > 0
+                            if !matches!(self.meshes[mi].nodes[other].state, State::Alive)
+                                || self.meshes[mi].nodes[other].dying_in > 0
                             {
                                 continue;
                             }
-                            if self.meshes[0].nodes[other].faction != parent_faction {
+                            if self.meshes[mi].nodes[other].faction != parent_faction {
                                 continue;
                             }
                             let Some(&alt) = inbound.get(&other) else {
                                 continue;
                             };
-                            let alt_link = &self.meshes[0].links[alt];
+                            let alt_link = &self.meshes[mi].links[alt];
                             let alt_hot = self.effective_hot_link(alt_link);
                             if alt_link.path.is_empty()
                                 || alt_link.load >= alt_hot
@@ -167,7 +167,7 @@ impl World {
                     }
                     if !rerouted {
                         dropped_count += 1;
-                        last_drop_pos = Some(self.meshes[0].nodes[parent_id].pos);
+                        last_drop_pos = Some(self.meshes[mi].nodes[parent_id].pos);
                     }
                 }
                 continue;
@@ -175,12 +175,12 @@ impl World {
             pkt.pos -= 1;
             keep.push(pkt);
         }
-        self.meshes[0].packets = keep;
+        self.meshes[mi].packets = keep;
         // Apply delivery credits and promote any Parent links that
         // crossed BACKBONE_PROMOTION_THRESHOLD this tick.
         let mut promoted_backbones: Vec<(i16, i16)> = Vec::new();
         for (link_id, credit) in delivery_credits {
-            let link = &mut self.meshes[0].links[link_id];
+            let link = &mut self.meshes[mi].links[link_id];
             link.packets_delivered = link.packets_delivered.saturating_add(credit);
             if !link.is_backbone
                 && link.kind == LinkKind::Parent
@@ -211,8 +211,8 @@ impl World {
         }
     }
 
-    pub(super) fn advance_worms(&mut self) {
-        if self.meshes[0].worms.is_empty() {
+    pub(super) fn advance_worms(&mut self, mi: usize) {
+        if self.meshes[mi].worms.is_empty() {
             return;
         }
         // Worms crawl at half the sim rate so each cell is visible long enough
@@ -220,8 +220,8 @@ impl World {
         // check so dead links clean up promptly.
         let move_tick = self.tick.is_multiple_of(WORM_STEP_INTERVAL);
         let cure_resist = self.cfg.virus_cure_resist;
-        let c2_set: HashSet<NodeId> = self.meshes[0].c2_nodes.iter().copied().collect();
-        let mut keep: Vec<Worm> = Vec::with_capacity(self.meshes[0].worms.len());
+        let c2_set: HashSet<NodeId> = self.meshes[mi].c2_nodes.iter().copied().collect();
+        let mut keep: Vec<Worm> = Vec::with_capacity(self.meshes[mi].worms.len());
         let mut arrivals: Vec<(NodeId, u8, (i16, i16))> = Vec::new();
         // (target, incoming_strain, existing_strain) — handled after
         // the move loop so we can mutate target infection state.
@@ -236,14 +236,14 @@ impl World {
         // Antibody worms that reached their target — each gets a
         // cure attempt after the move loop.
         let mut antibody_hits: Vec<NodeId> = Vec::new();
-        for mut worm in std::mem::take(&mut self.meshes[0].worms) {
+        for mut worm in std::mem::take(&mut self.meshes[mi].worms) {
             let (link_a, link_b, link_len) = {
-                let link = &self.meshes[0].links[worm.link_id];
+                let link = &self.meshes[mi].links[worm.link_id];
                 (link.a, link.b, link.path.len())
             };
             // Drop the worm if its carrier link is compromised.
-            let a_node = &self.meshes[0].nodes[link_a];
-            let b_node = &self.meshes[0].nodes[link_b];
+            let a_node = &self.meshes[mi].nodes[link_a];
+            let b_node = &self.meshes[mi].nodes[link_b];
             if matches!(a_node.state, State::Dead)
                 || matches!(b_node.state, State::Dead)
                 || a_node.dying_in > 0
@@ -252,8 +252,8 @@ impl World {
                 continue;
             }
             // Each in-flight worm contributes to its carrier link's load.
-            self.meshes[0].links[worm.link_id].load =
-                self.meshes[0].links[worm.link_id].load.saturating_add(WORM_LOAD_INCREMENT);
+            self.meshes[mi].links[worm.link_id].load =
+                self.meshes[mi].links[worm.link_id].load.saturating_add(WORM_LOAD_INCREMENT);
             if !move_tick {
                 keep.push(worm);
                 continue;
@@ -270,9 +270,9 @@ impl World {
                 let next = worm.pos as usize + 1;
                 if next >= link_len {
                     let target = link_b;
-                    let src = self.meshes[0].nodes[link_a].faction;
-                    let dst = self.meshes[0].nodes[target].faction;
-                    let alive_target = matches!(self.meshes[0].nodes[target].state, State::Alive);
+                    let src = self.meshes[mi].nodes[link_a].faction;
+                    let dst = self.meshes[mi].nodes[target].faction;
+                    let alive_target = matches!(self.meshes[mi].nodes[target].state, State::Alive);
                     let allied_block = blocked_by_alliance(self, src, dst);
                     // Antibody worms cure same-faction hosts on
                     // arrival instead of running the infection path.
@@ -291,12 +291,12 @@ impl World {
                                 c2_strikes.push((target, src));
                             }
                         } else {
-                            let immune = self.meshes[0].nodes[target].immunity_ticks > 0
-                                && self.meshes[0].nodes[target].immunity_strain
+                            let immune = self.meshes[mi].nodes[target].immunity_ticks > 0
+                                && self.meshes[mi].nodes[target].immunity_strain
                                     == Some(worm.strain);
-                            match self.meshes[0].nodes[target].infection {
+                            match self.meshes[mi].nodes[target].infection {
                                 None if !immune => arrivals
-                                    .push((target, worm.strain, self.meshes[0].nodes[target].pos)),
+                                    .push((target, worm.strain, self.meshes[mi].nodes[target].pos)),
                                 Some(existing) if existing.strain != worm.strain => merges
                                     .push((target, worm.strain, existing.strain)),
                                 _ => {}
@@ -312,9 +312,9 @@ impl World {
             } else {
                 if worm.pos == 0 {
                     let target = link_a;
-                    let src = self.meshes[0].nodes[link_b].faction;
-                    let dst = self.meshes[0].nodes[target].faction;
-                    let alive_target = matches!(self.meshes[0].nodes[target].state, State::Alive);
+                    let src = self.meshes[mi].nodes[link_b].faction;
+                    let dst = self.meshes[mi].nodes[target].faction;
+                    let alive_target = matches!(self.meshes[mi].nodes[target].state, State::Alive);
                     let allied_block = blocked_by_alliance(self, src, dst);
                     if worm.is_antibody {
                         if alive_target {
@@ -328,12 +328,12 @@ impl World {
                                 c2_strikes.push((target, src));
                             }
                         } else {
-                            let immune = self.meshes[0].nodes[target].immunity_ticks > 0
-                                && self.meshes[0].nodes[target].immunity_strain
+                            let immune = self.meshes[mi].nodes[target].immunity_ticks > 0
+                                && self.meshes[mi].nodes[target].immunity_strain
                                     == Some(worm.strain);
-                            match self.meshes[0].nodes[target].infection {
+                            match self.meshes[mi].nodes[target].infection {
                                 None if !immune => arrivals
-                                    .push((target, worm.strain, self.meshes[0].nodes[target].pos)),
+                                    .push((target, worm.strain, self.meshes[mi].nodes[target].pos)),
                                 Some(existing) if existing.strain != worm.strain => merges
                                     .push((target, worm.strain, existing.strain)),
                                 _ => {}
@@ -349,9 +349,9 @@ impl World {
             }
             keep.push(worm);
         }
-        self.meshes[0].worms = keep;
+        self.meshes[mi].worms = keep;
         for (target, strain, pos) in arrivals {
-            self.meshes[0].nodes[target].infection = Some(Infection::seeded(strain, cure_resist));
+            self.meshes[mi].nodes[target].infection = Some(Infection::seeded(strain, cure_resist));
             let (a, b) = octet_pair(pos);
             let name = self.strain_name(strain);
             self.push_log(format!("worm delivered {} @ 10.0.{}.{}", name, a, b));
@@ -369,7 +369,7 @@ impl World {
         // target's infection if it has one. Logs the cure so the
         // viewer can see the counter-attack land.
         for target in antibody_hits {
-            let had_inf = self.meshes[0].nodes[target].infection.is_some();
+            let had_inf = self.meshes[mi].nodes[target].infection.is_some();
             if !had_inf {
                 continue;
             }
@@ -379,45 +379,45 @@ impl World {
                 .infection
                 .map(|i| i.strain)
                 .unwrap_or(0);
-            self.meshes[0].nodes[target].infection = None;
-            self.meshes[0].nodes[target].immunity_strain = Some(strain);
-            self.meshes[0].nodes[target].immunity_ticks = self.era_immunity_ticks();
-            let faction = self.meshes[0].nodes[target].faction;
+            self.meshes[mi].nodes[target].infection = None;
+            self.meshes[mi].nodes[target].immunity_strain = Some(strain);
+            self.meshes[mi].nodes[target].immunity_ticks = self.era_immunity_ticks();
+            let faction = self.meshes[mi].nodes[target].faction;
             if let Some(s) = self.faction_stats.get_mut(faction as usize) {
                 s.infections_cured += 1;
             }
-            let pos = self.meshes[0].nodes[target].pos;
+            let pos = self.meshes[mi].nodes[target].pos;
             self.log_node(pos, "antibody cure");
         }
         // Cross-faction worm strikes on C2 nodes drain the defender
         // reservoir. When a strike cracks the last point, schedule
         // the C2's entire subtree to cascade and log the fall.
         for (c2_id, attacker) in c2_strikes {
-            let c2_faction = self.meshes[0].nodes[c2_id].faction;
+            let c2_faction = self.meshes[mi].nodes[c2_id].faction;
             let remaining =
-                self.meshes[0].nodes[c2_id].pwn_resist.saturating_sub(super::C2_WORM_DAMAGE);
-            self.meshes[0].nodes[c2_id].pwn_resist = remaining;
-            self.meshes[0].nodes[c2_id].shield_flash = 8;
+                self.meshes[mi].nodes[c2_id].pwn_resist.saturating_sub(super::C2_WORM_DAMAGE);
+            self.meshes[mi].nodes[c2_id].pwn_resist = remaining;
+            self.meshes[mi].nodes[c2_id].shield_flash = 8;
             // Keep the rivalry boiling as the siege continues.
             self.bump_rivalry(attacker, c2_faction, 8);
             if remaining == 0
-                && matches!(self.meshes[0].nodes[c2_id].state, State::Alive)
-                && self.meshes[0].nodes[c2_id].dying_in == 0
+                && matches!(self.meshes[mi].nodes[c2_id].state, State::Alive)
+                && self.meshes[mi].nodes[c2_id].dying_in == 0
             {
-                let pos = self.meshes[0].nodes[c2_id].pos;
+                let pos = self.meshes[mi].nodes[c2_id].pos;
                 let (ia, ib) = octet_pair(pos);
                 self.push_log(format!(
                     "✦ FALL ✦ c2 F{} cracked by F{} @ 10.0.{}.{}",
                     c2_faction, attacker, ia, ib
                 ));
-                self.schedule_subtree_death(c2_id, 1.5);
-                self.meshes[0].nodes[c2_id].dying_in = 3;
-                self.meshes[0].nodes[c2_id].death_echo = super::GHOST_ECHO_TICKS;
+                self.schedule_subtree_death(mi, c2_id, 1.5);
+                self.meshes[mi].nodes[c2_id].dying_in = 3;
+                self.meshes[mi].nodes[c2_id].death_echo = super::GHOST_ECHO_TICKS;
             } else if remaining > 0 && remaining.is_multiple_of(32) {
                 // Progress beacon so the viewer can watch the
                 // reservoir drain instead of seeing a silent
                 // surprise at zero.
-                let pos = self.meshes[0].nodes[c2_id].pos;
+                let pos = self.meshes[mi].nodes[c2_id].pos;
                 self.log_node(
                     pos,
                     &format!("c2 F{} hp {}", c2_faction, remaining),
@@ -426,21 +426,21 @@ impl World {
         }
         for (target, incoming, existing) in merges {
             let existing_resist =
-                self.meshes[0].nodes[target].infection.map(|i| i.cure_resist).unwrap_or(0);
+                self.meshes[mi].nodes[target].infection.map(|i| i.cure_resist).unwrap_or(0);
             let merged_resist = existing_resist
                 .saturating_add(1)
                 .min(super::VETERAN_CURE_RESIST_CAP);
             let merged_strain =
                 ((incoming as u32 + existing as u32 + 1) as usize) % STRAIN_COUNT;
             let mut merged = Infection::seeded(merged_strain as u8, merged_resist);
-            merged.veteran_rank = self.meshes[0].nodes[target]
+            merged.veteran_rank = self.meshes[mi].nodes[target]
                 .infection
                 .map(|i| i.veteran_rank)
                 .unwrap_or(0)
                 .saturating_add(1);
-            let target_faction = self.meshes[0].nodes[target].faction;
-            self.meshes[0].nodes[target].infection = Some(merged);
-            let pos = self.meshes[0].nodes[target].pos;
+            let target_faction = self.meshes[mi].nodes[target].faction;
+            self.meshes[mi].nodes[target].infection = Some(merged);
+            let pos = self.meshes[mi].nodes[target].pos;
             let (a, b) = octet_pair(pos);
             let name_in = self.strain_name(incoming);
             let name_ex = self.strain_name(existing);
@@ -467,19 +467,19 @@ impl World {
         }
     }
 
-    pub(super) fn maybe_spawn_worms(&mut self) {
+    pub(super) fn maybe_spawn_worms(&mut self, mi: usize) {
         let base_rate = self.cfg.worm_spawn_rate;
         if base_rate <= 0.0 {
             return;
         }
         // Find active-infected carriers up front.
         let carriers: Vec<(NodeId, u8, u8)> = self
-            .meshes[0]
+            .meshes[mi]
             .nodes
             .iter()
             .enumerate()
             .filter_map(|(i, n)| {
-                if self.is_c2(i) || !matches!(n.state, State::Alive) {
+                if self.is_c2(mi, i) || !matches!(n.state, State::Alive) {
                     return None;
                 }
                 match n.infection {
@@ -501,7 +501,7 @@ impl World {
             }
             // Outgoing links from this node (either direction for Cross).
             let outgoing: Vec<(usize, bool)> = self
-                .meshes[0]
+                .meshes[mi]
                 .links
                 .iter()
                 .enumerate()
@@ -522,15 +522,15 @@ impl World {
                 continue;
             }
             let (link_id, from_a) = outgoing[self.rng.gen_range(0..outgoing.len())];
-            let link = &self.meshes[0].links[link_id];
+            let link = &self.meshes[mi].links[link_id];
             let target = if from_a { link.b } else { link.a };
-            if self.is_c2(target) {
+            if self.is_c2(mi, target) {
                 continue;
             }
-            if !matches!(self.meshes[0].nodes[target].state, State::Alive) {
+            if !matches!(self.meshes[mi].nodes[target].state, State::Alive) {
                 continue;
             }
-            if self.meshes[0].nodes[target].infection.is_some() {
+            if self.meshes[mi].nodes[target].infection.is_some() {
                 continue;
             }
             // Start one cell in from the carrier node so the worm is visible
@@ -541,8 +541,8 @@ impl World {
                 continue;
             }
             let pos = if from_a { 1 } else { (len - 2) as u16 };
-            let carrier_pos = self.meshes[0].nodes[id].pos;
-            self.meshes[0].worms.push(Worm {
+            let carrier_pos = self.meshes[mi].nodes[id].pos;
+            self.meshes[mi].worms.push(Worm {
                 link_id,
                 pos,
                 outbound_from_a: from_a,

@@ -292,7 +292,7 @@ const ZERO_DAY_MIN_ALIVE: usize = 10;
 /// terrain — lives here. World owns a `Vec<Mesh>` and all
 /// per-grid state is accessed via `world.meshes[idx]`. For
 /// Commit 1 the mesh count is always 1 and a `Deref`/`DerefMut`
-/// impl on World forwards bare-field access like `self.meshes[0].nodes` to
+/// impl on World forwards bare-field access like `self.meshes[mi].nodes` to
 /// the primary mesh so the thousands of existing call sites
 /// don't need a mechanical rewrite. Subsequent commits add a
 /// second mesh + explicit mesh-index parameterization.
@@ -365,7 +365,7 @@ impl Mesh {
 pub struct World {
     /// Per-layer mesh state. Commit 1 always has `meshes.len() == 1`
     /// and `active_mesh == 0`; the Deref impls below forward bare
-    /// `self.meshes[0].nodes` / `self.meshes[0].links` / etc. accesses to the primary
+    /// `self.meshes[mi].nodes` / `self.meshes[mi].links` / etc. accesses to the primary
     /// mesh so existing code reads and writes unchanged.
     pub meshes: Vec<Mesh>,
     /// Index into `meshes` for the layer currently shown in the
@@ -428,9 +428,9 @@ pub struct World {
 
 // NOTE: Deref/DerefMut was considered for back-compat but
 // triggered whole-self borrows on every bare-field access like
-// `self.meshes[0].nodes`, which poisons patterns that mutate a mesh field
+// `self.meshes[mi].nodes`, which poisons patterns that mutate a mesh field
 // while reading another World field. Instead, every access that
-// was once `self.meshes[0].nodes` is rewritten to `self.meshes[0].nodes`
+// was once `self.meshes[mi].nodes` is rewritten to `self.meshes[mi].nodes`
 // for Commit 1 (static primary mesh). Subsequent commits swap
 // the `0` for an explicit `mesh_idx` parameter.
 
@@ -445,8 +445,8 @@ impl World {
         self.primary_c2
     }
 
-    pub fn is_c2(&self, id: NodeId) -> bool {
-        self.meshes[0].c2_nodes.contains(&id)
+    pub fn is_c2(&self, mi: usize, id: NodeId) -> bool {
+        self.meshes[mi].c2_nodes.contains(&id)
     }
 
     /// True if the given faction has at least one alive C2 on
@@ -468,11 +468,13 @@ impl World {
     fn sample_faction_history(&mut self) {
         let mut counts = vec![0u32; self.faction_stats.len()];
         let mut total: u32 = 0;
-        for n in &self.meshes[0].nodes {
-            if matches!(n.state, State::Alive) {
-                total += 1;
-                if let Some(slot) = counts.get_mut(n.faction as usize) {
-                    *slot += 1;
+        for mesh in &self.meshes {
+            for n in &mesh.nodes {
+                if matches!(n.state, State::Alive) {
+                    total += 1;
+                    if let Some(slot) = counts.get_mut(n.faction as usize) {
+                        *slot += 1;
+                    }
                 }
             }
         }
@@ -566,53 +568,59 @@ impl World {
     /// `latent = false` and announce themselves with a
     /// `✦ lattice ✦` log line.
     fn activate_sleeper_lattice(&mut self) {
-        let mut to_wake: Vec<usize> = Vec::new();
-        for (i, link) in self.meshes[0].links.iter().enumerate() {
-            if !link.latent || link.kind != LinkKind::Cross {
-                continue;
-            }
-            let a = &self.meshes[0].nodes[link.a];
-            let b = &self.meshes[0].nodes[link.b];
-            if !matches!(a.state, State::Alive) || !matches!(b.state, State::Alive) {
-                continue;
-            }
-            // Condition 1: endpoint's faction is at war with
-            // anyone. Check both endpoints' factions against
-            // every other faction.
-            let a_fac = a.faction;
-            let b_fac = b.faction;
-            let faction_count = self.faction_stats.len() as u8;
-            let at_war = (0..faction_count).any(|f| {
-                f != a_fac && self.at_war(a_fac, f) || f != b_fac && self.at_war(b_fac, f)
-            });
-            // Condition 2: either endpoint has a parent that is
-            // dead or dying, meaning the node is about to lose
-            // its chain.
-            let parent_lost = |n: &crate::world::Node| -> bool {
-                if let Some(pid) = n.parent {
-                    let p = &self.meshes[0].nodes[pid];
+        let faction_count = self.faction_stats.len() as u8;
+        for mi in 0..self.meshes.len() {
+            let mut to_wake: Vec<usize> = Vec::new();
+            for (i, link) in self.meshes[mi].links.iter().enumerate() {
+                if !link.latent || link.kind != LinkKind::Cross {
+                    continue;
+                }
+                let a = &self.meshes[mi].nodes[link.a];
+                let b = &self.meshes[mi].nodes[link.b];
+                if !matches!(a.state, State::Alive) || !matches!(b.state, State::Alive) {
+                    continue;
+                }
+                // Condition 1: endpoint's faction is at war with
+                // anyone. Check both endpoints' factions against
+                // every other faction.
+                let a_fac = a.faction;
+                let b_fac = b.faction;
+                let at_war = (0..faction_count).any(|f| {
+                    f != a_fac && self.at_war(a_fac, f) || f != b_fac && self.at_war(b_fac, f)
+                });
+                // Condition 2: either endpoint has a parent that is
+                // dead or dying, meaning the node is about to lose
+                // its chain.
+                let parent_lost_a = if let Some(pid) = a.parent {
+                    let p = &self.meshes[mi].nodes[pid];
                     matches!(p.state, State::Dead) || p.dying_in > 0
                 } else {
                     false
+                };
+                let parent_lost_b = if let Some(pid) = b.parent {
+                    let p = &self.meshes[mi].nodes[pid];
+                    matches!(p.state, State::Dead) || p.dying_in > 0
+                } else {
+                    false
+                };
+                let isolated = parent_lost_a || parent_lost_b;
+                if at_war || isolated {
+                    to_wake.push(i);
                 }
-            };
-            let isolated = parent_lost(a) || parent_lost(b);
-            if at_war || isolated {
-                to_wake.push(i);
             }
-        }
-        for li in to_wake {
-            self.meshes[0].links[li].latent = false;
-            let (a, b) = {
-                let link = &self.meshes[0].links[li];
-                (link.a, link.b)
-            };
-            let pos = self.meshes[0].nodes[a].pos;
-            let (oa, ob) = octet_pair(pos);
-            self.push_log(format!(
-                "✦ lattice ✦ sleeper edge wakes @ 10.0.{}.{} (F{}↔F{})",
-                oa, ob, self.meshes[0].nodes[a].faction, self.meshes[0].nodes[b].faction
-            ));
+            for li in to_wake {
+                self.meshes[mi].links[li].latent = false;
+                let (a, b) = {
+                    let link = &self.meshes[mi].links[li];
+                    (link.a, link.b)
+                };
+                let pos = self.meshes[mi].nodes[a].pos;
+                let (oa, ob) = octet_pair(pos);
+                self.push_log(format!(
+                    "✦ lattice ✦ sleeper edge wakes @ 10.0.{}.{} (F{}↔F{})",
+                    oa, ob, self.meshes[mi].nodes[a].faction, self.meshes[mi].nodes[b].faction
+                ));
+            }
         }
     }
 
@@ -625,22 +633,24 @@ impl World {
     fn collect_strain_patents(&mut self) {
         // Tally count of rival hosts per (strain, owner) pair.
         let mut royalties: HashMap<u8, u32> = HashMap::new();
-        for n in &self.meshes[0].nodes {
-            if !matches!(n.state, State::Alive) {
-                continue;
+        for mesh in &self.meshes {
+            for n in &mesh.nodes {
+                if !matches!(n.state, State::Alive) {
+                    continue;
+                }
+                let Some(inf) = n.infection else { continue };
+                let Some(owner) = self
+                    .strain_patents
+                    .get(inf.strain as usize)
+                    .and_then(|&o| o)
+                else {
+                    continue;
+                };
+                if owner == n.faction {
+                    continue; // own-faction hosts don't pay royalties
+                }
+                *royalties.entry(owner).or_insert(0) += 1;
             }
-            let Some(inf) = n.infection else { continue };
-            let Some(owner) = self
-                .strain_patents
-                .get(inf.strain as usize)
-                .and_then(|&o| o)
-            else {
-                continue;
-            };
-            if owner == n.faction {
-                continue; // own-faction hosts don't pay royalties
-            }
-            *royalties.entry(owner).or_insert(0) += 1;
         }
         for (owner, amount) in royalties {
             if let Some(s) = self.faction_stats.get_mut(owner as usize) {
@@ -709,7 +719,7 @@ impl World {
             // faction. Use a high honeypot-style multiplier so
             // the rubble lingers longer as ghosts before fully
             // decaying.
-            self.schedule_subtree_death(c2_id, 2.0);
+            self.schedule_subtree_death(0, c2_id, 2.0);
             // Also kill the C2 itself explicitly (it's exempt
             // from the cascade reachability that compute_cascade
             // uses, since that anchors on the C2).
@@ -919,7 +929,7 @@ impl World {
                     candidates.get(self.rng.gen_range(0..candidates.len().max(1)))
                 {
                     if !candidates.is_empty() {
-                        self.schedule_subtree_death(victim, 1.5);
+                        self.schedule_subtree_death(0, victim, 1.5);
                     }
                 }
             }
@@ -1182,19 +1192,19 @@ impl World {
     /// rolls only when no drought is active, logs onset and
     /// dissipation on separate ticks so the log taxonomy is
     /// readable.
-    fn maybe_drought(&mut self) {
-        if self.meshes[0].drought_until > 0 && self.tick >= self.meshes[0].drought_until {
-            self.meshes[0].drought_until = 0;
+    fn maybe_drought(&mut self, mi: usize) {
+        if self.meshes[mi].drought_until > 0 && self.tick >= self.meshes[mi].drought_until {
+            self.meshes[mi].drought_until = 0;
             self.push_log("drought lifts — bandwidth restored".to_string());
             return;
         }
-        if self.meshes[0].drought_until > 0 {
+        if self.meshes[mi].drought_until > 0 {
             return;
         }
         if !self.roll_periodic(self.cfg.drought_period, self.cfg.drought_chance) {
             return;
         }
-        self.meshes[0].drought_until = self.tick + self.cfg.drought_duration;
+        self.meshes[mi].drought_until = self.tick + self.cfg.drought_duration;
         self.push_log("⚠ DROUGHT — bandwidth collapsing".to_string());
     }
 
@@ -1315,7 +1325,7 @@ impl World {
             .map(|(p, _)| *p)
             .unwrap_or(Persona::Opportunist);
         let new_faction = self.faction_stats.len() as u8;
-        let new_branch = self.alloc_branch_id();
+        let new_branch = self.alloc_branch_id(0);
         // Cut the hub's old parent chain and drop any link that
         // connected hub to its previous parent. The rest of the
         // members stay connected via their in-branch links.
@@ -1486,7 +1496,7 @@ impl World {
         let mut spawned = 0u32;
         for pos in chosen_positions {
             let new_faction = self.faction_stats.len() as u8;
-            let new_branch = self.alloc_branch_id();
+            let new_branch = self.alloc_branch_id(0);
             let mut node = Node::fresh(pos, None, self.tick, Role::Relay, new_branch);
             node.faction = new_faction;
             node.pwn_resist = C2_INITIAL_HP;
@@ -2359,12 +2369,12 @@ impl World {
     /// sleeper flips its visible faction to its hidden true faction,
     /// gets a mutated_flash, and seeds an infection on its host
     /// node so the betrayal lands with weight. Logs the reveal.
-    fn maybe_wake_sleepers(&mut self) {
+    fn maybe_wake_sleepers(&mut self, mi: usize) {
         if self.cfg.sleeper_wake_chance <= 0.0 {
             return;
         }
         let mut to_wake: Vec<NodeId> = Vec::new();
-        for (id, n) in self.meshes[0].nodes.iter().enumerate() {
+        for (id, n) in self.meshes[mi].nodes.iter().enumerate() {
             if n.sleeper_true_faction.is_none() {
                 continue;
             }
@@ -2377,20 +2387,20 @@ impl World {
         }
         let cure_resist = self.cfg.virus_cure_resist;
         for id in to_wake {
-            let Some(true_f) = self.meshes[0].nodes[id].sleeper_true_faction else {
+            let Some(true_f) = self.meshes[mi].nodes[id].sleeper_true_faction else {
                 continue;
             };
-            let old_faction = self.meshes[0].nodes[id].faction;
-            let pos = self.meshes[0].nodes[id].pos;
-            self.meshes[0].nodes[id].faction = true_f;
-            self.meshes[0].nodes[id].sleeper_true_faction = None;
-            self.meshes[0].nodes[id].mutated_flash = 12;
+            let old_faction = self.meshes[mi].nodes[id].faction;
+            let pos = self.meshes[mi].nodes[id].pos;
+            self.meshes[mi].nodes[id].faction = true_f;
+            self.meshes[mi].nodes[id].sleeper_true_faction = None;
+            self.meshes[mi].nodes[id].mutated_flash = 12;
             // Plant a fresh strain on the host as the act of
             // sabotage so the betrayal has a visible mechanical
             // effect, not just a faction recolor.
-            if self.meshes[0].nodes[id].infection.is_none() {
+            if self.meshes[mi].nodes[id].infection.is_none() {
                 let strain = self.rng.gen_range(0..STRAIN_COUNT as u8);
-                self.meshes[0].nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
+                self.meshes[mi].nodes[id].infection = Some(Infection::seeded(strain, cure_resist));
             }
             // The reveal feeds the rivalry between the host's old
             // faction and its true faction.
@@ -2409,17 +2419,17 @@ impl World {
     /// age past LEGENDARY_MIN_AGE, children_spawned past
     /// LEGENDARY_MIN_CHILDREN, not a C2 (C2s are faction-level, not
     /// characters), not already legendary.
-    fn maybe_promote_legendary(&mut self) {
+    fn maybe_promote_legendary(&mut self, mi: usize) {
         let mut promoted: Vec<(NodeId, (i16, i16), u16)> = Vec::new();
         let now = self.tick;
-        for (id, n) in self.meshes[0].nodes.iter().enumerate() {
+        for (id, n) in self.meshes[mi].nodes.iter().enumerate() {
             if n.legendary_name != u16::MAX {
                 continue;
             }
             if !matches!(n.state, State::Alive) || n.dying_in > 0 {
                 continue;
             }
-            if self.is_c2(id) {
+            if self.is_c2(mi, id) {
                 continue;
             }
             if now.saturating_sub(n.born) < LEGENDARY_MIN_AGE {
@@ -2435,8 +2445,8 @@ impl World {
             promoted.push((id, n.pos, idx));
         }
         for (id, pos, idx) in promoted {
-            self.meshes[0].nodes[id].legendary_name = idx;
-            self.meshes[0].nodes[id].mutated_flash = 10;
+            self.meshes[mi].nodes[id].legendary_name = idx;
+            self.meshes[mi].nodes[id].mutated_flash = 10;
             let name = LEGENDARY_NAME_POOL[idx as usize];
             let (a, b) = octet_pair(pos);
             self.push_log(format!("✦ legend ✦ {} rises @ 10.0.{}.{}", name, a, b));
@@ -2470,10 +2480,11 @@ impl World {
     /// identical; it's just triggered by a keybind instead of the
     /// timer. Used by the cursor-action hotkey 'p'.
     pub fn inject_patch_wave(&mut self, origin: (i16, i16)) {
-        self.meshes[0].patch_waves.push(PatchWave { origin, radius: 0 });
+        let mi = self.active_mesh;
+        self.meshes[mi].patch_waves.push(PatchWave { origin, radius: 0 });
         // Flash any node sitting at the cursor so the inject has
         // a visible mesh-side response beyond the log line.
-        if let Some(n) = self.meshes[0].nodes.iter_mut().find(|n| n.pos == origin) {
+        if let Some(n) = self.meshes[mi].nodes.iter_mut().find(|n| n.pos == origin) {
             n.mutated_flash = 8;
             n.pulse = 4;
         }
@@ -2486,8 +2497,9 @@ impl World {
     /// closest Chebyshev neighbor within radius 2 is used. Used by
     /// the cursor-action hotkey 's'.
     pub fn inject_scanner_pulse(&mut self, origin: (i16, i16)) {
+        let mi = self.active_mesh;
         let pick = self
-            .meshes[0]
+            .meshes[mi]
             .nodes
             .iter()
             .enumerate()
@@ -2504,10 +2516,10 @@ impl World {
             self.push_log("scanner pulse refused: no nearby node".to_string());
             return;
         }
-        self.meshes[0].nodes[id].scan_pulse = SCANNER_PULSE_TICKS.saturating_mul(2);
-        self.meshes[0].nodes[id].role_cooldown = 0;
-        self.meshes[0].nodes[id].mutated_flash = 8;
-        let pos = self.meshes[0].nodes[id].pos;
+        self.meshes[mi].nodes[id].scan_pulse = SCANNER_PULSE_TICKS.saturating_mul(2);
+        self.meshes[mi].nodes[id].role_cooldown = 0;
+        self.meshes[mi].nodes[id].mutated_flash = 8;
+        let pos = self.meshes[mi].nodes[id].pos;
         self.log_node(pos, "scanner pulse injected");
     }
 
@@ -2516,15 +2528,16 @@ impl World {
     /// random palette slot, and full HP reservoir. Used by the
     /// cursor-action hotkey 'c'.
     pub fn inject_c2(&mut self, origin: (i16, i16)) {
+        let mi = self.active_mesh;
         if origin.0 < 0
             || origin.1 < 0
-            || origin.0 >= self.meshes[0].bounds.0
-            || origin.1 >= self.meshes[0].bounds.1
+            || origin.0 >= self.meshes[mi].bounds.0
+            || origin.1 >= self.meshes[mi].bounds.1
         {
             self.push_log("c2 plant refused: out of bounds".to_string());
             return;
         }
-        if self.meshes[0].occupied.contains(&origin) {
+        if self.meshes[mi].occupied.contains(&origin) {
             self.push_log("c2 plant refused: cell occupied".to_string());
             return;
         }
@@ -2533,10 +2546,10 @@ impl World {
         node.faction = new_faction;
         node.pwn_resist = C2_INITIAL_HP;
         node.mutated_flash = 12;
-        let id = self.meshes[0].nodes.len();
-        self.meshes[0].nodes.push(node);
-        self.meshes[0].occupied.insert(origin);
-        self.meshes[0].c2_nodes.push(id);
+        let id = self.meshes[mi].nodes.len();
+        self.meshes[mi].nodes.push(node);
+        self.meshes[mi].occupied.insert(origin);
+        self.meshes[mi].c2_nodes.push(id);
         self.faction_stats.push(FactionStats::default());
         let persona = match self.rng.gen_range(0..4u8) {
             0 => Persona::Aggressor,
@@ -2557,8 +2570,9 @@ impl World {
     /// Spawn a wormhole connecting `origin` to a random alive cell
     /// elsewhere on the mesh. Used by the cursor-action hotkey 'w'.
     pub fn inject_wormhole(&mut self, origin: (i16, i16)) {
+        let mi = self.active_mesh;
         let alive: Vec<(i16, i16)> = self
-            .meshes[0]
+            .meshes[mi]
             .nodes
             .iter()
             .filter(|n| matches!(n.state, State::Alive) && n.pos != origin)
@@ -2576,7 +2590,7 @@ impl World {
             oa, ob, ta, tb
         ));
         let life = self.cfg.wormhole_life_ticks;
-        self.meshes[0].wormholes.push(Wormhole {
+        self.meshes[mi].wormholes.push(Wormhole {
             a: origin,
             b: other,
             age: 0,
@@ -2649,7 +2663,7 @@ impl World {
     /// Collapses immediately if an active ISP outage touches any
     /// cell in the link's path — black-market fiber is
     /// "unlicensed" and falls apart under regulatory pressure.
-    fn maybe_black_market_link(&mut self) {
+    fn maybe_black_market_link(&mut self, mi: usize) {
         if !self.tick.is_multiple_of(400) || self.tick == 0 {
             return;
         }
@@ -2681,7 +2695,7 @@ impl World {
         // opportunist's faction. Prefer links that aren't
         // already uplifted.
         let candidates: Vec<usize> = self
-            .meshes[0]
+            .meshes[mi]
             .links
             .iter()
             .enumerate()
@@ -2692,8 +2706,8 @@ impl World {
                 if l.black_market_until > self.tick {
                     return None;
                 }
-                let fa = self.meshes[0].nodes[l.a].faction;
-                let fb = self.meshes[0].nodes[l.b].faction;
+                let fa = self.meshes[mi].nodes[l.a].faction;
+                let fb = self.meshes[mi].nodes[l.b].faction;
                 (fa == faction || fb == faction).then_some(i)
             })
             .collect();
@@ -2702,8 +2716,8 @@ impl World {
         }
         let pick = candidates[self.rng.gen_range(0..candidates.len())];
         let duration: u64 = 500;
-        self.meshes[0].links[pick].black_market_until = self.tick + duration;
-        let a_pos = self.meshes[0].nodes[self.meshes[0].links[pick].a].pos;
+        self.meshes[mi].links[pick].black_market_until = self.tick + duration;
+        let a_pos = self.meshes[mi].nodes[self.meshes[mi].links[pick].a].pos;
         let (oa, ob) = octet_pair(a_pos);
         self.push_log(format!(
             "black market uplift @ 10.0.{}.{} — F{}",
@@ -2717,7 +2731,7 @@ impl World {
     /// bid cost. Also rolls for fresh mercenary spawns at random
     /// unoccupied cells so the pool keeps refreshing. Runs on
     /// `MERCENARY_AUCTION_PERIOD` cadence.
-    fn maybe_mercenary_auction(&mut self) {
+    fn maybe_mercenary_auction(&mut self, mi: usize) {
         if !self.tick.is_multiple_of(MERCENARY_AUCTION_PERIOD) || self.tick == 0 {
             return;
         }
@@ -2728,8 +2742,8 @@ impl World {
         let winner: Option<u8> = (0..faction_count as u8)
             .filter(|&f| {
                 let stats = &self.faction_stats[f as usize];
-                let c2 = self.meshes[0].c2_nodes.get(f as usize).copied();
-                let alive = c2.map(|id| matches!(self.meshes[0].nodes[id].state, State::Alive)).unwrap_or(false);
+                let c2 = self.meshes[mi].c2_nodes.get(f as usize).copied();
+                let alive = c2.map(|id| matches!(self.meshes[mi].nodes[id].state, State::Alive)).unwrap_or(false);
                 alive && stats.intel >= MERCENARY_MIN_BID_INTEL
             })
             .max_by(|&a, &b| {
@@ -2744,7 +2758,7 @@ impl World {
         // reader sees the auction play out.
         if let Some(buyer) = winner {
             let mercs: Vec<NodeId> = self
-                .meshes[0]
+                .meshes[mi]
                 .nodes
                 .iter()
                 .enumerate()
@@ -2758,9 +2772,9 @@ impl World {
                 // node of the buying faction so it joins a
                 // chain instead of stranding itself.
                 for merc in mercs {
-                    let mpos = self.meshes[0].nodes[merc].pos;
+                    let mpos = self.meshes[mi].nodes[merc].pos;
                     let anchor = self
-                        .meshes[0]
+                        .meshes[mi]
                         .nodes
                         .iter()
                         .enumerate()
@@ -2779,16 +2793,16 @@ impl World {
                         .map(|(i, _)| i)
                         .unwrap_or_else(|| {
                             // Fallback: find buyer's C2 on this mesh.
-                            self.meshes[0]
+                            self.meshes[mi]
                                 .c2_nodes
                                 .iter()
                                 .copied()
-                                .find(|&cid| self.meshes[0].nodes[cid].faction == buyer)
+                                .find(|&cid| self.meshes[mi].nodes[cid].faction == buyer)
                                 .unwrap_or(0)
                         });
-                    self.meshes[0].nodes[merc].faction = buyer;
-                    self.meshes[0].nodes[merc].parent = Some(anchor);
-                    self.meshes[0].nodes[merc].mutated_flash = 10;
+                    self.meshes[mi].nodes[merc].faction = buyer;
+                    self.meshes[mi].nodes[merc].parent = Some(anchor);
+                    self.meshes[mi].nodes[merc].mutated_flash = 10;
                     if let Some(s) = self.faction_stats.get_mut(buyer as usize) {
                         s.intel = s.intel.saturating_sub(MERCENARY_BID_COST);
                     }
@@ -2802,21 +2816,21 @@ impl World {
         }
         // Pass 3: spawn a fresh mercenary somewhere unoccupied.
         if self.rng.gen_bool(MERCENARY_SPAWN_CHANCE) {
-            let bounds = self.meshes[0].bounds;
+            let bounds = self.meshes[mi].bounds;
             if bounds.0 >= 8 && bounds.1 >= 8 {
                 for _ in 0..16 {
                     let x = self.rng.gen_range(4..bounds.0 - 4);
                     let y = self.rng.gen_range(4..bounds.1 - 4);
-                    if self.meshes[0].occupied.contains(&(x, y)) {
+                    if self.meshes[mi].occupied.contains(&(x, y)) {
                         continue;
                     }
-                    let branch = self.alloc_branch_id();
+                    let branch = self.alloc_branch_id(mi);
                     let mut n = Node::fresh((x, y), None, self.tick, Role::Relay, branch);
                     n.faction = MERCENARY_FACTION;
                     n.pwn_resist = 1;
                     n.mutated_flash = 12;
-                    self.meshes[0].nodes.push(n);
-                    self.meshes[0].occupied.insert((x, y));
+                    self.meshes[mi].nodes.push(n);
+                    self.meshes[mi].occupied.insert((x, y));
                     let (oa, ob) = octet_pair((x, y));
                     self.push_log(format!("merc available @ 10.0.{}.{}", oa, ob));
                     break;
@@ -2832,12 +2846,13 @@ impl World {
     /// spawn, the mark only biases *where*. Called by the `g`
     /// cursor hotkey. Out-of-bounds positions are rejected.
     pub fn inject_graffiti(&mut self, pos: (i16, i16)) {
-        if pos.0 < 0 || pos.1 < 0 || pos.0 >= self.meshes[0].bounds.0 || pos.1 >= self.meshes[0].bounds.1 {
+        let mi = self.active_mesh;
+        if pos.0 < 0 || pos.1 < 0 || pos.0 >= self.meshes[mi].bounds.0 || pos.1 >= self.meshes[mi].bounds.1 {
             self.push_log("graffiti refused: out of bounds".to_string());
             return;
         }
         let expires_tick = self.tick + GRAFFITI_MARK_TICKS;
-        self.meshes[0].graffiti_marks.push((pos, expires_tick));
+        self.meshes[mi].graffiti_marks.push((pos, expires_tick));
         let (a, b) = octet_pair(pos);
         self.push_log(format!("graffiti @ 10.0.{}.{} — bias armed", a, b));
     }
@@ -2847,9 +2862,9 @@ impl World {
     /// radius. Read from `try_spawn`'s parent-weighting pass.
     /// Each in-radius mark adds `GRAFFITI_WEIGHT_MULT - 1.0` so
     /// the multiplier grows with stacked marks.
-    pub fn graffiti_weight_bonus(&self, pos: (i16, i16)) -> f32 {
+    pub fn graffiti_weight_bonus(&self, mi: usize, pos: (i16, i16)) -> f32 {
         let mut bonus = 1.0f32;
-        for &(mark, _) in &self.meshes[0].graffiti_marks {
+        for &(mark, _) in &self.meshes[mi].graffiti_marks {
             let d = (mark.0 - pos.0).abs().max((mark.1 - pos.1).abs());
             if d <= GRAFFITI_MARK_RADIUS {
                 bonus += GRAFFITI_WEIGHT_MULT - 1.0;
@@ -2975,14 +2990,14 @@ impl World {
     /// has the given role. Used by the role-synergy bonuses (Tower
     /// near Defender, Scanner near Beacon, Exfil near Router) so
     /// adjacent role combos reward tactical spawn placement.
-    pub(crate) fn has_neighbor_role(&self, pos: (i16, i16), role: Role) -> bool {
+    pub(crate) fn has_neighbor_role(&self, mi: usize, pos: (i16, i16), role: Role) -> bool {
         for dx in -1i16..=1 {
             for dy in -1i16..=1 {
                 if dx == 0 && dy == 0 {
                     continue;
                 }
                 let np = (pos.0 + dx, pos.1 + dy);
-                for n in &self.meshes[0].nodes {
+                for n in &self.meshes[mi].nodes {
                     if n.pos == np
                         && n.role == role
                         && matches!(n.state, State::Alive)
@@ -3563,128 +3578,105 @@ impl World {
             }
         }
 
-        // Network storm: rare chaotic burst that spikes spawn + loss for
-        // a short window. Logged at start and end so the phase reads
-        // clearly in the log.
-        self.maybe_storm();
-        self.maybe_drought();
-        self.maybe_ddos();
-        self.advance_ddos_waves();
-        self.maybe_wormhole();
-        self.advance_wormholes();
-        self.maybe_isp_outage();
-        self.advance_outages();
-        self.maybe_partition();
-        self.advance_partitions();
-        if self.cfg.sleeper_wake_period > 0
-            && self.tick.is_multiple_of(self.cfg.sleeper_wake_period)
-        {
-            self.maybe_wake_sleepers();
-        }
-        self.maybe_assimilate();
-        self.maybe_mercenary_auction();
-        self.maybe_black_market_link();
-        self.maybe_syndicate_vote();
-        self.maybe_defector();
-        self.maybe_border_skirmish();
+        // ── Per-mesh phases ──
+        // Each per-mesh method takes `mi: usize` and accesses
+        // `self.meshes[mi]` for all grid-local state. Every mesh
+        // runs the full sim pipeline independently.
+        for mi in 0..self.meshes.len() {
+            // Environmental events (storms, droughts, DDoS, etc.)
+            self.maybe_storm(mi);
+            self.maybe_drought(mi);
+            self.maybe_ddos(mi);
+            self.advance_ddos_waves(mi);
+            self.maybe_wormhole(mi);
+            self.advance_wormholes(mi);
+            self.maybe_isp_outage(mi);
+            self.advance_outages(mi);
+            self.maybe_partition(mi);
+            self.advance_partitions(mi);
+            if self.cfg.sleeper_wake_period > 0
+                && self.tick.is_multiple_of(self.cfg.sleeper_wake_period)
+            {
+                self.maybe_wake_sleepers(mi);
+            }
+            self.maybe_assimilate(mi);
+            self.maybe_mercenary_auction(mi);
+            self.maybe_black_market_link(mi);
+            self.maybe_defector(mi);
+            self.maybe_border_skirmish(mi);
 
-        // Sample faction alive counts for the header sparkline.
+            // Expire graffiti marks on this mesh.
+            let tick = self.tick;
+            self.meshes[mi].graffiti_marks.retain(|&(_, exp)| exp > tick);
+
+            // Phase 1: growth + link animation.
+            self.try_spawn(mi);
+            self.advance_links(mi);
+
+            // Phase 2: traveler motion.
+            self.decay_link_load(mi);
+            self.advance_packets(mi);
+            self.advance_link_overloads(mi);
+            self.advance_worms(mi);
+            self.advance_patch_waves(mi);
+            self.advance_sparks(mi);
+            self.advance_shockwaves(mi);
+
+            // Phase 3: periodic sweeps + per-node upkeep.
+            self.heartbeat(mi);
+            self.advance_role_cooldowns(mi);
+            self.maybe_mutate(mi);
+            self.maybe_zero_day(mi);
+
+            // Phase 4: role-driven emissions.
+            self.fire_scanner_pings(mi);
+            self.fire_exfil_packets(mi);
+            self.fire_defender_pulses(mi);
+            self.fire_hunter_culls(mi);
+
+            // Phase 5: infection dynamics.
+            self.advance_infections(mi);
+            self.maybe_spawn_worms(mi);
+            self.maybe_seed_infection(mi);
+
+            // Phase 6: loss, cascade, and mesh repair.
+            self.advance_pwned_and_loss(mi);
+            self.advance_dying(mi);
+            self.maybe_reconnect(mi);
+        }
+
+        // ── Global phases (run once, not per-mesh) ──
         if self.tick.is_multiple_of(FACTION_SAMPLE_PERIOD) {
             self.sample_faction_history();
-            // Reactive persona shifts based on current vs peak/avg.
             self.maybe_shift_personas();
-            // Check for legendary-node promotions on the same cadence.
-            self.maybe_promote_legendary();
-            // Diplomacy state machine: decays pressure, accumulates
-            // trust, fires transitions between Neutral ↔ ColdWar ↔
-            // OpenWar and Neutral → Trade → NonAggression →
-            // Alliance, handles Vassalage subordination, and rolls
-            // Trade proposals between quiet Neutral pairs.
+            for mi in 0..self.meshes.len() {
+                self.maybe_promote_legendary(mi);
+            }
             self.advance_diplomacy();
-            // Research accrual + tier unlocks, then Tier 3 active
-            // ability rolls for any faction that just crossed (or
-            // already sits at) the top tier. Runs after diplomacy
-            // so Trade/Alliance bonuses land on the current tick.
             self.advance_research();
             self.advance_tech_actives();
-            // Check for a dominance victory condition.
             self.maybe_declare_victory();
-            // Let any critically-weakened faction trigger its
-            // scorched-earth protocol as a last defiance.
             self.maybe_scorched_earth();
-            // Collect strain-patent royalties from rival hosts.
+            self.maybe_syndicate_vote();
             self.collect_strain_patents();
-            // Wake any sleeper-lattice edges whose triggers fired.
             self.activate_sleeper_lattice();
-            // Procedural custom events rolled at world creation.
-            // Walks the custom_events pool, evaluates each
-            // trigger+condition against current world state, and
-            // fires any event whose cooldown has elapsed.
             self.advance_custom_events();
-            // Civil-war / fission check: break away divergent
-            // branches that have drifted too far from their
-            // parent faction's persona.
             self.advance_fission();
-            // Cross-layer events: infection drip, traffic leak,
-            // breach projection between meshes.
             self.advance_cross_layer_events();
-            // Detect full extinction and fire a cosmic reseed
-            // after the silent-interval cooldown. The sim is
-            // hands-off, so mesh-wide wipe shouldn't end the
-            // run — it's just another act break.
             self.check_extinction_and_reseed();
         }
         // Expire the faction favoritism boost.
         if self.favored_faction.is_some() && self.tick >= self.favor_expires_tick {
             self.favored_faction = None;
         }
-        // Expire any graffiti marks whose window has elapsed.
-        self.meshes[0].graffiti_marks.retain(|&(_, exp)| exp > self.tick);
-
-        // Phase 1: growth — add new nodes and extend link animations.
-        self.try_spawn();
-        self.advance_links();
-
-        // Phase 2: traveler motion — anything moving along existing links.
-        self.decay_link_load();
-        self.advance_packets();
-        self.advance_link_overloads();
-        self.advance_worms();
-        self.advance_patch_waves();
-        self.advance_sparks();
-        self.advance_shockwaves();
-
-        // Phase 3: periodic sweeps + per-node upkeep.
-        self.heartbeat();
-        self.advance_role_cooldowns();
-        self.maybe_mutate();
-        self.maybe_zero_day();
-
-        // Phase 4: role-driven emissions. Must run after cooldowns so the
-        // period timers have already been decremented for this tick.
-        self.fire_scanner_pings();
-        self.fire_exfil_packets();
-        self.fire_defender_pulses();
-        self.fire_hunter_culls();
-
-        // Phase 5: infection dynamics — stage progression, spread, seeding,
-        // and worm launches from active carriers.
-        self.advance_infections();
-        self.maybe_spawn_worms();
-        self.maybe_seed_infection();
-
-        // Phase 6: loss, cascade, and mesh repair.
-        self.advance_pwned_and_loss();
-        self.advance_dying();
-        self.maybe_reconnect();
 
         self.tick += 1;
     }
 
 
-    fn advance_links(&mut self) {
+    fn advance_links(&mut self, mi: usize) {
         let step_amount: u16 = if self.tick.is_multiple_of(2) { 1 } else { 2 };
-        let mesh = &mut self.meshes[0];
+        let mesh = &mut self.meshes[mi];
         // Snapshot endpoint states before the mutable link loop
         // so we don't split-borrow mesh.nodes during mesh.links
         // iteration.
@@ -3710,20 +3702,20 @@ impl World {
         }
     }
 
-    fn heartbeat(&mut self) {
+    fn heartbeat(&mut self, mi: usize) {
         if self.tick > 0 && self.tick.is_multiple_of(self.cfg.heartbeat_period) {
             let threshold = self.cfg.hardened_after_heartbeats;
             let mut newly_hardened: Vec<(i16, i16)> = Vec::new();
             // Emit a patch wave from each C2 alongside the beacon pulse.
             let c2_positions: Vec<(i16, i16)> =
-                self.meshes[0].c2_nodes.iter().map(|&id| self.meshes[0].nodes[id].pos).collect();
+                self.meshes[mi].c2_nodes.iter().map(|&id| self.meshes[mi].nodes[id].pos).collect();
             for pos in c2_positions {
-                self.meshes[0].patch_waves.push(PatchWave {
+                self.meshes[mi].patch_waves.push(PatchWave {
                     origin: pos,
                     radius: 0,
                 });
             }
-            for n in self.meshes[0].nodes.iter_mut() {
+            for n in self.meshes[mi].nodes.iter_mut() {
                 if matches!(n.state, State::Alive) {
                     n.pulse = 2;
                     n.heartbeats = n.heartbeats.saturating_add(1);
@@ -3739,7 +3731,7 @@ impl World {
             // fortifications around defender lattices.
             let tower_cap = self.cfg.tower_pwn_resist.saturating_mul(2).max(4);
             let tower_ids: Vec<NodeId> = self
-                .meshes[0]
+                .meshes[mi]
                 .nodes
                 .iter()
                 .enumerate()
@@ -3755,11 +3747,11 @@ impl World {
                 })
                 .collect();
             for id in tower_ids {
-                let pos = self.meshes[0].nodes[id].pos;
-                if self.has_neighbor_role(pos, Role::Defender) {
-                    self.meshes[0].nodes[id].pwn_resist =
-                        self.meshes[0].nodes[id].pwn_resist.saturating_add(1);
-                    self.meshes[0].nodes[id].shield_flash = 4;
+                let pos = self.meshes[mi].nodes[id].pos;
+                if self.has_neighbor_role(mi, pos, Role::Defender) {
+                    self.meshes[mi].nodes[id].pwn_resist =
+                        self.meshes[mi].nodes[id].pwn_resist.saturating_add(1);
+                    self.meshes[mi].nodes[id].shield_flash = 4;
                 }
             }
             self.push_log(format!("beacon sweep @ t={}", self.tick));
@@ -3767,7 +3759,7 @@ impl World {
                 self.log_node(pos, "hardened");
             }
         } else {
-            for n in self.meshes[0].nodes.iter_mut() {
+            for n in self.meshes[mi].nodes.iter_mut() {
                 if n.pulse > 0 {
                     n.pulse -= 1;
                 }
@@ -3776,8 +3768,8 @@ impl World {
     }
 
 
-    fn advance_sparks(&mut self) {
-        for s in self.meshes[0].sparks.iter_mut() {
+    fn advance_sparks(&mut self, mi: usize) {
+        for s in self.meshes[mi].sparks.iter_mut() {
             s.pos.0 += s.vel.0;
             s.pos.1 += s.vel.1;
             // Friction so sparks slow down and cluster near their
@@ -3786,23 +3778,23 @@ impl World {
             s.vel.1 *= 0.86;
             s.age = s.age.saturating_add(1);
         }
-        self.meshes[0].sparks.retain(|s| s.age < s.life);
+        self.meshes[mi].sparks.retain(|s| s.age < s.life);
     }
 
-    fn advance_shockwaves(&mut self) {
-        for sw in self.meshes[0].shockwaves.iter_mut() {
+    fn advance_shockwaves(&mut self, mi: usize) {
+        for sw in self.meshes[mi].shockwaves.iter_mut() {
             sw.age = sw.age.saturating_add(1);
         }
-        self.meshes[0].shockwaves.retain(|sw| sw.age <= sw.max_age);
+        self.meshes[mi].shockwaves.retain(|sw| sw.age <= sw.max_age);
     }
 
     /// Emit a burst of sparks and a shockwave at the cascade root.
     /// Called from schedule_subtree_death when a cascade actually
     /// finalized a nonzero number of hosts.
-    fn emit_cascade_effects(&mut self, root_pos: (i16, i16), touched: u32) {
+    fn emit_cascade_effects(&mut self, mi: usize, root_pos: (i16, i16), touched: u32) {
         // Shockwave: radius scaled to cascade size, capped.
         let max_age = (touched / 3).clamp(3, 10) as u8;
-        self.meshes[0].shockwaves.push(CascadeShockwave {
+        self.meshes[mi].shockwaves.push(CascadeShockwave {
             origin: root_pos,
             age: 0,
             max_age,
@@ -3817,7 +3809,7 @@ impl World {
             let vx = angle.cos() * speed;
             let vy = angle.sin() * speed * 0.6; // flatter vertically since cells are ~2x tall
             let life = 7 + self.rng.gen_range(0..4) as u8;
-            self.meshes[0].sparks.push(CascadeSpark {
+            self.meshes[mi].sparks.push(CascadeSpark {
                 pos: (origin_x, origin_y),
                 vel: (vx, vy),
                 age: 0,
@@ -3831,8 +3823,8 @@ impl World {
     /// the add/decay pair stays symmetric. Decay is load-proportional
     /// (`max(1, load/4)`) so hot links cool aggressively — short bursts
     /// snap back instead of lingering at the ceiling.
-    fn decay_link_load(&mut self) {
-        for link in self.meshes[0].links.iter_mut() {
+    fn decay_link_load(&mut self, mi: usize) {
+        for link in self.meshes[mi].links.iter_mut() {
             let step = (link.load / 4).max(1);
             link.load = link.load.saturating_sub(step);
             link.breach_ttl = link.breach_ttl.saturating_sub(1);
@@ -3851,11 +3843,11 @@ impl World {
     /// links that stay hot past the upper threshold. Called right
     /// after `advance_packets` so the decisions are based on the
     /// load snapshot the packets just observed.
-    fn advance_link_overloads(&mut self) {
+    fn advance_link_overloads(&mut self, mi: usize) {
         // Pass 1: collect candidates without borrowing self mutably.
         let mut upgrade_candidates: Vec<NodeId> = Vec::new();
         let mut collapse_ids: Vec<usize> = Vec::new();
-        for (li, link) in self.meshes[0].links.iter().enumerate() {
+        for (li, link) in self.meshes[mi].links.iter().enumerate() {
             if link.quarantined > 0 {
                 continue;
             }
@@ -3873,10 +3865,10 @@ impl World {
         // Pass 2: router upgrades. Bypasses `is_mutation_locked` on
         // purpose — this is the mesh adapting to pressure in place.
         for id in upgrade_candidates {
-            if self.is_c2(id) {
+            if self.is_c2(mi, id) {
                 continue;
             }
-            let node = &self.meshes[0].nodes[id];
+            let node = &self.meshes[mi].nodes[id];
             if node.role == Role::Router
                 || !matches!(node.state, State::Alive)
                 || node.dying_in > 0
@@ -3889,8 +3881,8 @@ impl World {
             }
             if self.rng.gen_bool(ROUTER_UPGRADE_CHANCE) {
                 let pos = node.pos;
-                self.meshes[0].nodes[id].role = Role::Router;
-                self.meshes[0].nodes[id].mutated_flash = 8;
+                self.meshes[mi].nodes[id].role = Role::Router;
+                self.meshes[mi].nodes[id].mutated_flash = 8;
                 self.log_node(pos, "upgraded → router");
             }
         }
@@ -3899,7 +3891,7 @@ impl World {
         // stun both endpoints, and emit a shockwave at the midpoint.
         for li in collapse_ids {
             let (mid, a, b) = {
-                let link = &self.meshes[0].links[li];
+                let link = &self.meshes[mi].links[li];
                 let mid = link
                     .path
                     .get(link.path.len() / 2)
@@ -3907,9 +3899,9 @@ impl World {
                     .unwrap_or((0, 0));
                 (mid, link.a, link.b)
             };
-            self.meshes[0].packets.retain(|p| p.link_id != li);
-            self.meshes[0].worms.retain(|w| w.link_id != li);
-            let link = &mut self.meshes[0].links[li];
+            self.meshes[mi].packets.retain(|p| p.link_id != li);
+            self.meshes[mi].worms.retain(|w| w.link_id != li);
+            let link = &mut self.meshes[mi].links[li];
             link.load = 0;
             link.burn_ticks = 0;
             link.quarantined = LINK_QUARANTINE_TICKS;
@@ -3918,11 +3910,11 @@ impl World {
             const OVERLOAD_STUN: u16 = 120;
             const OVERLOAD_CAP: u16 = 500;
             for endpoint in [a, b] {
-                let n = &mut self.meshes[0].nodes[endpoint];
+                let n = &mut self.meshes[mi].nodes[endpoint];
                 n.role_cooldown = n.role_cooldown.saturating_add(OVERLOAD_STUN).min(OVERLOAD_CAP);
                 n.scan_pulse = n.scan_pulse.max(6);
             }
-            self.emit_cascade_effects(mid, 8);
+            self.emit_cascade_effects(mi, mid, 8);
             self.push_log("⚡ LINK OVERLOAD — router core melted".to_string());
         }
     }
@@ -3932,25 +3924,25 @@ impl World {
     /// link we traverse as part of an exploit chain breach. The result
     /// reads as a visible trail of red-tinted wires leading back to C2
     /// from the fresh kill — the story of how the attack got here.
-    fn breach_chain_up(&mut self, victim: NodeId) {
+    fn breach_chain_up(&mut self, mi: usize, victim: NodeId) {
         let mut cur = victim;
         let mut hops = 0;
         while hops < BREACH_MAX_HOPS {
-            let Some(parent_id) = self.meshes[0].nodes[cur].parent else {
+            let Some(parent_id) = self.meshes[mi].nodes[cur].parent else {
                 break;
             };
             // Find the parent-link connecting cur to parent_id.
             let mut found = None;
-            for (i, l) in self.meshes[0].links.iter().enumerate() {
+            for (i, l) in self.meshes[mi].links.iter().enumerate() {
                 if l.kind == LinkKind::Parent && l.a == parent_id && l.b == cur {
                     found = Some(i);
                     break;
                 }
             }
             if let Some(link_id) = found {
-                self.meshes[0].links[link_id].breach_ttl = BREACH_TTL;
+                self.meshes[mi].links[link_id].breach_ttl = BREACH_TTL;
             }
-            if self.is_c2(parent_id) {
+            if self.is_c2(mi, parent_id) {
                 break;
             }
             cur = parent_id;
@@ -3983,6 +3975,7 @@ impl World {
         let (a, b) = octet_pair(pos);
         self.push_log(format!("node 10.0.{}.{} {}", a, b, suffix));
     }
+
 }
 
 // Unit tests live in the sibling file src/world/tests.rs, picked

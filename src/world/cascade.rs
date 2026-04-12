@@ -18,10 +18,10 @@ use super::{
 };
 
 impl World {
-    pub(super) fn advance_pwned_and_loss(&mut self) {
+    pub(super) fn advance_pwned_and_loss(&mut self, mi: usize) {
         // Tick down existing Pwned nodes.
         let mut to_schedule: Vec<NodeId> = Vec::new();
-        for (i, n) in self.meshes[0].nodes.iter_mut().enumerate() {
+        for (i, n) in self.meshes[mi].nodes.iter_mut().enumerate() {
             if let State::Pwned { ticks_left } = &mut n.state {
                 if *ticks_left <= 1 {
                     to_schedule.push(i);
@@ -32,24 +32,25 @@ impl World {
         }
         for id in to_schedule {
             // Honeypot triggers an oversized cascade that also eats its parent.
-            if self.meshes[0].nodes[id].role == Role::Honeypot && self.meshes[0].nodes[id].honey_tripped {
+            if self.meshes[mi].nodes[id].role == Role::Honeypot && self.meshes[mi].nodes[id].honey_tripped {
                 // Reveal backdoor cross-links before cascading so the
                 // shortcuts are visible for a few ticks before the death
                 // wave propagates outward from them.
-                self.reveal_honeypot_backdoors(id);
+                self.reveal_honeypot_backdoors(mi, id);
                 let cm = self.era_rules.cascade_mult;
-                if let Some(parent) = self.meshes[0].nodes[id].parent {
-                    if !self.is_c2(parent) {
+                if let Some(parent) = self.meshes[mi].nodes[id].parent {
+                    if !self.is_c2(mi, parent) {
                         self.schedule_subtree_death(
+                            mi,
                             parent,
                             self.cfg.honeypot_cascade_mult * cm,
                         );
                         continue;
                     }
                 }
-                self.schedule_subtree_death(id, self.cfg.honeypot_cascade_mult * cm);
+                self.schedule_subtree_death(mi, id, self.cfg.honeypot_cascade_mult * cm);
             } else {
-                self.schedule_subtree_death(id, self.era_rules.cascade_mult);
+                self.schedule_subtree_death(mi, id, self.era_rules.cascade_mult);
             }
         }
 
@@ -64,15 +65,15 @@ impl World {
         }
         let effective_loss =
             (self.cfg.p_loss * loss_mult * self.era_rules.loss_mult
-                * self.meshes[0].rules.loss_mult).clamp(0.0, 1.0);
+                * self.meshes[mi].rules.loss_mult).clamp(0.0, 1.0);
         if self.rng.gen_bool(effective_loss as f64) {
             let alive_ids: Vec<NodeId> = self
-                .meshes[0]
+                .meshes[mi]
                 .nodes
                 .iter()
                 .enumerate()
                 .filter_map(|(i, n)| {
-                    if !self.is_c2(i) && matches!(n.state, State::Alive) {
+                    if !self.is_c2(mi, i) && matches!(n.state, State::Alive) {
                         Some(i)
                     } else {
                         None
@@ -81,8 +82,8 @@ impl World {
                 .collect();
             if !alive_ids.is_empty() {
                 let victim = alive_ids[self.rng.gen_range(0..alive_ids.len())];
-                let pos = self.meshes[0].nodes[victim].pos;
-                let node = &mut self.meshes[0].nodes[victim];
+                let pos = self.meshes[mi].nodes[victim].pos;
+                let node = &mut self.meshes[mi].nodes[victim];
 
                 if node.pwn_resist > 0 {
                     // Tower fortification absorbs the hit before any
@@ -120,7 +121,7 @@ impl World {
                     // Trace the exploit chain back toward C2 so the
                     // path the attacker 'came from' glows red for a
                     // few ticks before the cascade catches up.
-                    self.breach_chain_up(victim);
+                    self.breach_chain_up(mi, victim);
                 }
             }
         }
@@ -129,13 +130,13 @@ impl World {
     /// Build the live undirected adjacency used for cascade reachability.
     /// Parent edges always count; cross edges only count once fully drawn.
     /// Dead / dying nodes are excluded entirely.
-    pub(super) fn live_adjacency(&self) -> HashMap<NodeId, Vec<NodeId>> {
+    pub(super) fn live_adjacency(&self, mi: usize) -> HashMap<NodeId, Vec<NodeId>> {
         let mut adj: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         let traversable = |id: NodeId| -> bool {
-            let n = &self.meshes[0].nodes[id];
+            let n = &self.meshes[mi].nodes[id];
             !matches!(n.state, State::Dead) && n.dying_in == 0
         };
-        for (id, n) in self.meshes[0].nodes.iter().enumerate() {
+        for (id, n) in self.meshes[mi].nodes.iter().enumerate() {
             if !traversable(id) {
                 continue;
             }
@@ -146,7 +147,7 @@ impl World {
                 }
             }
         }
-        for link in &self.meshes[0].links {
+        for link in &self.meshes[mi].links {
             if link.kind != LinkKind::Cross {
                 continue;
             }
@@ -201,30 +202,30 @@ impl World {
     /// filtered to the root's faction so cross-faction bridges (which
     /// maybe_reconnect can now create via cross_faction_bridge_chance)
     /// don't let a cascade leak across borders.
-    pub(super) fn compute_cascade(&self, root: NodeId) -> Vec<(NodeId, u8)> {
-        let root_faction = self.meshes[0].nodes[root].faction;
-        let full_adj = self.live_adjacency();
+    pub(super) fn compute_cascade(&self, mi: usize, root: NodeId) -> Vec<(NodeId, u8)> {
+        let root_faction = self.meshes[mi].nodes[root].faction;
+        let full_adj = self.live_adjacency(mi);
         // Same-faction-only view: drop edges where either endpoint
         // belongs to a different faction.
         let mut adj: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for (id, neighbors) in full_adj.iter() {
-            if self.meshes[0].nodes[*id].faction != root_faction {
+            if self.meshes[mi].nodes[*id].faction != root_faction {
                 continue;
             }
             let filtered: Vec<NodeId> = neighbors
                 .iter()
                 .copied()
-                .filter(|&m| self.meshes[0].nodes[m].faction == root_faction)
+                .filter(|&m| self.meshes[mi].nodes[m].faction == root_faction)
                 .collect();
             adj.insert(*id, filtered);
         }
         let faction = root_faction as usize;
         let anchor = self
-            .meshes[0]
+            .meshes[mi]
             .c2_nodes
             .get(faction)
             .copied()
-            .unwrap_or(self.meshes[0].c2_nodes[0]);
+            .unwrap_or(self.meshes[mi].c2_nodes[0]);
         let reach_with = self.bfs_reachable(anchor, &adj, None);
         let reach_without = self.bfs_reachable(anchor, &adj, Some(root));
         let doomed: HashSet<NodeId> = reach_with
@@ -262,19 +263,19 @@ impl World {
     /// cross-links to nearby same-faction neighbors in different branches.
     /// The new links animate in normally (drawn: 0) so the viewer sees
     /// them reach outward before the cascade wave catches up.
-    pub(super) fn reveal_honeypot_backdoors(&mut self, honey_id: NodeId) {
+    pub(super) fn reveal_honeypot_backdoors(&mut self, mi: usize, honey_id: NodeId) {
         let max = self.cfg.honeypot_backdoor_max;
         if max == 0 {
             return;
         }
         let radius = self.cfg.honeypot_backdoor_radius;
-        let a_pos = self.meshes[0].nodes[honey_id].pos;
-        let a_branch = self.meshes[0].nodes[honey_id].branch_id;
-        let a_faction = self.meshes[0].nodes[honey_id].faction;
+        let a_pos = self.meshes[mi].nodes[honey_id].pos;
+        let a_branch = self.meshes[mi].nodes[honey_id].branch_id;
+        let a_faction = self.meshes[mi].nodes[honey_id].faction;
 
         // Collect nearby eligible targets.
         let mut candidates: Vec<NodeId> = self
-            .meshes[0]
+            .meshes[mi]
             .nodes
             .iter()
             .enumerate()
@@ -288,7 +289,7 @@ impl World {
                 if n.faction != a_faction || n.branch_id == a_branch {
                     return None;
                 }
-                if self.is_c2(i) {
+                if self.is_c2(mi, i) {
                     return None;
                 }
                 let dp = n.pos;
@@ -297,7 +298,7 @@ impl World {
                     return None;
                 }
                 // Skip if a cross-link between honey and this node exists.
-                let already = self.meshes[0].links.iter().any(|l| {
+                let already = self.meshes[mi].links.iter().any(|l| {
                     l.kind == LinkKind::Cross
                         && ((l.a == honey_id && l.b == i) || (l.a == i && l.b == honey_id))
                 });
@@ -318,22 +319,22 @@ impl World {
         // paths — so backdoor cross-links are free to cross over
         // existing wires just like spawn and reconnect links do.
         let mut occ: HashSet<(i16, i16)> = self
-            .meshes[0]
+            .meshes[mi]
             .nodes
             .iter()
             .map(|n| n.pos)
             .collect();
         occ.remove(&a_pos);
 
-        let bounds = self.meshes[0].bounds;
+        let bounds = self.meshes[mi].bounds;
         let mut revealed = 0u32;
         for &b in candidates.iter().take(take) {
-            let b_pos = self.meshes[0].nodes[b].pos;
+            let b_pos = self.meshes[mi].nodes[b].pos;
             occ.remove(&b_pos);
             let path = routing::route_link(a_pos, b_pos, &occ, bounds, &mut self.rng);
             occ.insert(b_pos);
             if let Some(path) = path {
-                self.meshes[0].links.push(Link {
+                self.meshes[mi].links.push(Link {
                     a: honey_id,
                     b,
                     path,
@@ -368,7 +369,7 @@ impl World {
     /// `schedule_subtree_death` where the full cascade cohort is
     /// known, not from advance_dying (where staggered deaths rarely
     /// reach the threshold in a single tick).
-    fn maybe_resurrect_c2_from_cascade(&mut self, doomed: &[NodeId]) {
+    fn maybe_resurrect_c2_from_cascade(&mut self, mi: usize, doomed: &[NodeId]) {
         let threshold = self.cfg.resurrection_threshold as usize;
         if threshold == 0 || doomed.len() < threshold {
             return;
@@ -383,7 +384,7 @@ impl World {
         let mut candidates: Vec<NodeId> = doomed
             .iter()
             .copied()
-            .filter(|&id| !matches!(self.meshes[0].nodes[id].state, State::Dead))
+            .filter(|&id| !matches!(self.meshes[mi].nodes[id].state, State::Dead))
             .collect();
         if candidates.is_empty() {
             return;
@@ -391,12 +392,12 @@ impl World {
         let idx = self.rng.gen_range(0..candidates.len());
         let reborn = candidates.swap_remove(idx);
         let new_faction = self.faction_stats.len() as u8;
-        let new_branch = self.alloc_branch_id();
-        let pos = self.meshes[0].nodes[reborn].pos;
+        let new_branch = self.alloc_branch_id(mi);
+        let pos = self.meshes[mi].nodes[reborn].pos;
         // Cancel the pending death and reset the node to a fresh C2
         // state. Old inbound/outbound links stay as ghost wires on
         // the dying subtree around it.
-        let node = &mut self.meshes[0].nodes[reborn];
+        let node = &mut self.meshes[mi].nodes[reborn];
         node.state = State::Alive;
         node.dying_in = 0;
         node.death_echo = 0;
@@ -414,7 +415,7 @@ impl World {
         node.mutated_flash = 12;
         node.scan_pulse = 0;
         // Register the new C2 and faction.
-        self.meshes[0].c2_nodes.push(reborn);
+        self.meshes[mi].c2_nodes.push(reborn);
         self.faction_stats.push(FactionStats::default());
         // Reborn factions roll a fresh persona too. Pick uniformly
         // so the resurrected colony reads as its own player.
@@ -438,15 +439,15 @@ impl World {
         ));
     }
 
-    pub fn schedule_subtree_death(&mut self, root: NodeId, mult: f32) {
-        let cascade = self.compute_cascade(root);
+    pub fn schedule_subtree_death(&mut self, mi: usize, root: NodeId, mult: f32) {
+        let cascade = self.compute_cascade(mi, root);
         let mut touched = 0u32;
         let mut doomed: Vec<NodeId> = Vec::with_capacity(cascade.len());
         for (id, distance) in cascade {
             let base = distance.saturating_mul(2).saturating_add(3) as f32;
             let delay = (base * mult).round().clamp(1.0, 255.0) as u8;
-            if self.meshes[0].nodes[id].dying_in == 0 || self.meshes[0].nodes[id].dying_in > delay {
-                self.meshes[0].nodes[id].dying_in = delay;
+            if self.meshes[mi].nodes[id].dying_in == 0 || self.meshes[mi].nodes[id].dying_in > delay {
+                self.meshes[mi].nodes[id].dying_in = delay;
                 touched += 1;
                 doomed.push(id);
             }
@@ -457,17 +458,17 @@ impl World {
             if (touched as usize) >= self.cfg.mythic_big_one_threshold {
                 self.push_log(format!("✦ MYTHIC ✦ THE BIG ONE — {} hosts", touched));
             }
-            let root_pos = self.meshes[0].nodes[root].pos;
-            self.emit_cascade_effects(root_pos, touched);
+            let root_pos = self.meshes[mi].nodes[root].pos;
+            self.emit_cascade_effects(mi, root_pos, touched);
             // Roll resurrection at schedule time so the whole
             // cohort is visible instead of tick-by-tick finalizations.
-            self.maybe_resurrect_c2_from_cascade(&doomed);
+            self.maybe_resurrect_c2_from_cascade(mi, &doomed);
         }
     }
 
-    pub(super) fn advance_dying(&mut self) {
+    pub(super) fn advance_dying(&mut self, mi: usize) {
         let mut newly_dead: Vec<NodeId> = Vec::new();
-        for (i, n) in self.meshes[0].nodes.iter_mut().enumerate() {
+        for (i, n) in self.meshes[mi].nodes.iter_mut().enumerate() {
             if n.dying_in > 0 {
                 n.dying_in -= 1;
                 if n.dying_in == 0 && !matches!(n.state, State::Dead) {
@@ -480,15 +481,15 @@ impl World {
         }
         let mut fallen_legends: Vec<(NodeId, (i16, i16), u16, u8)> = Vec::new();
         for id in &newly_dead {
-            let faction = self.meshes[0].nodes[*id].faction;
+            let faction = self.meshes[mi].nodes[*id].faction;
             // Don't double-count: if the node was already in
             // State::Pwned, advance_pwned_and_loss already bumped
             // faction_stats.lost at the exploit moment. Only
             // cascade-only deaths (still Alive when dying_in
             // started) need to be counted here.
-            let was_pwned = matches!(self.meshes[0].nodes[*id].state, State::Pwned { .. });
-            self.meshes[0].nodes[*id].state = State::Dead;
-            self.meshes[0].nodes[*id].death_echo = GHOST_ECHO_TICKS;
+            let was_pwned = matches!(self.meshes[mi].nodes[*id].state, State::Pwned { .. });
+            self.meshes[mi].nodes[*id].state = State::Dead;
+            self.meshes[mi].nodes[*id].death_echo = GHOST_ECHO_TICKS;
             if !was_pwned {
                 if let Some(s) = self.faction_stats.get_mut(faction as usize) {
                     s.lost += 1;
@@ -497,11 +498,11 @@ impl World {
             // Legendary nodes become permanent tombstones. Log
             // the fall loudly so the viewer catches the death
             // of a named character.
-            if self.meshes[0].nodes[*id].legendary_name != u16::MAX {
+            if self.meshes[mi].nodes[*id].legendary_name != u16::MAX {
                 fallen_legends.push((
                     *id,
-                    self.meshes[0].nodes[*id].pos,
-                    self.meshes[0].nodes[*id].legendary_name,
+                    self.meshes[mi].nodes[*id].pos,
+                    self.meshes[mi].nodes[*id].legendary_name,
                     faction,
                 ));
             }
@@ -524,8 +525,8 @@ impl World {
         // longer exists.
         let dead_factions: Vec<u8> = newly_dead
             .iter()
-            .filter(|&&id| self.meshes[0].c2_nodes.contains(&id))
-            .map(|&id| self.meshes[0].nodes[id].faction)
+            .filter(|&&id| self.meshes[mi].c2_nodes.contains(&id))
+            .map(|&id| self.meshes[mi].nodes[id].faction)
             .collect();
         if !dead_factions.is_empty() {
             let before = self.relations.len();
@@ -566,10 +567,10 @@ impl World {
                 }
             })
             .collect();
-        // Split self.meshes[0] into one mutable borrow so the
+        // Split self.meshes[mi] into one mutable borrow so the
         // iterations over its fields don't fight the subsequent
         // mutation of occupied.
-        let mesh = &mut self.meshes[0];
+        let mesh = &mut self.meshes[mi];
         let c2_positions: HashSet<(i16, i16)> =
             mesh.c2_nodes.iter().map(|&id| mesh.nodes[id].pos).collect();
         // Collect cells to remove before mutating occupied so

@@ -14,7 +14,7 @@ fn scheduled_subtree_death_eventually_kills_all_descendants() {
     w.meshes[0].nodes.push(Node::fresh((12, 10), Some(a), 0, Role::Relay, 1));
     let c = w.meshes[0].nodes.len();
     w.meshes[0].nodes.push(Node::fresh((14, 10), Some(b), 0, Role::Relay, 1));
-    w.schedule_subtree_death(a, 1.0);
+    w.schedule_subtree_death(0, a, 1.0);
     // All three descendants should be flagged dying but not yet Dead.
     assert!(w.meshes[0].nodes[a].dying_in > 0);
     assert!(w.meshes[0].nodes[b].dying_in > 0);
@@ -43,7 +43,7 @@ fn hardened_node_resists_first_pwn() {
     n.hardened = true;
     w.meshes[0].nodes.push(n);
     w.cfg.p_loss = 1.0; // force the victim roll to fire
-    w.advance_pwned_and_loss();
+    w.advance_pwned_and_loss(0);
     assert!(matches!(w.meshes[0].nodes[id].state, State::Alive));
     assert!(!w.meshes[0].nodes[id].hardened);
 }
@@ -52,7 +52,7 @@ fn hardened_node_resists_first_pwn() {
 fn branch_id_inherits_from_parent_not_c2() {
     let mut w = World::new(11, (120, 40), Config::default());
     // First-hop child gets fresh branch id.
-    let a = w.alloc_branch_id();
+    let a = w.alloc_branch_id(0);
     w.meshes[0].nodes
         .push(Node::fresh((30, 10), Some(w.primary_c2), 0, Role::Relay, a));
     let a_id = w.meshes[0].nodes.len() - 1;
@@ -114,10 +114,10 @@ fn packet_reaches_c2_and_drops() {
     // Force the Exfil to fire on tick 0 and then tick enough for the
     // packet to reach C2 and be dropped.
     w.meshes[0].nodes[b].role_cooldown = 0;
-    w.fire_exfil_packets();
+    w.fire_exfil_packets(0);
     assert_eq!(w.meshes[0].packets.len(), 1);
     for _ in 0..40 {
-        w.advance_packets();
+        w.advance_packets(0);
     }
     assert!(w.meshes[0].packets.is_empty());
 }
@@ -159,7 +159,7 @@ fn cross_link_saves_reachable_node_from_cascade() {
         black_market_until: 0,
         latent: false,
     });
-    let cascade = w.compute_cascade(a);
+    let cascade = w.compute_cascade(0, a);
     let ids: HashSet<NodeId> = cascade.iter().map(|(id, _)| *id).collect();
     assert!(ids.contains(&a), "root must be doomed");
     assert!(!ids.contains(&b), "b should survive via cross link to c");
@@ -179,7 +179,7 @@ fn shield_flash_is_set_when_hardened_node_is_hit() {
     let mut n = Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1);
     n.hardened = true;
     w.meshes[0].nodes.push(n);
-    w.advance_pwned_and_loss();
+    w.advance_pwned_and_loss(0);
     assert!(matches!(w.meshes[0].nodes[id].state, State::Alive));
     assert!(!w.meshes[0].nodes[id].hardened);
     assert!(w.meshes[0].nodes[id].shield_flash > 0, "shield flash should be set");
@@ -204,11 +204,11 @@ fn reconnect_creates_cross_link_between_branches() {
     w.meshes[0].nodes
         .push(Node::fresh((25, 12), Some(w.primary_c2), 0, Role::Relay, 2));
     let before = w.meshes[0].links.iter().filter(|l| l.kind == LinkKind::Cross).count();
-    w.maybe_reconnect();
+    w.maybe_reconnect(0);
     let after = w.meshes[0].links.iter().filter(|l| l.kind == LinkKind::Cross).count();
     assert_eq!(after, before + 1, "should have formed exactly one cross link");
     // Second call should not create a duplicate between the same pair.
-    w.maybe_reconnect();
+    w.maybe_reconnect(0);
     let cross_count = w.meshes[0].links.iter().filter(|l| l.kind == LinkKind::Cross).count();
     assert_eq!(cross_count, after, "must not duplicate existing bridge");
 }
@@ -226,7 +226,7 @@ fn reconnect_refuses_same_branch() {
     w.meshes[0].nodes
         .push(Node::fresh((25, 12), Some(w.primary_c2), 0, Role::Relay, 1));
     for _ in 0..20 {
-        w.maybe_reconnect();
+        w.maybe_reconnect(0);
     }
     let cross = w.meshes[0].links.iter().filter(|l| l.kind == LinkKind::Cross).count();
     assert_eq!(cross, 0);
@@ -345,7 +345,7 @@ fn patch_wave_cures_infected_node_within_radius() {
         radius: 0,
     });
     for _ in 0..10 {
-        w.advance_patch_waves();
+        w.advance_patch_waves(0);
         if w.meshes[0].nodes[a].infection.is_none() {
             break;
         }
@@ -393,7 +393,7 @@ fn worm_delivered_to_alive_neighbor() {
         is_antibody: false,
     });
     for _ in 0..10 {
-        w.advance_worms();
+        w.advance_worms(0);
     }
     assert!(w.meshes[0].nodes[b].infection.is_some());
     assert_eq!(w.meshes[0].nodes[b].infection.unwrap().strain, 2);
@@ -442,7 +442,7 @@ fn mutation_skips_honeypots() {
     w.meshes[0].nodes
         .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Honeypot, 1));
     for _ in 0..10 {
-        w.maybe_mutate();
+        w.maybe_mutate(0);
     }
     assert_eq!(w.meshes[0].nodes[id].role, Role::Honeypot);
     assert_eq!(w.meshes[0].nodes[id].mutated_flash, 0);
@@ -459,7 +459,7 @@ fn mutation_flips_relay_role_and_flashes() {
     let id = w.meshes[0].nodes.len();
     w.meshes[0].nodes
         .push(Node::fresh((10, 10), Some(w.primary_c2), 0, Role::Relay, 1));
-    w.maybe_mutate();
+    w.maybe_mutate(0);
     assert!(matches!(w.meshes[0].nodes[id].role, Role::Scanner | Role::Exfil));
     assert!(w.meshes[0].nodes[id].mutated_flash > 0);
 }
@@ -472,7 +472,7 @@ fn zero_day_respects_min_node_floor() {
     w.cfg.virus_seed_rate = 0.0;
     // Only C2 alive: 1 node, well below the 10-node minimum.
     w.tick = 1;
-    w.maybe_zero_day();
+    w.maybe_zero_day(0);
     assert!(w.meshes[0].nodes.iter().all(|n| n.infection.is_none()));
 }
 
@@ -488,7 +488,7 @@ fn zero_day_outbreak_picks_distinct_targets() {
         w.meshes[0].nodes
             .push(Node::fresh((10 + i, 10), Some(w.primary_c2), 0, Role::Relay, 1));
     }
-    w.zero_day_outbreak();
+    w.zero_day_outbreak(0);
     let infected = w
         .meshes[0]
         .nodes
@@ -564,7 +564,7 @@ fn defender_pulse_cures_nearby_infection() {
         wave_survivals: 0,
         veteran_rank: 0,
     });
-    w.fire_defender_pulses();
+    w.fire_defender_pulses(0);
     assert!(w.meshes[0].nodes[victim].infection.is_none(), "defender should clear infection in radius");
 }
 
@@ -647,7 +647,7 @@ fn cascade_does_not_kill_other_factions() {
     n1.faction = 1;
     w.meshes[0].nodes.push(n1);
     // Trigger a cascade on faction 0's child. Faction 1 must survive.
-    w.schedule_subtree_death(child0, 1.0);
+    w.schedule_subtree_death(0, child0, 1.0);
     for _ in 0..20 {
         w.tick((80, 30));
     }
@@ -712,15 +712,15 @@ fn link_load_accumulates_and_decays() {
         ghost: false,
     });
     for _ in 0..5 {
-        w.decay_link_load();
-        w.advance_packets();
+        w.decay_link_load(0);
+        w.advance_packets(0);
     }
     assert!(w.meshes[0].links[0].load > 0, "load should accumulate from in-flight packet");
 
     // Stop feeding packets; load decays back to zero.
     w.meshes[0].packets.clear();
     for _ in 0..20 {
-        w.decay_link_load();
+        w.decay_link_load(0);
     }
     assert_eq!(w.meshes[0].links[0].load, 0, "load should decay to zero");
 }
@@ -753,7 +753,7 @@ fn honeypot_trip_reveals_backdoor_links() {
         .iter()
         .filter(|l| l.kind == LinkKind::Cross)
         .count();
-    w.reveal_honeypot_backdoors(honey);
+    w.reveal_honeypot_backdoors(0, honey);
     let after = w
         .meshes[0]
         .links
@@ -952,7 +952,7 @@ fn defector_flips_faction_and_credits_intel() {
     // roll_periodic returns false at tick 0, so advance one tick
     // before firing the defector roll.
     w.tick = 1;
-    w.maybe_defector();
+    w.maybe_defector(0);
     // Node should have flipped to F1 (the only rival with an
     // alive C2).
     assert_eq!(w.meshes[0].nodes[target].faction, 1);
@@ -1006,7 +1006,7 @@ fn ghost_packet_delivers_without_crediting_intel() {
         pos: 0,
         ghost: true,
     });
-    w.advance_packets();
+    w.advance_packets(0);
     // Packet should have been delivered (removed from the vec).
     assert!(w.meshes[0].packets.is_empty());
     // Intel should NOT have incremented — ghost packets skip the
@@ -1282,7 +1282,7 @@ fn mercenary_auction_flips_unaffiliated_node_to_richest_bidder() {
     // Auction runs on a period cadence — advance tick to a
     // multiple of MERCENARY_AUCTION_PERIOD.
     w.tick = MERCENARY_AUCTION_PERIOD;
-    w.maybe_mercenary_auction();
+    w.maybe_mercenary_auction(0);
     // Mercenary should have flipped to F1 (richer bidder).
     assert_eq!(w.meshes[0].nodes[merc].faction, 1);
     // F1 paid the bid cost.
@@ -1453,7 +1453,7 @@ fn diplomacy_rebirth_produces_a_clean_relation_slate_for_the_new_faction() {
     // is what maybe_resurrect_c2_from_cascade does internally
     // when it picks a doomed node to promote.
     let new_faction_id = w.faction_stats.len() as u8;
-    let new_branch = w.alloc_branch_id();
+    let new_branch = w.alloc_branch_id(0);
     w.meshes[0].nodes.push(Node::fresh(
         (40, 20),
         None,
@@ -1679,6 +1679,11 @@ fn diplomacy_trade_can_upgrade_through_nap_to_alliance() {
     // advance_diplomacy is probabilistic, so we skip it for the
     // test and exercise the upgrade ladder.
     let key = (0u8, 1u8);
+    // expires_tick must exceed 2 sample periods (100 ticks) so the
+    // first two-loop block leaves us still in Trade, but must be low
+    // enough that the trust ladder (4 per sample period with Fortress
+    // × Fortress, threshold = 30) has time to accumulate ≥ 8 samples
+    // before expiry. 500 ticks = 10 sample periods → trust = 40 ≥ 30.
     w.relations.insert(
         key,
         Relation {
@@ -1686,7 +1691,7 @@ fn diplomacy_trade_can_upgrade_through_nap_to_alliance() {
             pressure: 0,
             trust: 0,
             entered_tick: 0,
-            expires_tick: 5,
+            expires_tick: 500,
         },
     );
     // Run the machine until the Trade timer expires and
@@ -1832,7 +1837,7 @@ fn large_cascade_can_resurrect_a_new_c2() {
 
     let before = w.meshes[0].c2_nodes.len();
     // Schedule the whole subtree rooted at `a` (a, b, c → 3 nodes).
-    w.schedule_subtree_death(a, 1.0);
+    w.schedule_subtree_death(0, a, 1.0);
     let after = w.meshes[0].c2_nodes.len();
     assert_eq!(
         after,
