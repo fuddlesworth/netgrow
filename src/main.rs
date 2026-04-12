@@ -561,6 +561,16 @@ fn main() -> io::Result<()> {
                             world.inject_graffiti(c);
                         }
                     }
+                    // Layer switching: [ decrements, ] increments,
+                    // wrapping around the mesh list.
+                    (KeyCode::Char('['), _) => {
+                        let n = world.meshes.len();
+                        world.active_mesh = (world.active_mesh + n - 1) % n;
+                    }
+                    (KeyCode::Char(']'), _) => {
+                        let n = world.meshes.len();
+                        world.active_mesh = (world.active_mesh + 1) % n;
+                    }
                     _ => {}
                 }
             }

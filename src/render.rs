@@ -27,7 +27,7 @@ fn compute_territory(world: &World) -> std::collections::HashMap<(i16, i16), u8>
     use std::collections::{HashMap, VecDeque};
     let mut territory: HashMap<(i16, i16), u8> = HashMap::new();
     let mut queue: VecDeque<((i16, i16), u8, i16)> = VecDeque::new();
-    for n in &world.meshes[0].nodes {
+    for n in &world.meshes[world.active_mesh].nodes {
         if !matches!(n.state, State::Alive) {
             continue;
         }
@@ -44,7 +44,7 @@ fn compute_territory(world: &World) -> std::collections::HashMap<(i16, i16), u8>
         (-1, 1),
         (-1, -1),
     ];
-    let (bx, by) = world.meshes[0].bounds;
+    let (bx, by) = world.meshes[world.active_mesh].bounds;
     while let Some((pos, f, d)) = queue.pop_front() {
         if d >= TERRITORY_RADIUS {
             continue;
@@ -155,12 +155,19 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
     let mesh_frame = cols[0];
     let right_col = cols[1];
 
-    // Mesh border title carries the current era name so the epoch
-    // feature surfaces in the chrome. Brand stays in the header.
+    // Mesh border title carries the current layer name + era name
+    // so the epoch and layer features both surface in the chrome.
+    let layer_name = world.meshes[world.active_mesh].name;
     let mesh_title = if world.cfg.epoch_period > 0 {
-        format!(" {} ", world.epoch_name())
+        format!(
+            " {} :: {} ({}/{}) ",
+            layer_name,
+            world.epoch_name(),
+            world.active_mesh + 1,
+            world.meshes.len()
+        )
     } else {
-        " mesh ".to_string()
+        format!(" {} ({}/{}) ", layer_name, world.active_mesh + 1, world.meshes.len())
     };
     let mesh_block = Block::bordered()
         .border_type(BorderType::Thick)
@@ -218,10 +225,10 @@ pub fn draw(frame: &mut Frame, world: &World, ui: UiState) {
                 .values()
                 .filter(|r| matches!(r.state, crate::world::DiplomaticState::OpenWar))
                 .count();
-            let event_count = (world.meshes[0].outages.len()
-                + world.meshes[0].partitions.len()
+            let event_count = (world.meshes[world.active_mesh].outages.len()
+                + world.meshes[world.active_mesh].partitions.len()
                 + war_count
-                + world.meshes[0].ddos_waves.len()
+                + world.meshes[world.active_mesh].ddos_waves.len()
                 + if world.is_storming() { 1 } else { 0 }
                 + if world.is_droughted() { 1 } else { 0 })
                 .min(6) as u16;
@@ -675,7 +682,7 @@ fn summary_legends_block(world: &World) -> Paragraph<'static> {
             Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
         ));
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for (id, n) in world.meshes[0].nodes.iter().enumerate() {
+    for (id, n) in world.meshes[world.active_mesh].nodes.iter().enumerate() {
         if !matches!(n.state, State::Alive) || n.legendary_name == u16::MAX {
             continue;
         }
@@ -810,7 +817,7 @@ fn header_bar(world: &World, stats: &WorldStats, ui: UiState) -> Paragraph<'stat
     }
     if world.is_storming() {
         spans.push(sep());
-        let remaining = world.meshes[0].storm_until.saturating_sub(world.tick);
+        let remaining = world.meshes[world.active_mesh].storm_until.saturating_sub(world.tick);
         spans.push(Span::styled(
             format!("⚡ STORM ({})", remaining),
             Style::default()
@@ -1186,7 +1193,7 @@ fn minimap_block(world: &World, panel_width: u16, cursor: Option<(i16, i16)>) ->
     let block = bordered_block(" minimap ");
     let cols = panel_width.saturating_sub(2).max(1) as usize;
     let rows = 8usize;
-    let (bx, by) = (world.meshes[0].bounds.0.max(1) as usize, world.meshes[0].bounds.1.max(1) as usize);
+    let (bx, by) = (world.meshes[world.active_mesh].bounds.0.max(1) as usize, world.meshes[world.active_mesh].bounds.1.max(1) as usize);
     // Minimap mirrors the mesh territory wash: run the same BFS
     // the main render uses, then bucket every tagged cell into
     // the visual grid. Each bucket picks the most common
@@ -1209,8 +1216,8 @@ fn minimap_block(world: &World, panel_width: u16, cursor: Option<(i16, i16)>) ->
     // Overlay markers: C2 positions, hotspot cells, and cursor.
     let mut c2_cells: std::collections::HashSet<usize> =
         std::collections::HashSet::new();
-    for &c2_id in &world.meshes[0].c2_nodes {
-        let n = &world.meshes[0].nodes[c2_id];
+    for &c2_id in &world.meshes[world.active_mesh].c2_nodes {
+        let n = &world.meshes[world.active_mesh].nodes[c2_id];
         if !matches!(n.state, State::Alive) {
             continue;
         }
@@ -1220,7 +1227,7 @@ fn minimap_block(world: &World, panel_width: u16, cursor: Option<(i16, i16)>) ->
     }
     let mut hotspot_cells: std::collections::HashSet<usize> =
         std::collections::HashSet::new();
-    for hot in &world.meshes[0].hotspots {
+    for hot in &world.meshes[world.active_mesh].hotspots {
         for y in hot.min.1..=hot.max.1 {
             for x in hot.min.0..=hot.max.0 {
                 let mx = (x as usize * cols) / bx.max(1);
@@ -1431,18 +1438,18 @@ fn events_block(world: &World) -> Paragraph<'static> {
         ])
     };
     if world.is_storming() {
-        let remaining = world.meshes[0].storm_until.saturating_sub(world.tick);
+        let remaining = world.meshes[world.active_mesh].storm_until.saturating_sub(world.tick);
         lines.push(row("⚡", format!("storm ({}t)", remaining), th.pwned));
     }
     if world.is_droughted() {
-        let remaining = world.meshes[0].drought_until.saturating_sub(world.tick);
+        let remaining = world.meshes[world.active_mesh].drought_until.saturating_sub(world.tick);
         lines.push(row("⚠", format!("drought ({}t)", remaining), th.pwned_alt));
     }
-    for wave in &world.meshes[0].ddos_waves {
+    for wave in &world.meshes[world.active_mesh].ddos_waves {
         let axis = if wave.horizontal { "horiz" } else { "vert" };
         lines.push(row("↯", format!("ddos {} pos {}", axis, wave.pos), th.accent));
     }
-    for outage in &world.meshes[0].outages {
+    for outage in &world.meshes[world.active_mesh].outages {
         let remaining = outage.life.saturating_sub(outage.age);
         lines.push(row(
             "⚠",
@@ -1450,7 +1457,7 @@ fn events_block(world: &World) -> Paragraph<'static> {
             th.pwned_alt,
         ));
     }
-    for part in &world.meshes[0].partitions {
+    for part in &world.meshes[world.active_mesh].partitions {
         let remaining = part.life.saturating_sub(part.age);
         let axis = if part.horizontal { "horiz" } else { "vert" };
         lines.push(row(
@@ -1616,7 +1623,7 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
         ),
     ]);
     let mut lines: Vec<Line<'static>> = vec![header];
-    let node = world.meshes[0].nodes.iter().find(|n| n.pos == pos);
+    let node = world.meshes[world.active_mesh].nodes.iter().find(|n| n.pos == pos);
     match node {
         None => {
             lines.push(Line::from(Span::styled(
@@ -1630,7 +1637,7 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
                 // Show the generated biographical line instead of
                 // just the bare name so legendary nodes read as
                 // actual characters.
-                let node_id = world.meshes[0].nodes.iter().position(|x| x.pos == pos).unwrap_or(0);
+                let node_id = world.meshes[world.active_mesh].nodes.iter().position(|x| x.pos == pos).unwrap_or(0);
                 let bio = legendary_bio(world, n, node_id);
                 lines.push(row("legend", bio));
             }
@@ -1668,8 +1675,8 @@ fn inspector_block(world: &World, pos: (i16, i16)) -> Paragraph<'static> {
                 .links
                 .iter()
                 .filter(|l| {
-                    let a_match = world.meshes[0].nodes[l.a].pos == pos;
-                    let b_match = world.meshes[0].nodes[l.b].pos == pos;
+                    let a_match = world.meshes[world.active_mesh].nodes[l.a].pos == pos;
+                    let b_match = world.meshes[world.active_mesh].nodes[l.b].pos == pos;
                     a_match || b_match
                 })
                 .count();
@@ -2065,6 +2072,7 @@ pub struct MeshWidget<'a> {
 impl<'a> Widget for MeshWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let w = self.world;
+        let active = w.active_mesh;
         let th = theme();
 
         // 0a. Faction territory — built via the shared
@@ -2072,12 +2080,12 @@ impl<'a> Widget for MeshWidget<'a> {
         // minimap cover the exact same cells. The fg is handled
         // by bg bakes on nodes/links at draw time; the bg
         // post-pass below fills in the empty cells.
-        let bounds = w.meshes[0].bounds;
+        let bounds = w.meshes[active].bounds;
         let territory = compute_territory(w);
         let night = w.is_night();
         let storming = w.is_storming();
         let node_cells: std::collections::HashSet<(i16, i16)> =
-            w.meshes[0].nodes.iter().map(|n| n.pos).collect();
+            w.meshes[active].nodes.iter().map(|n| n.pos).collect();
         let _ = night; // kept for potential future day/night bg tuning
 
         // 0a-quater. Fiber hotspot zones — persistent fixed
@@ -2087,7 +2095,7 @@ impl<'a> Widget for MeshWidget<'a> {
         // still sit on top). Renders as a dim accent-tinted
         // diamond fill + bracket corners so the strategic
         // territory reads as a deliberate box.
-        for (idx, hot) in w.meshes[0].hotspots.iter().enumerate() {
+        for (idx, hot) in w.meshes[active].hotspots.iter().enumerate() {
             for y in hot.min.1..=hot.max.1 {
                 for x in hot.min.0..=hot.max.0 {
                     let cell = (x, y);
@@ -2131,7 +2139,7 @@ impl<'a> Widget for MeshWidget<'a> {
         // 0a-bis. ISP outage zones — dim hatched fill across the
         // dead rectangle so the offline region reads at a glance.
         // Drawn after territory so the outage glyph wins on overlap.
-        for outage in &w.meshes[0].outages {
+        for outage in &w.meshes[active].outages {
             for y in outage.min.1..=outage.max.1 {
                 for x in outage.min.0..=outage.max.0 {
                     let cell = (x, y);
@@ -2177,7 +2185,7 @@ impl<'a> Widget for MeshWidget<'a> {
         // vertical line cut across the mesh where packets and
         // worms refuse to cross. Draw every other cell so the cut
         // reads as dashed rather than solid.
-        for p in &w.meshes[0].partitions {
+        for p in &w.meshes[active].partitions {
             if p.horizontal {
                 let y = p.pos;
                 for x in 0..bounds.0 {
@@ -2229,13 +2237,13 @@ impl<'a> Widget for MeshWidget<'a> {
         // the top, so the storm keeps visibly sweeping for the full
         // duration instead of rolling once and disappearing.
         if storming {
-            let (fdx, fdy) = (w.meshes[0].storm_dir.0 as i16, w.meshes[0].storm_dir.1.max(1) as i16);
+            let (fdx, fdy) = (w.meshes[active].storm_dir.0 as i16, w.meshes[active].storm_dir.1.max(1) as i16);
             const BAND_HALF: i16 = 3;
             // Cycle length includes the band on both sides of the
             // mesh so the front fully exits before a new one enters,
             // giving a brief 'quiet' gap between passes.
             let cycle = (bounds.1 + BAND_HALF * 2).max(1);
-            let raw = w.tick.saturating_sub(w.meshes[0].storm_since) as i64;
+            let raw = w.tick.saturating_sub(w.meshes[active].storm_since) as i64;
             let elapsed = (raw.rem_euclid(cycle as i64) as i16) - BAND_HALF;
             for y in 0..bounds.1 {
                 for x in 0..bounds.0 {
@@ -2272,12 +2280,12 @@ impl<'a> Widget for MeshWidget<'a> {
         }
 
         // 1. Links
-        for link in w.meshes[0].links.iter() {
+        for link in w.meshes[active].links.iter() {
             if link.latent {
                 continue; // sleeper-lattice edges stay invisible
             }
-            let a = &w.meshes[0].nodes[link.a];
-            let b = &w.meshes[0].nodes[link.b];
+            let a = &w.meshes[active].nodes[link.a];
+            let b = &w.meshes[active].nodes[link.b];
             let dying = a.dying_in > 0 || b.dying_in > 0;
             let dead = matches!(a.state, State::Dead) || matches!(b.state, State::Dead);
             let th = theme();
@@ -2379,7 +2387,7 @@ impl<'a> Widget for MeshWidget<'a> {
             }
             for i in 0..reveal {
                 let cell = link.path[i];
-                if cell == w.meshes[0].nodes[link.a].pos || cell == w.meshes[0].nodes[link.b].pos {
+                if cell == w.meshes[active].nodes[link.a].pos || cell == w.meshes[active].nodes[link.b].pos {
                     continue;
                 }
                 let prev = if i > 0 { Some(link.path[i - 1]) } else { None };
@@ -2448,7 +2456,7 @@ impl<'a> Widget for MeshWidget<'a> {
         // accent-color `✕` glyph with a pulse that fades as the
         // mark approaches expiry. Drawn before packets so the
         // marker sits under any active traffic glyph, not over it.
-        for &(mark_pos, expires) in &w.meshes[0].graffiti_marks {
+        for &(mark_pos, expires) in &w.meshes[active].graffiti_marks {
             let remaining = expires.saturating_sub(w.tick);
             let mod_style = if remaining > crate::world::GRAFFITI_MARK_TICKS / 2 {
                 Modifier::BOLD
@@ -2463,14 +2471,14 @@ impl<'a> Widget for MeshWidget<'a> {
                 Style::default().fg(theme().accent).add_modifier(mod_style),
             );
         }
-        for pkt in &w.meshes[0].packets {
-            let link = &w.meshes[0].links[pkt.link_id];
+        for pkt in &w.meshes[active].packets {
+            let link = &w.meshes[active].links[pkt.link_id];
             let idx = pkt.pos as usize;
             if idx >= link.path.len() {
                 continue;
             }
-            let a_pos = w.meshes[0].nodes[link.a].pos;
-            let b_pos = w.meshes[0].nodes[link.b].pos;
+            let a_pos = w.meshes[active].nodes[link.a].pos;
+            let b_pos = w.meshes[active].nodes[link.b].pos;
             // Head — bright. Ghost packets use the ghost palette
             // color and drop the BOLD modifier so the decoy
             // stream reads as translucent against the real
@@ -2517,14 +2525,14 @@ impl<'a> Widget for MeshWidget<'a> {
         }
 
         // 3b. Virus worms crawling along link paths — distinct magenta squares.
-        for worm in &w.meshes[0].worms {
-            let link = &w.meshes[0].links[worm.link_id];
+        for worm in &w.meshes[active].worms {
+            let link = &w.meshes[active].links[worm.link_id];
             let idx = worm.pos as usize;
             if idx >= link.path.len() {
                 continue;
             }
             let cell = link.path[idx];
-            if cell == w.meshes[0].nodes[link.a].pos || cell == w.meshes[0].nodes[link.b].pos {
+            if cell == w.meshes[active].nodes[link.a].pos || cell == w.meshes[active].nodes[link.b].pos {
                 continue;
             }
             // Antibody worms render as a distinct green diamond so
@@ -2559,8 +2567,8 @@ impl<'a> Widget for MeshWidget<'a> {
             .iter()
             .flat_map(|l| l.path.iter().copied())
             .collect();
-        for &c2_id in &w.meshes[0].c2_nodes {
-            let c2 = &w.meshes[0].nodes[c2_id];
+        for &c2_id in &w.meshes[active].c2_nodes {
+            let c2 = &w.meshes[active].nodes[c2_id];
             if !matches!(c2.state, State::Alive) {
                 continue;
             }
@@ -2578,7 +2586,7 @@ impl<'a> Widget for MeshWidget<'a> {
                 (1, 1),
             ] {
                 let cell = (pos.0 + dx, pos.1 + dy);
-                if w.meshes[0].occupied.contains(&cell) || occupied_link_cells.contains(&cell) {
+                if w.meshes[active].occupied.contains(&cell) || occupied_link_cells.contains(&cell) {
                     continue;
                 }
                 // Pick a braille dot that "points" back toward the C2
@@ -2599,7 +2607,7 @@ impl<'a> Widget for MeshWidget<'a> {
         }
 
         // 4. Nodes
-        for node in &w.meshes[0].nodes {
+        for node in &w.meshes[active].nodes {
             let (glyph, style) = node_glyph(node, w.tick, w);
             put(buf, area, node.pos, glyph, style);
         }
@@ -2607,7 +2615,7 @@ impl<'a> Widget for MeshWidget<'a> {
         // 4. Wormhole dashed lines — purely visual flash connecting two
         // random alive cells. Rendered as dim braille dots along a
         // Bresenham line so it looks like a rift opening briefly.
-        for wh in &w.meshes[0].wormholes {
+        for wh in &w.meshes[active].wormholes {
             // Fade in then fade out: bold at mid-life, dim at edges.
             let life = wh.life.max(1);
             let mid = life / 2;
@@ -2657,7 +2665,7 @@ impl<'a> Widget for MeshWidget<'a> {
 
         // 4a. DDoS wave front — a line of bold braille blocks across
         // the full row or column where the wave currently sits.
-        for wave in &w.meshes[0].ddos_waves {
+        for wave in &w.meshes[active].ddos_waves {
             let th = theme();
             let style = Style::default()
                 .fg(th.pwned)
@@ -2677,7 +2685,7 @@ impl<'a> Widget for MeshWidget<'a> {
         // bold braille blocks radiating from the cascade root; sparks
         // are sub-cell dots pooling at their current f32 positions so
         // several sparks in one cell render as distinct dots.
-        for sw in &w.meshes[0].shockwaves {
+        for sw in &w.meshes[active].shockwaves {
             let age = sw.age as i16;
             if age <= 0 {
                 continue;
@@ -2706,7 +2714,7 @@ impl<'a> Widget for MeshWidget<'a> {
                 }
             }
         }
-        if !w.meshes[0].sparks.is_empty() {
+        if !w.meshes[active].sparks.is_empty() {
             let th = theme();
             // Group sparks by their integer cell and accumulate
             // braille bits for their sub-cell position.
@@ -2716,7 +2724,7 @@ impl<'a> Widget for MeshWidget<'a> {
                 [0x01, 0x02, 0x04, 0x40],
                 [0x08, 0x10, 0x20, 0x80],
             ];
-            for spark in &w.meshes[0].sparks {
+            for spark in &w.meshes[active].sparks {
                 let cx = spark.pos.0.floor() as i16;
                 let cy = spark.pos.1.floor() as i16;
                 let fx = (spark.pos.0 - cx as f32).clamp(0.0, 0.9999);
@@ -2753,7 +2761,7 @@ impl<'a> Widget for MeshWidget<'a> {
         // mark fixed strategic terrain the viewer needs to see
         // regardless of who currently owns the region.
         let hotspot_color = hotspot_bg(th.frame_accent);
-        for hot in &w.meshes[0].hotspots {
+        for hot in &w.meshes[active].hotspots {
             for y in hot.min.1..=hot.max.1 {
                 for x in hot.min.0..=hot.max.0 {
                     let cx = area.x as i32 + x as i32;
@@ -2774,7 +2782,7 @@ impl<'a> Widget for MeshWidget<'a> {
             }
         }
         let outage_color = outage_bg(th.pwned_alt);
-        for outage in &w.meshes[0].outages {
+        for outage in &w.meshes[active].outages {
             for y in outage.min.1..=outage.max.1 {
                 for x in outage.min.0..=outage.max.0 {
                     let cx = area.x as i32 + x as i32;
